@@ -22,7 +22,8 @@ describe('Bracket generation', () => {
     expect(bracket).toHaveLength(4);
     // top seeds get byes automatically in the first-round structure
     const winners = bracket.map((m) => m.winner);
-    expect(winners).toEqual([undefined, 'p2', undefined, undefined]);
+    // top seeds p1 and p2 decide byes; p1 and p2 have immediate advancement markers.
+    expect(winners).toEqual(['p1', undefined, 'p2', undefined]);
     // first match is p1 vs BYE i.e. p1 advances indirectly; second is p4 vs p5 etc.
     expect(bracket[0]).toMatchObject({ seedA: 'p1', seedB: undefined });
     expect(bracket[1]).toMatchObject({ seedA: 'p4', seedB: 'p5' });

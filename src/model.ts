@@ -205,7 +205,7 @@ export function isMatchScoreLegal(scores: GameScore[], bestOf = 5, pointTarget =
 
 export function teamMatchWinner(
   teamMatch: TeamMatch,
-  bestOf = 5,
+  bestOf = 3,
   pointTarget = defaultPointTarget,
 ): TeamId | undefined {
   const winner = matchWinner(teamMatch.scores, bestOf, pointTarget);
@@ -216,7 +216,7 @@ export function teamMatchWinner(
 export function isTeamMatchScoreLegal(
   teamMatch: TeamMatch,
   tournament: Tournament,
-  bestOf = 5,
+  bestOf = 3,
   pointTarget = defaultPointTarget,
 ): boolean {
   if (!tournament.teams[teamMatch.teamA] || !tournament.teams[teamMatch.teamB]) {
@@ -269,13 +269,30 @@ function seedPositions(size: number): number[] {
 
 export function generateBracket(
   seedings: string[],
-  tournament?: Tournament,
+  tournamentOrOptions?: Tournament | { fillByes?: boolean; cullToPowerOfTwo?: boolean },
   options: { fillByes?: boolean; cullToPowerOfTwo?: boolean } = { fillByes: true, cullToPowerOfTwo: false },
 ): BracketMatch[] {
   if (!seedings || seedings.length === 0) return [];
 
-  const fillByes = options.fillByes ?? true;
-  const cullToPower = options.cullToPowerOfTwo ?? false;
+  let tournament: Tournament | undefined;
+  let opts: { fillByes?: boolean; cullToPowerOfTwo?: boolean } = options;
+
+  if (tournamentOrOptions) {
+    if (
+      'players' in tournamentOrOptions ||
+      'teams' in tournamentOrOptions ||
+      'matches' in tournamentOrOptions ||
+      'teamMatches' in tournamentOrOptions ||
+      'bracketMatches' in tournamentOrOptions
+    ) {
+      tournament = tournamentOrOptions as Tournament;
+    } else {
+      opts = tournamentOrOptions as { fillByes?: boolean; cullToPowerOfTwo?: boolean };
+    }
+  }
+
+  const fillByes = opts.fillByes ?? true;
+  const cullToPower = opts.cullToPowerOfTwo ?? false;
 
   let participants = [...seedings];
 
@@ -399,8 +416,8 @@ function findTeamMatchByTeams(tournament: Tournament, teamA: string, teamB: stri
 export function settleBracketWinners(tournament: Tournament): Tournament {
   for (const bm of tournament.bracketMatches) {
     if (!bm.winner && bm.seedA && bm.seedB) {
-      const seedAforfeit = tournament.forfeits.players[bm.seedA] || tournament.forfeits.teams[bm.seedA];
-      const seedBforfeit = tournament.forfeits.players[bm.seedB] || tournament.forfeits.teams[bm.seedB];
+      const seedAforfeit = tournament.forfeits?.players?.[bm.seedA] || tournament.forfeits?.teams?.[bm.seedA];
+      const seedBforfeit = tournament.forfeits?.players?.[bm.seedB] || tournament.forfeits?.teams?.[bm.seedB];
 
       if (seedAforfeit?.phase === 'bracket' && seedBforfeit?.phase !== 'bracket') {
         bm.winner = bm.seedB;
