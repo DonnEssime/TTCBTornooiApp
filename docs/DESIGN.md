@@ -115,13 +115,27 @@ Decision (command metadata): include original **timestamps** on commands; do **n
 
 ### 10) Undo/redo semantics
 
-- **Linear undo vs branching history**: if you undo and then do something new, do we keep branches?
-- **Edit vs compensating command**: “edit score” as a new command that supersedes prior entries vs rewriting history.
-- **Locking**: can finalized rounds be edited? under what constraints?
+**Dependency-aware undo** (critical architectural requirement):
 
-Decision: score/result edits are allowed only **until lock/finalization**; after lock/finalization, edits are blocked due to downstream implications.
+Unlike linear undo (only undo latest action), we support **selective undo**: an action can be undone **if and only if no subsequent action depends on it**.
 
-Decision (unlocking): lock/finalization is reversible only with a **significant warning** and only after deleting **all dependent downstream stages**.
+This requires:
+- **Dependency tracking**: maintain a DAG (directed acyclic graph) of command dependencies:
+  - Command A depends on Command B if Command A reads/modifies state created or modified by B.
+  - Example: "Enter score for Match 5" depends on "Create Match 5"; undoing "Create Match 5" is blocked until score entry is undone.
+- **Dependency validation before undo**: before allowing undo of a command, verify no later commands reference it.
+- **Undo ordering flexibility**: allow undoing action #3, then #2, then #5 (skipping #4 and #6 which are independent), provided dependencies permit.
+- **Redo**: re-applying an undone action only makes sense if all dependencies it relies on are present in the current state.
+
+**Implications for architecture**:
+- Each command's result must explicitly declare what state it reads/modifies.
+- Commands must be structured such that dependency chains can be computed efficiently.
+- Test cases must verify complex undo scenarios (e.g., undo match creation even if later rounds are scheduled; verify bracket recomputation is correct).
+
+**Lock/finalization constraints**:
+- Score/result edits are allowed only **until lock/finalization**.
+- After lock/finalization, edits are blocked due to downstream implications.
+- Lock/finalization is reversible only with a **significant warning** and only after deleting **all dependent downstream stages**.
 
 ### 11) Concurrency and conflicts (if multi-device)
 
@@ -231,7 +245,7 @@ Decisions to define (TT-only implementation, but via sport abstraction):
 
 Decisions:
 
-- **Score entry**: always require **per-game scores** (for all sports types).
+- **Score entry**: always require **per-game scores** (for all sports types), no winner-only shortcut in v1.
 - **Non-played outcomes**: separate outcome type (initially only **forfeit** supported).
 - **Per-stage configuration**: match format can vary by tournament stage (e.g. groups vs bracket).
 
@@ -255,7 +269,7 @@ Localization considerations (if multilingual is a future possibility).
 - **Application**: decision: applied **to all games** in the match.
 - **Representation constraint**: decision: keep **one player at zero** starting points (the other gets a positive head start or a negative head start).
 - **Flexible notation**: how to support future handicap “codes” and an advantage lookup table.
-- **Scope**: handicap per player globally vs per tournament vs per matchup.
+- **Scope**: handicap per player **within one tournament** (fixed for tournament); can change between tournaments.
 - **Visibility**: how much to show to players (comfort directive).
 - **Validation interaction**: how handicap modifies “legal scores” checks.
 
@@ -284,21 +298,28 @@ Decision (group standings default): rank by **total matches won**, then **head-t
 
 ### 22) Primary views to ship first
 
-Decide which screens are “core” vs “nice-to-have”:
+**Minimum v1 views** (required for initial testing & usability):
+- **Tournament setup**: create/configure tournament, add players, set match format
+- **Round/match entry**: view upcoming matches for current round, enter game scores (per-game breakdown)
+- **Bracket view**: visualize bracket structure, see seeding, view results
+- **Standings/rankings**: group results, tie-breaker ranking, player statistics
 
-- Current round results entry
-- Bracket view with winners
-- Table usage (live)
-- Upcoming matches queue
-- Players list and stats
-- Admin/audit/undo history
+**Future views** (nice-to-have, post-v1):
+- Court/table assignment & live occupancy
+- Upcoming matches queue/scheduling
+- Comprehensive audit/undo history visualization
 
-### 23) Interaction design
+### 23) Interaction design & debug features
 
 - **Fast score entry**: mobile-friendly numeric entry, minimizing taps.
 - **Error prevention**: validation feedback timing (live vs on submit).
 - **Correction flows**: edit/undo without fear; confirm prompts.
 - **Accessibility**: font sizes, contrast, color-blind safe brackets, keyboard support.
+
+**Debug mode** (for UI development & testing):
+- **Feature flag**: `DEBUG_MOCK_RESULTS` env/config flag to enable mock result generation.
+- **Mock data endpoint**: when enabled, UI can easily fill in placeholder game scores for all scheduled matches in a round (e.g., "fill all with random scores respecting TT rules" or "fill top players as winners").
+- **Purpose**: allows rapid UI iteration without manually entering dozens of scores; useful for testing bracket generation, standings updates, state flow without getting bogged down in data entry.
 
 ### 24) Role model (optional)
 
@@ -315,11 +336,55 @@ Decide which screens are “core” vs “nice-to-have”:
 - **Corruption handling**: partial lines, truncated files, schema mismatch.
 - **Recovery tools**: verify logs, rebuild indexes, repair commands.
 
-### 26) Testing strategy
+### 26) Test-Driven Development (TDD) strategy
 
-- **Property tests** for replay determinism and undo correctness.
-- **Rule tests** for TT score legality and handicap interactions.
-- **Golden-file tests** for projections (standings/brackets).
+This project will follow a **test-first approach**: tests are formulated ahead of implementation and serve as executable specifications.
+
+**Testing framework selection criteria** (to be decided):
+- **Unit test framework**: must support property-based testing, fixtures, parameterization, and clear assertion messages.
+- **Integration test framework**: ability to test command-result workflows end-to-end with deterministic replay.
+- **Test data generation**: fixtures or factories for tournaments, players, matches, JSONL logs.
+- **Test isolation**: ability to test domain logic independently from storage/UI concerns.
+- **Mocking/stubbing**: clean seams for injecting test doubles (e.g., file I/O, randomness).
+- **Performance**: test suite must run quickly to enable TDD feedback loop.
+- **Coverage & visibility**: clear reporting of test coverage, especially for critical domain logic.
+
+**Test categories (pre-formulated before implementation)**:
+
+1. **Domain logic tests** (highest priority, must be first):
+   - **Command validation**: each command type enforces preconditions (e.g. can't enter score for a non-existent match).
+   - **State transitions**: commands produce valid state changes.
+   - **Deterministic replay**: applying the same command sequence twice produces identical state.
+   - **Undo/redo**: undo correctly reverses a command; redo correctly reapplies it.
+
+2. **Sport rule validation tests** (table tennis focus initially):
+   - **Score legality**: valid transitions within a game (0–11, win-by-2 deuce rules, etc.).
+   - **Match completion**: correct detection of match winner (best-of-5, etc.).
+   - **Handicap interaction**: score legality with head starts applied.
+   - **Edge cases**: retirements, walkovers, forfeits, disqualifications.
+
+3. **Data structure & projection tests**:
+   - **Standings computation**: correct ranking, tie-breaker application, head-to-head resolution.
+   - **Bracket generation**: correct seeding, bye assignment, power-of-two handling.
+   - **JSONL round-trip**: serialize & deserialize tournament state with zero data loss.
+
+4. **Scheduling & optimization tests**:
+   - **Round generation**: correct match count and player pairings for group/bracket stages.
+   - **Ordering constraints**: no back-to-back violations when achievable; fair break distribution.
+
+5. **Storage & resilience tests**:
+   - **Log corruption recovery**: graceful handling of truncated/malformed lines.
+   - **Schema migration**: forward/backward compatibility for config changes.
+
+6. **UI / event flow tests** (lower priority for TDD start):
+   - **Fast entry paths**: verify score input happy path produces correct state.
+   - **Concurrent edits** (eventual, if multi-viewer): conflict detection warnings.
+
+**Test formulation approach**:
+- Create a **test specification document** (separate file) listing each test case before coding.
+- Each test will have: **given (precondition)**, **when (action)**, **then (assertion)**.
+- Use **concrete examples** from real tournament scenarios (e.g. "Player A, B advance from group; seed them in bracket; verify #1 vs #8, #2 vs #7 pairings").
+- Tests for "happy path" are written first; edge cases added iteratively as they are identified.
 
 ### 27) Performance targets
 
@@ -330,22 +395,47 @@ Decide which screens are “core” vs “nice-to-have”:
 
 ## Security & privacy decisions
 
-### 28) Trust boundaries
+### 34) Trust boundaries
 
 - If remote hosting + local data: ensure the app can’t leak tournament data unintentionally.
 - If any remote sync is introduced: encryption, authentication, and access control.
 
 ---
 
+## Framework & technology decisions (for testing & development)
+
+### 31) Programming language & framework stack
+
+**Decisions made**:
+- **Primary language**: **TypeScript** (web-first SPA as first-class concern)
+- **Test framework**: **Vitest** or **Jest** for unit/integration testing
+- **Architecture pattern**: **Model-Controller-View** with clean separation:
+  - **Model layer** (domain logic): fully testable in isolation; no I/O dependencies
+  - **Controller layer**: command handlers, state mutation, dependency injection points
+  - **View layer**: React/Vue/similar UI framework (TBD)
+  - Dependency injection: enable swapping real storage/randomness with test doubles
+- **Property-based testing**: **fast-check** (or similar) for invariant validation (deterministic replay, undo correctness)
+- **Test approach**: 
+  - **Increment-based**: write tests as domain concepts are modeled incrementally
+  - **Pre-E2E**: write end-to-end test stubs early; start passing them as implementation progresses
+  - Both **unit tests** (domain logic in isolation) and **integration tests** (command replay, JSONL round-trip)
+
 ## Configuration & extensibility decisions
 
-### 29) Configuration surface
+### 32) Configuration surface
 
-- What is configurable per tournament:
-  - match format, number of tables, handicap system, ordering algorithm, tie-breakers, naming conventions
-- How config is stored: JSON, within logs, manifest, etc.
+- **Hosting & runtime model**: web app (SPA/SSR), offline-first, device constraints.
+- **Data storage**: local filesystem vs cloud.
+- **Match format**: configurable best-of, point targets, deuce rules.
+- **Number of tables**: tournament size.
+- **Handicap system**: numeric default, custom notations.
+- **Ordering algorithm**: pluggable; default aims for minimal break variance.
+- **Tie-breakers**: sport-specific ranking rules.
+- **Naming conventions**: terminology (game vs set, table vs court, etc.).
 
-### 30) Plugin boundaries (sports, tournament types, sorting)
+How config is stored: JSON manifest, within logs, versioned, with migration path.
+
+### 33) Plugin boundaries (sports, tournament types, sorting)
 
 - Minimum interfaces needed for:
   - **Sport rules** (validation, vocabulary, match structure)
@@ -355,13 +445,44 @@ Decide which screens are “core” vs “nice-to-have”:
 
 ---
 
-## Open Q&A checklist (what we’ll decide together next)
+## Open Q&A checklist (TDD-driven design refinement)
 
-- **Viewer modes**: expected viewer UX for URI mode vs local SSE share mode (discovery, permissions, caching).
-- **TT match format configuration**: which formats must be available in the UI and stored in config?
-- **Team-versus-team details**: how to compile team results; which per-player stats to show; how to seed/order players by “performance”.
-- **Minimum lovable UI**: which views are mandatory for first usable version?
-- **Undo policy**: do we allow editing locked rounds, and how visible is the audit log?
+**[DECIDED]** Framework & testing setup:
+- ✅ Language: **TypeScript** (web-first SPA)
+- ✅ Test framework: **Vitest/Jest** with **fast-check** for property-based tests
+- ✅ Architecture: **Model-Controller-View** with clean DI seams for testability
+- ✅ Test approach: incremental + pre-E2E stubs, both unit and integration tests
+- ✅ Property-based tests: **yes** (deterministic replay, undo/redo invariants)
+
+**[DECIDED]** Tournament structure & algorithm:
+- ✅ Scope: **both individual group→bracket AND team-versus-team from v1** (forces proper abstractions)
+- ✅ Bracket sizing: **default to fill** (assign byes to top seeds) with option to cull
+- ✅ Undo semantics: **dependency-aware** (allow undoing any action if no downstream action depends on it)
+
+**[DECIDED]** UI & UX:
+- ✅ Minimum v1 views: **tournament setup, round/match entry, bracket view, standings**
+- ✅ Debug mode: **mock result filling** with feature flag for rapid UI iteration
+- ✅ Fast entry: numeric-friendly score input with mobile optimization
+
+**Remaining clarifications**:
+
+1. **Score entry UX**: 
+   - Should we also support "quick match result entry" (just winner, no per-game breakdown) as an alternative, or is per-game-score-entry always required?
+   - Any particular mobile-oriented numeric keypad design preferences?
+
+2. **Team-versus-team specifics**:
+   - How to display "player A vs player B from opposing teams" in the match entry view? (e.g. separate rows per player matchup, or team-level summary first?)
+   - For team result tie-breakers: if two teams have same match wins and same game ratio, do we need head-to-head calculation?
+
+3. **Bracket seeding & draw**:
+   - For team-versus-team bracket seeding: should we seed by "strongest player on the team" or aggregate team strength?
+   - How should we handle unequal-team-size pairings in the bracket? (e.g., 3-player vs 4-player teams entering finals)
+
+4. **Initial test specification priorities**:
+   - Which test cases should we pre-write **first** before any implementation? (e.g., TT score legality tests, bracket-generation tests, undo-dependency tests, etc.)
+   - Should we also pre-write starter tests for team-versus-team match logic, or tackle those later?
+
+Which of these would you like to tackle next?
 
 ---
 
