@@ -1,0 +1,54 @@
+import { Tournament } from './model';
+
+export interface TournamentView {
+  renderTournament(tournament: Tournament): void;
+  renderBracket(tournament: Tournament): void;
+  renderMessage(message: string): void;
+}
+
+export class ConsoleTournamentView implements TournamentView {
+  renderTournament(tournament: Tournament): void {
+    console.log('Tournament state:', JSON.stringify(tournament, null, 2));
+  }
+
+  renderBracket(tournament: Tournament): void {
+    console.log('Bracket matches:', JSON.stringify(tournament.bracketMatches, null, 2));
+  }
+
+  renderMessage(message: string): void {
+    console.log('Message:', message);
+  }
+}
+
+export interface DebugOptions {
+  useMockResults?: boolean;
+  injectDelayMs?: number;
+}
+
+export class DebugTournamentView extends ConsoleTournamentView {
+  private options: DebugOptions;
+
+  constructor(options: DebugOptions = {}) {
+    super();
+    this.options = options;
+  }
+
+  renderMessage(message: string): void {
+    if (this.options.injectDelayMs && this.options.injectDelayMs > 0) {
+      const start = Date.now();
+      while (Date.now() - start < this.options.injectDelayMs) {
+        // busy-wait to simulate slow debug
+      }
+    }
+    super.renderMessage('[DEBUG] ' + message);
+  }
+
+  maybeGenerateMockScores(): { playerA: number; playerB: number } {
+    if (!this.options.useMockResults) {
+      return { playerA: 0, playerB: 0 };
+    }
+    const a = Math.floor(Math.random() * 6) + 11;
+    const b = Math.floor(Math.random() * 4) + 7;
+    return Math.abs(a - b) >= 2 ? { playerA: Math.max(a, b), playerB: Math.min(a, b) } : { playerA: 11, playerB: 9 };
+  }
+}

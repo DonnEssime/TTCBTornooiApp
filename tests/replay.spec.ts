@@ -1,0 +1,49 @@
+import { describe, it, expect } from 'vitest';
+import { CommandRunner, CreatePlayerCommand, CreateMatchCommand } from '../src/command';
+import { commandToJsonLine, replayCommandsFromJsonLines } from '../src/storage';
+
+describe('Command replay and deterministic JSONL round-trip', () => {
+  it('should round-trip command serialization and replay', () => {
+    const c1: CreatePlayerCommand = {
+      id: 'c1',
+      type: 'CreatePlayer',
+      timestamp: '2026-01-01T00:00:00.000Z',
+      dependsOn: [],
+      payload: { playerId: 'p1', name: 'Alice', handicap: 0 },
+    };
+    const c2: CreatePlayerCommand = {
+      id: 'c2',
+      type: 'CreatePlayer',
+      timestamp: '2026-01-01T00:01:00.000Z',
+      dependsOn: [],
+      payload: { playerId: 'p2', name: 'Bob', handicap: 0 },
+    };
+    const c3: CreateMatchCommand = {
+      id: 'c3',
+      type: 'CreateMatch',
+      timestamp: '2026-01-01T00:02:00.000Z',
+      dependsOn: ['c1', 'c2'],
+      payload: { matchId: 'm1', playerA: 'p1', playerB: 'p2' },
+    };
+
+    const lines = [c1, c2, c3].map(commandToJsonLine);
+
+    const runnerA = new CommandRunner();
+    const resultA = replayCommandsFromJsonLines(lines, runnerA);
+    expect(resultA.success).toBe(true);
+    expect(runnerA.getTournament().matches['m1']).toBeDefined();
+
+    const runnerB = new CommandRunner();
+    const resultB = replayCommandsFromJsonLines(lines, runnerB);
+    expect(resultB.success).toBe(true);
+
+    expect(runnerB.getTournament()).toEqual(runnerA.getTournament());
+  });
+
+  it('should fail gracefully on malformed JSONL entry', () => {
+    const lines = ['{ invalid json }'];
+    const res = replayCommandsFromJsonLines(lines);
+    expect(res.success).toBe(false);
+    expect(res.results[0].success).toBe(false);
+  });
+});
