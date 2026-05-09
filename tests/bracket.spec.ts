@@ -2,6 +2,17 @@ import { describe, it, expect } from 'vitest';
 import { createTournament, forfeitPlayer, forfeitTeam, generateBracket, advanceBracketRound, areTopSeedsSeparated, settleBracketWinners, scheduleRound } from '../src/model';
 
 describe('Bracket generation', () => {
+  it('shuffles bracket participants deterministically when shuffleKey is set', () => {
+    const seedings = ['p1', 'p2', 'p3', 'p4'];
+    const a = generateBracket(seedings, { fillByes: false, cullToPowerOfTwo: false, shuffleKey: 'Spring Cup 2026' });
+    const b = generateBracket(seedings, { fillByes: false, cullToPowerOfTwo: false, shuffleKey: 'Spring Cup 2026' });
+    expect(a.map((m) => [m.seedA, m.seedB])).toEqual(b.map((m) => [m.seedA, m.seedB]));
+
+    const unshuffled = generateBracket(seedings, { fillByes: false, cullToPowerOfTwo: false });
+    const shuffled = generateBracket(seedings, { fillByes: false, cullToPowerOfTwo: false, shuffleKey: 'Spring Cup 2026' });
+    expect(shuffled.map((m) => [m.seedA, m.seedB])).not.toEqual(unshuffled.map((m) => [m.seedA, m.seedB]));
+  });
+
   it('generates 8-player bracket without byes (standard seeding)', () => {
     const seedings = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'];
     const bracket = generateBracket(seedings, { fillByes: false, cullToPowerOfTwo: false });

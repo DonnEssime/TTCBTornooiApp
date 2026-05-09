@@ -13,6 +13,90 @@ function appendUndo(runner: CommandRunner, targetId: string, undoId: string): Re
   return runner.execute(u);
 }
 
+const iso = () => new Date().toISOString();
+
+describe('Player display name uniqueness', () => {
+  it('rejects CreatePlayer when name matches existing (case and spacing insensitive)', () => {
+    const runner = new CommandRunner();
+    expect(
+      runner.execute({
+        id: 'c1',
+        type: 'CreatePlayer',
+        dependsOn: [],
+        payload: { playerId: 'p1', name: 'Ann', handicap: 0 },
+        timestamp: iso(),
+      }),
+    ).toEqual({ success: true });
+    const r = runner.execute({
+      id: 'c2',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p2', name: '  ANN ', handicap: 0 },
+      timestamp: iso(),
+    });
+    expect(r.success).toBe(false);
+    expect(r.reason).toMatch(/already exists/i);
+    expect(runner.getTournament().players['p2']).toBeUndefined();
+  });
+
+  it('rejects RenamePlayer when target name is taken by another player', () => {
+    const runner = new CommandRunner();
+    runner.execute({
+      id: 'c1',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p1', name: 'Ann', handicap: 0 },
+      timestamp: iso(),
+    });
+    runner.execute({
+      id: 'c2',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p2', name: 'Bob', handicap: 0 },
+      timestamp: iso(),
+    });
+    const r = runner.execute({
+      id: 'r1',
+      type: 'RenamePlayer',
+      dependsOn: ['c2'],
+      payload: { playerId: 'p2', name: 'ann' },
+      timestamp: iso(),
+    });
+    expect(r.success).toBe(false);
+    expect(r.reason).toMatch(/already exists/i);
+    expect(runner.getTournament().players['p2']?.name).toBe('Bob');
+  });
+
+  it('allows RenamePlayer to keep identical name on same player', () => {
+    const runner = new CommandRunner();
+    runner.execute({
+      id: 'c1',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p1', name: 'Ann', handicap: 0 },
+      timestamp: iso(),
+    });
+    runner.execute({
+      id: 'c2',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p2', name: 'Bob', handicap: 0 },
+      timestamp: iso(),
+    });
+    expect(
+      runner.execute({
+        id: 'r1',
+        type: 'RenamePlayer',
+        dependsOn: ['c1'],
+        payload: { playerId: 'p1', name: 'Ann', handicap: 3 },
+        timestamp: iso(),
+      }),
+    ).toEqual({ success: true });
+    expect(runner.getTournament().players['p1']?.name).toBe('Ann');
+    expect(runner.getTournament().players['p1']?.handicap).toBe(3);
+  });
+});
+
 describe('CommandRunner dependency-aware undo', () => {
   it('should execute and undo independent command', () => {
     const runner = new CommandRunner();
@@ -496,8 +580,8 @@ describe('CommandRunner dependency-aware undo', () => {
     expect(partitionPlayerCountIntoGroupSizes(4, 3)).toEqual([2, 2]);
     expect(partitionPlayerCountIntoGroupSizes(4, 10)).toEqual([4]);
     expect(buildNumberedGroupsFromPlayerOrder(['a', 'b', 'c', 'd'], 3)).toEqual([
-      { id: '1', label: '1', playerIds: ['a', 'b'] },
-      { id: '2', label: '2', playerIds: ['c', 'd'] },
+      { id: '1', label: 'group 1', playerIds: ['a', 'b'] },
+      { id: '2', label: 'group 2', playerIds: ['c', 'd'] },
     ]);
   });
 
@@ -544,5 +628,46 @@ describe('CommandRunner dependency-aware undo', () => {
     expect(Object.keys(t.groups).sort()).toEqual(['1', '2']);
     const gm = Object.keys(t.matches).filter((k) => k.startsWith('gm-'));
     expect(gm.length).toBe(2);
+  });
+});
+
+describe('EnterScore', () => {
+  it('rejects illegal game scores and incomplete best-of-five', () => {
+    const runner = new CommandRunner();
+    const ts = '2026-01-01T00:00:00.000Z';
+    runner.execute({ id: 'p1', type: 'CreatePlayer', dependsOn: [], payload: { playerId: 'p1', name: 'A', handicap: 0 }, timestamp: ts });
+    runner.execute({ id: 'p2', type: 'CreatePlayer', dependsOn: [], payload: { playerId: 'p2', name: 'B', handicap: 0 }, timestamp: ts });
+    runner.execute({
+      id: 'm1',
+      type: 'CreateMatch',
+      dependsOn: ['p1', 'p2'],
+      payload: { matchId: 'm1', playerA: 'p1', playerB: 'p2' },
+      timestamp: ts,
+    });
+    const bad = runner.execute({
+      id: 'bad',
+      type: 'EnterScore',
+      dependsOn: ['m1'],
+      payload: { matchId: 'm1', scores: [{ playerA: 11, playerB: 10 }] },
+      timestamp: ts,
+    });
+    expect(bad.success).toBe(false);
+    expect(bad.reason ?? '').toContain('Invalid scores');
+    const partial = runner.execute({
+      id: 'partial',
+      type: 'EnterScore',
+      dependsOn: ['m1'],
+      payload: {
+        matchId: 'm1',
+        scores: [
+          { playerA: 11, playerB: 9 },
+          { playerA: 11, playerB: 9 },
+        ],
+      },
+      timestamp: ts,
+    });
+    expect(partial.success).toBe(false);
+    expect(partial.reason ?? '').toContain('Invalid scores');
+    expect(runner.getTournament().matches.m1.status).toBe('scheduled');
   });
 });

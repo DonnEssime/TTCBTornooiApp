@@ -35,14 +35,14 @@ button:hover {
 }
 
 button.primary {
-  border-color: #2563eb;
-  background: #2563eb;
+  border-color: #16a34a;
+  background: #16a34a;
   color: #fff;
 }
 
 button.primary:hover {
-  background: #1d4ed8;
-  border-color: #1d4ed8;
+  background: #15803d;
+  border-color: #15803d;
 }
 
 code {

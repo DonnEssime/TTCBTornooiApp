@@ -1,11 +1,23 @@
 <script lang="ts">
-  import type { BracketMatch, ClassTournamentSlice, GroupDefinition, Match, Tournament } from 'ttc-tornooiapp';
+  import type {
+    BracketMatch,
+    ClassTournamentSlice,
+    Command,
+    GameScore,
+    GroupDefinition,
+    Match,
+    Tournament,
+  } from 'ttc-tornooiapp';
   import {
     TournamentController,
+    createTournament,
     exportCommandsAsJsonLines,
     tournamentControllerFromCommandLog,
     findBracketRoundForPlayerPairing,
     tournamentUsesClassTabs,
+    isGameScoreLegal,
+    isMatchScoreLegal,
+    matchWinner,
   } from 'ttc-tornooiapp';
 
   function newCompetitionClassId(): string {
@@ -19,6 +31,8 @@
   type SessionNav =
     | { kind: 'single'; inner: InnerTab }
     | { kind: 'multi'; screen: 'players' | { classId: string; inner: ClassInnerTab } };
+
+  type TournamentFormat = 'group-bracket' | 'bracket-only' | 'team-vs-team';
 
   interface TournamentSession {
     id: string;
@@ -34,51 +48,46 @@
     classEditorRows: Array<{ id: string; name: string }>;
     /** Target max players per group (sizes will be this or one smaller). */
     groupTargetSize: number;
-    /** When true, player is excluded from the next global group build. */
-    groupPlayerExcluded: Record<string, boolean>;
     /** Latest `SetGroups` command id (optional extra deps for follow-up commands). */
     lastSetGroupsCommandId: string;
     /** Per-class target group size. */
     classGroupTargetSizeByClassId: Record<string, number>;
-    /** Per-class, per-player exclusion from group build. */
-    classGroupPlayerExcludedByClassId: Record<string, Record<string, boolean>>;
     /** Latest `SetClassGroups` command id per class. */
     lastSetClassGroupsCommandIdByClass: Record<string, string>;
+    /** When false, new players use handicap 0 and handicap controls are hidden. */
+    handicapEnabled: boolean;
+    /** Planned flow; only `group-bracket` is implemented end-to-end. */
+    tournamentFormat: TournamentFormat;
   }
 
   type ScoreRow = { a: string; b: string };
 
   /** Top workspace tab: `'settings'` or a tournament session id. */
-  let workspaceTab = $state<string>('tournament-1');
-  let sessions = $state<TournamentSession[]>([
-    {
-      id: 'tournament-1',
-      tournamentName: 'Tournament',
-      controller: new TournamentController(),
-      playerOrder: [],
-      lastSeedingCommandId: '',
-      nav: { kind: 'single', inner: 'players' },
-      classEditorRows: [{ id: newCompetitionClassId(), name: '' }],
-      groupTargetSize: 4,
-      groupPlayerExcluded: {},
-      lastSetGroupsCommandId: '',
-      classGroupTargetSizeByClassId: {},
-      classGroupPlayerExcludedByClassId: {},
-      lastSetClassGroupsCommandIdByClass: {},
-    },
-  ]);
-  let activeSessionId = $state('tournament-1');
+  let workspaceTab = $state<string>('settings');
+  let sessions = $state<TournamentSession[]>([]);
+  let activeSessionId = $state<string>('');
 
   /** Draft handicap per player id (synced from tournament in pull when row not focused). */
   let handicapDrafts = $state<Record<string, number>>({});
   let handicapFocusPid = $state<string | null>(null);
 
-  let tournament = $state<Tournament>(snapshot());
+  let tournament = $state<Tournament>(createTournament());
   let status = $state<string | null>(null);
+  /** Export/import activity lines for the Settings “Recent activity” list. */
+  let recentTournamentNotes = $state<string[]>([]);
 
   let newName = $state('');
   let newHc = $state(0);
   let fillByes = $state(true);
+
+  /** New tournament wizard (Settings). */
+  let draftTournamentName = $state('Tournament');
+  let draftHandicapEnabled = $state(false);
+  let draftTournamentFormat = $state<TournamentFormat>('group-bracket');
+  let draftClassSectionOpen = $state(false);
+  let draftClassEditorRows = $state<Array<{ id: string; name: string }>>([
+    { id: newCompetitionClassId(), name: '' },
+  ]);
 
   /** Score drafts keyed by match id, scoped per session. */
   let scoreDraftsBySession = $state<Record<string, Record<string, ScoreRow[]>>>({});
@@ -88,7 +97,7 @@
   let nameInputFocused = $state(false);
 
   $effect(() => {
-    const s = sessions.find((x) => x.id === activeSessionId);
+    const s = getActiveSession();
     if (!s || nameInputFocused) return;
     nameDraft = s.tournamentName;
   });
@@ -97,20 +106,140 @@
     return Array.from({ length: n }, () => ({ a: '', b: '' }));
   }
 
-  function activeSession(): TournamentSession {
-    return sessions.find((s) => s.id === activeSessionId) ?? sessions[0];
+  function getActiveSession(): TournamentSession | undefined {
+    return sessions.find((s) => s.id === activeSessionId);
   }
 
   function scoreDrafts(): Record<string, ScoreRow[]> {
-    return scoreDraftsBySession[activeSessionId] ?? {};
+    const id = getActiveSession()?.id;
+    if (!id) return {};
+    return scoreDraftsBySession[id] ?? {};
   }
 
   function setScoreDrafts(next: Record<string, ScoreRow[]>): void {
-    scoreDraftsBySession = { ...scoreDraftsBySession, [activeSessionId]: next };
+    const id = getActiveSession()?.id;
+    if (!id) return;
+    scoreDraftsBySession = { ...scoreDraftsBySession, [id]: next };
+  }
+
+  const MIN_GAME_ROWS = 3;
+  const MAX_GAME_ROWS = 5;
+
+  let scoreModalMatchId = $state<string | null>(null);
+  let scoreModalHint = $state<string | null>(null);
+
+  function completedLegalGameScores(rows: ScoreRow[]): GameScore[] {
+    const out: GameScore[] = [];
+    for (const row of rows) {
+      if (row.a === '' && row.b === '') break;
+      const playerA = Number(row.a);
+      const playerB = Number(row.b);
+      if (!Number.isFinite(playerA) || !Number.isFinite(playerB)) break;
+      const g: GameScore = { playerA, playerB };
+      if (!isGameScoreLegal(g)) break;
+      out.push(g);
+    }
+    return out;
+  }
+
+  function computeTargetRowCount(rows: ScoreRow[]): number {
+    const legalPrefix = completedLegalGameScores(rows);
+    const decided = matchWinner(legalPrefix) !== undefined;
+    if (decided) {
+      return Math.min(MAX_GAME_ROWS, Math.max(MIN_GAME_ROWS, legalPrefix.length));
+    }
+    return Math.min(MAX_GAME_ROWS, Math.max(MIN_GAME_ROWS, legalPrefix.length + 1));
+  }
+
+  function normalizeScoreRows(rows: ScoreRow[]): ScoreRow[] {
+    const target = computeTargetRowCount(rows);
+    const out = rows.slice(0, target).map((r) => ({ ...r }));
+    while (out.length < target) out.push({ a: '', b: '' });
+    while (out.length < MIN_GAME_ROWS) out.push({ a: '', b: '' });
+    return out;
+  }
+
+  function rowIndexEnabled(rows: ScoreRow[], index: number): boolean {
+    if (index === 0) return true;
+    for (let i = 0; i < index; i++) {
+      const row = rows[i];
+      if (row.a === '' && row.b === '') return false;
+      const playerA = Number(row.a);
+      const playerB = Number(row.b);
+      if (!Number.isFinite(playerA) || !Number.isFinite(playerB)) return false;
+      if (!isGameScoreLegal({ playerA, playerB })) return false;
+    }
+    return true;
+  }
+
+  /** Inline hint when both points are set but the game is not a legal finished game. */
+  function rowGameHint(row: ScoreRow): string | null {
+    if (row.a === '' && row.b === '') return null;
+    const playerA = Number(row.a);
+    const playerB = Number(row.b);
+    if (!Number.isFinite(playerA) || !Number.isFinite(playerB)) return null;
+    if (isGameScoreLegal({ playerA, playerB })) return null;
+    return 'Win at 11+ with a two-point margin. After 10–10, if either side goes above 11, the final gap must be exactly two points (e.g. 12–10 or 13–11, not 13–10).';
+  }
+
+  function scoresForSubmitFromRows(rows: ScoreRow[]): GameScore[] | null {
+    const out: GameScore[] = [];
+    for (const row of rows) {
+      if (row.a === '' && row.b === '') break;
+      const playerA = Number(row.a);
+      const playerB = Number(row.b);
+      if (!Number.isFinite(playerA) || !Number.isFinite(playerB)) return null;
+      const g: GameScore = { playerA, playerB };
+      if (!isGameScoreLegal(g)) return null;
+      out.push(g);
+    }
+    if (out.length === 0 || !isMatchScoreLegal(out)) return null;
+    return out;
+  }
+
+  function setScoreModalCell(mid: string, rowIndex: number, col: 'a' | 'b', raw: string): void {
+    const cur = [...(scoreDrafts()[mid] ?? defaultRows(MIN_GAME_ROWS))];
+    if (!cur[rowIndex]) return;
+    cur[rowIndex] = { ...cur[rowIndex], [col]: raw };
+    const normalized = normalizeScoreRows(cur);
+    setScoreDrafts({ ...scoreDrafts(), [mid]: normalized });
+    scoreModalHint = null;
+  }
+
+  function openScoreModal(match: Match): void {
+    if (match.status !== 'scheduled') return;
+    scoreModalHint = null;
+    scoreModalMatchId = match.id;
+    const existing: ScoreRow[] =
+      match.scores.length > 0
+        ? match.scores.map((s) => ({ a: String(s.playerA), b: String(s.playerB) }))
+        : defaultRows(MIN_GAME_ROWS);
+    setScoreDrafts({ ...scoreDrafts(), [match.id]: normalizeScoreRows(existing) });
+  }
+
+  function closeScoreModal(): void {
+    scoreModalMatchId = null;
+    scoreModalHint = null;
+  }
+
+  function cancelScoreModal(): void {
+    const mid = scoreModalMatchId;
+    if (!mid) return;
+    const m = tournament.matches[mid];
+    if (m && m.status === 'scheduled') {
+      const existing: ScoreRow[] =
+        m.scores.length > 0
+          ? m.scores.map((s) => ({ a: String(s.playerA), b: String(s.playerB) }))
+          : defaultRows(MIN_GAME_ROWS);
+      setScoreDrafts({ ...scoreDrafts(), [mid]: normalizeScoreRows(existing) });
+    }
+    closeScoreModal();
   }
 
   function snapshot(): Tournament {
-    return structuredClone(activeSession().controller.getTournament());
+    const s = getActiveSession();
+    if (!s) return createTournament();
+    return structuredClone(s.controller.getTournament());
   }
 
   function lastSetSeedingsCommandId(commands: Array<{ id: string; type: string }>): string {
@@ -165,60 +294,41 @@
   }
 
   function eligibleGlobalGroupPlayerIds(t: Tournament): string[] {
-    const s = activeSession();
+    const s = getActiveSession();
+    if (!s) return [];
     if (s.playerOrder.length > 0) return [...s.playerOrder];
     if (t.seedings.length > 0) return [...t.seedings];
     return Object.keys(t.players).sort((a, b) => a.localeCompare(b));
   }
 
-  function toggleGlobalGroupPlayerExcluded(pid: string, excluded: boolean): void {
-    const s = activeSession();
-    const next = { ...s.groupPlayerExcluded };
-    if (excluded) next[pid] = true;
-    else delete next[pid];
-    patchActiveSession({ groupPlayerExcluded: next });
-  }
-
   function classGroupTargetSize(classId: string): number {
-    const v = activeSession().classGroupTargetSizeByClassId[classId];
+    const s = getActiveSession();
+    if (!s) return 4;
+    const v = s.classGroupTargetSizeByClassId[classId];
     return typeof v === 'number' && v >= 1 ? v : 4;
   }
 
   function setClassGroupTargetSize(classId: string, size: number): void {
-    const s = activeSession();
+    const s = getActiveSession();
+    if (!s) return;
     patchActiveSession({
       classGroupTargetSizeByClassId: { ...s.classGroupTargetSizeByClassId, [classId]: Math.max(1, Math.floor(size)) },
     });
   }
 
-  function isClassPlayerExcluded(classId: string, pid: string): boolean {
-    return Boolean(activeSession().classGroupPlayerExcludedByClassId[classId]?.[pid]);
-  }
-
-  function toggleClassGroupPlayerExcluded(classId: string, pid: string, excluded: boolean): void {
-    const s = activeSession();
-    const prev = s.classGroupPlayerExcludedByClassId[classId] ?? {};
-    const next = { ...prev };
-    if (excluded) next[pid] = true;
-    else delete next[pid];
-    patchActiveSession({
-      classGroupPlayerExcludedByClassId: { ...s.classGroupPlayerExcludedByClassId, [classId]: next },
-    });
-  }
-
   function createGlobalGroupsAndMatches(): void {
     status = null;
-    const s = activeSession();
+    const s = getActiveSession();
+    if (!s) return;
     const c = s.controller;
     const t = c.getTournament();
     if (tournamentUsesClassTabs(t)) {
       status = 'With multiple competition classes, use each class tab for groups.';
       return;
     }
-    const eligible = eligibleGlobalGroupPlayerIds(t);
-    const ordered = eligible.filter((pid) => !s.groupPlayerExcluded[pid]);
+    const ordered = eligibleGlobalGroupPlayerIds(t);
     if (ordered.length === 0) {
-      status = 'Select at least one player (enable checkboxes) to place in groups.';
+      status = 'Add at least one player (and seedings) before creating groups.';
       return;
     }
     const targetSize = Math.max(1, Math.floor(Number(s.groupTargetSize) || 4));
@@ -232,13 +342,14 @@
       return;
     }
     patchActiveSession({ lastSetGroupsCommandId: cmdId });
-    status = 'Created numbered groups and all round‑robin matches.';
+    status = 'Created groups and all round‑robin matches.';
     pull();
   }
 
   function clearGlobalGroups(): void {
     status = null;
-    const s = activeSession();
+    const s = getActiveSession();
+    if (!s) return;
     const c = s.controller;
     const t = c.getTournament();
     if (tournamentUsesClassTabs(t)) {
@@ -261,7 +372,8 @@
 
   function createClassGroupsAndMatches(classId: string): void {
     status = null;
-    const s = activeSession();
+    const s = getActiveSession();
+    if (!s) return;
     const c = s.controller;
     const t = c.getTournament();
     if (!tournamentUsesClassTabs(t)) {
@@ -269,9 +381,9 @@
       return;
     }
     const slice = classSlice(t, classId);
-    const ordered = slice.seedings.filter((pid) => !isClassPlayerExcluded(classId, pid));
+    const ordered = [...slice.seedings];
     if (ordered.length === 0) {
-      status = 'Include at least one player for this class.';
+      status = 'No players in this class yet — enable the class for players on the Players tab.';
       return;
     }
     const targetSize = classGroupTargetSize(classId);
@@ -287,13 +399,14 @@
     patchActiveSession({
       lastSetClassGroupsCommandIdByClass: { ...s.lastSetClassGroupsCommandIdByClass, [classId]: cmdId },
     });
-    status = 'Created numbered groups and round‑robin matches for this class.';
+    status = 'Created groups and round‑robin matches for this class.';
     pull();
   }
 
   function clearClassGroups(classId: string): void {
     status = null;
-    const s = activeSession();
+    const s = getActiveSession();
+    if (!s) return;
     const c = s.controller;
     if (!tournamentUsesClassTabs(c.getTournament())) return;
     const deps: string[] = [];
@@ -359,15 +472,18 @@
   }
 
   function commitTournamentName(): void {
+    const s = getActiveSession();
+    if (!s) return;
     const next = nameDraft.trim() || 'Untitled tournament';
-    if (next !== activeSession().tournamentName) {
+    if (next !== s.tournamentName) {
       patchActiveSession({ tournamentName: next });
     }
     nameDraft = next;
   }
 
   function applySuggestedTournamentTitle(): void {
-    const s = activeSession();
+    const s = getActiveSession();
+    if (!s) return;
     const t = s.controller.getTournament();
     const suggested = deriveLabel(t, s.playerOrder);
     patchActiveSession({ tournamentName: suggested });
@@ -479,11 +595,16 @@
   }
 
   function patchActiveSession(patch: Partial<TournamentSession>): void {
+    if (!getActiveSession()) return;
     sessions = sessions.map((s) => (s.id === activeSessionId ? { ...s, ...patch } : s));
   }
 
   function pull(): void {
-    const s = activeSession();
+    const s = getActiveSession();
+    if (!s) {
+      tournament = createTournament();
+      return;
+    }
     const t = structuredClone(s.controller.getTournament());
     tournament = t;
 
@@ -492,7 +613,8 @@
       patchActiveSession({ nav: navNext });
     }
 
-    const sAfter = activeSession();
+    const sAfter = getActiveSession();
+    if (!sAfter) return;
     const lastS = lastSetSeedingsCommandId(sAfter.controller.getCommandLog());
     if (t.seedings.length > 0) {
       const synced = [...t.seedings];
@@ -539,12 +661,17 @@
     const next = { ...prev };
     for (const m of Object.values(t.matches)) {
       if (m.status === 'scheduled' && !next[m.id]) {
-        next[m.id] = defaultRows(5);
+        next[m.id] = defaultRows(3);
       }
     }
     setScoreDrafts(next);
 
-    const po = activeSession().playerOrder;
+    if (scoreModalMatchId && !t.matches[scoreModalMatchId]) {
+      scoreModalMatchId = null;
+      scoreModalHint = null;
+    }
+
+    const po = sAfter.playerOrder;
     const hd: Record<string, number> = { ...handicapDrafts };
     for (const pid of po) {
       const h = t.players[pid]?.handicap ?? 0;
@@ -573,11 +700,14 @@
   }
 
   function selectSingleTrackTab(tab: InnerTab): void {
+    if (!getActiveSession()) return;
     patchActiveSession({ nav: { kind: 'single', inner: tab } });
   }
 
   function selectPlayersNav(): void {
-    const t = activeSession().controller.getTournament();
+    const s = getActiveSession();
+    if (!s) return;
+    const t = s.controller.getTournament();
     if (tournamentUsesClassTabs(t)) {
       patchActiveSession({ nav: { kind: 'multi', screen: 'players' } });
     } else {
@@ -586,36 +716,86 @@
   }
 
   function selectClassTopTab(classId: string): void {
+    if (!getActiveSession()) return;
     patchActiveSession({ nav: { kind: 'multi', screen: { classId, inner: 'groups' } } });
   }
 
   function selectClassSubTab(classId: string, sub: ClassInnerTab): void {
+    if (!getActiveSession()) return;
     patchActiveSession({ nav: { kind: 'multi', screen: { classId, inner: sub } } });
   }
 
-  function newTournament(): void {
-    patchActiveSession({
-      controller: new TournamentController(),
+  function updateDraftClassRow(index: number, name: string): void {
+    draftClassEditorRows = draftClassEditorRows.map((row, i) => (i === index ? { ...row, name } : row));
+  }
+
+  function addDraftClassRow(): void {
+    draftClassEditorRows = [...draftClassEditorRows, { id: newCompetitionClassId(), name: '' }];
+  }
+
+  function removeDraftClassRow(index: number): void {
+    const next = draftClassEditorRows.filter((_, i) => i !== index);
+    draftClassEditorRows = next.length > 0 ? next : [{ id: newCompetitionClassId(), name: '' }];
+  }
+
+  function createTournamentFromWizard(): void {
+    status = null;
+    const controller = new TournamentController();
+    const namedClasses = draftClassEditorRows
+      .map((r) => ({
+        id: r.id.trim() || newCompetitionClassId(),
+        name: r.name.trim(),
+      }))
+      .filter((r) => r.name.length > 0);
+    if (namedClasses.length > 0) {
+      const cmdId = `cmd-classes-init-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
+      const r = controller.setTournamentClasses(namedClasses, [], cmdId);
+      if (!r.success) {
+        status = r.reason ?? 'Could not apply competition classes';
+        return;
+      }
+    }
+    const t0 = controller.getTournament();
+    const nav = normalizeSessionNav(t0, { kind: 'single', inner: 'players' });
+    const classEditorRowsForSession =
+      t0.classDefinitions.length > 0
+        ? t0.classDefinitions.map((d) => ({ id: d.id, name: d.name }))
+        : [{ id: newCompetitionClassId(), name: '' }];
+    const id = `tournament-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
+    const session: TournamentSession = {
+      id,
+      tournamentName: draftTournamentName.trim() || 'Tournament',
+      controller,
       playerOrder: [],
       lastSeedingCommandId: '',
-      lastSetGroupsCommandId: '',
-      lastSetClassGroupsCommandIdByClass: {},
-      nav: { kind: 'single', inner: 'players' },
-      classEditorRows: [{ id: newCompetitionClassId(), name: '' }],
-      tournamentName: 'Tournament',
+      nav,
+      classEditorRows: classEditorRowsForSession,
       groupTargetSize: 4,
-      groupPlayerExcluded: {},
+      lastSetGroupsCommandId: '',
       classGroupTargetSizeByClassId: {},
-      classGroupPlayerExcludedByClassId: {},
-    });
-    setScoreDrafts({});
-    status = 'Started a new empty tournament.';
+      lastSetClassGroupsCommandIdByClass: {},
+      handicapEnabled: draftHandicapEnabled,
+      tournamentFormat: draftTournamentFormat,
+    };
+    sessions = [...sessions, session];
+    activeSessionId = id;
+    workspaceTab = id;
+    scoreDraftsBySession = { ...scoreDraftsBySession, [id]: {} };
+    nameDraft = session.tournamentName;
+    draftClassSectionOpen = false;
+    draftClassEditorRows = [{ id: newCompetitionClassId(), name: '' }];
+    draftTournamentName = 'Tournament';
+    draftHandicapEnabled = false;
+    draftTournamentFormat = 'group-bracket';
     pull();
+    status = 'Tournament created. Add players on the Players tab.';
   }
 
   function doUndo(): void {
     status = null;
-    const r = activeSession().controller.undoLast();
+    const s = getActiveSession();
+    if (!s) return;
+    const r = s.controller.undoLast();
     if (!r.success) {
       status = r.reason ?? 'Undo failed';
     } else {
@@ -626,7 +806,9 @@
 
   function doRedo(): void {
     status = null;
-    const r = activeSession().controller.redo();
+    const s = getActiveSession();
+    if (!s) return;
+    const r = s.controller.redo();
     if (!r.success) {
       status = r.reason ?? 'Redo failed';
     } else {
@@ -637,6 +819,8 @@
 
   function addPlayer(): void {
     status = null;
+    const s0 = getActiveSession();
+    if (!s0) return;
     const name = newName.trim();
     if (!name) {
       status = 'Enter a player name.';
@@ -644,13 +828,14 @@
     }
     const id = newId();
     const cmdId = `cmd-${id}`;
-    const c = activeSession().controller;
-    const r = c.createPlayer(id, name, newHc, cmdId);
+    const c = s0.controller;
+    const hc = s0.handicapEnabled ? Math.max(0, Math.floor(Number(newHc) || 0)) : 0;
+    const r = c.createPlayer(id, name, hc, cmdId);
     if (!r.success) {
       status = r.reason ?? 'Could not add player';
       return;
     }
-    const s = activeSession();
+    const s = s0;
     const newOrder = [...s.playerOrder, id];
     const seedDeps = newOrder.map((pid) => `cmd-${pid}`);
     const seedCmdId = `cmd-seed-${crypto.randomUUID().replaceAll('-', '').slice(0, 14)}`;
@@ -682,7 +867,8 @@
 
   function generateBracketAndRoundOneMatches(): void {
     status = null;
-    const s = activeSession();
+    const s = getActiveSession();
+    if (!s) return;
     const c = s.controller;
     const t = c.getTournament();
     if (tournamentUsesClassTabs(t)) {
@@ -699,7 +885,8 @@
       deps.push(s.lastSeedingCommandId);
     }
     const genId = `cmd-gen-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
-    const r = c.generateBracket(fillByes, false, deps, genId);
+    const shuffleKey = s.tournamentName.trim() || 'Tournament';
+    const r = c.generateBracket(fillByes, false, deps, genId, shuffleKey);
     if (!r.success) {
       status = r.reason ?? 'Bracket generation failed';
       pull();
@@ -730,7 +917,9 @@
 
   function commitPlayerHandicap(playerId: string): void {
     status = null;
-    const c = activeSession().controller;
+    const s = getActiveSession();
+    if (!s?.handicapEnabled) return;
+    const c = s.controller;
     const p = c.getTournament().players[playerId];
     if (!p) return;
     const raw = Number(handicapDrafts[playerId]);
@@ -757,7 +946,9 @@
 
   function setRoundLock(round: number, locked: boolean): void {
     status = null;
-    const c = activeSession().controller;
+    const s = getActiveSession();
+    if (!s) return;
+    const c = s.controller;
     const r = c.setRoundLock(
       round,
       locked,
@@ -773,12 +964,17 @@
   }
 
   function downloadJsonl(): void {
-    const c = activeSession().controller;
+    const s = getActiveSession();
+    if (!s) {
+      status = 'Create or import a tournament before exporting.';
+      return;
+    }
+    const c = s.controller;
     const text = exportCommandsAsJsonLines(c.getCommandLog());
     const blob = new Blob([text], { type: 'application/x-ndjson;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `${slugForFilename(activeSession().tournamentName)}-${new Date().toISOString().slice(0, 10)}.jsonl`;
+    a.download = `${slugForFilename(s.tournamentName)}-${new Date().toISOString().slice(0, 10)}.jsonl`;
     a.click();
     URL.revokeObjectURL(a.href);
     status = 'Downloaded command log (.jsonl).';
@@ -801,32 +997,35 @@
     const t0 = next.getTournament();
     const playerOrder =
       t0.seedings.length > 0 ? [...t0.seedings] : Object.keys(t0.players);
-    patchActiveSession({
+    const nav = normalizeSessionNav(t0, { kind: 'single', inner: 'players' });
+    const id = `tournament-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
+    const session: TournamentSession = {
+      id,
+      tournamentName: titleFromImportFilename(file.name),
       controller: next,
       playerOrder,
       lastSeedingCommandId: lastSetSeedingsCommandId(next.getCommandLog()),
       lastSetGroupsCommandId: lastCommandIdOfType(next.getCommandLog(), 'SetGroups'),
       lastSetClassGroupsCommandIdByClass: lastSetClassGroupsCommandIdsFromLog(next.getCommandLog()),
-      nav: { kind: 'single', inner: 'players' },
+      nav,
       classEditorRows:
         t0.classDefinitions.length > 0
           ? t0.classDefinitions.map((d) => ({ id: d.id, name: d.name }))
           : [{ id: newCompetitionClassId(), name: '' }],
-      tournamentName: titleFromImportFilename(file.name),
       groupTargetSize: 4,
-      groupPlayerExcluded: {},
       classGroupTargetSizeByClassId: {},
-      classGroupPlayerExcludedByClassId: {},
-    });
+      handicapEnabled: true,
+      tournamentFormat: 'group-bracket',
+    };
+    sessions = [...sessions, session];
+    activeSessionId = id;
+    workspaceTab = id;
+    scoreDraftsBySession = { ...scoreDraftsBySession, [id]: {} };
+    nameDraft = session.tournamentName;
     setScoreDrafts({});
     status = `Imported ${file.name} (${replay.results.length} commands).`;
     recentTournamentNotes = [`Imported “${file.name}” · ${new Date().toLocaleString()}`, ...recentTournamentNotes].slice(0, 8);
     pull();
-  }
-
-  function addGameRow(matchId: string): void {
-    const cur = scoreDrafts()[matchId] ?? defaultRows(5);
-    setScoreDrafts({ ...scoreDrafts(), [matchId]: [...cur, { a: '', b: '' }] });
   }
 
   function submitScores(match: Match): void {
@@ -836,19 +1035,10 @@
       status = 'Internal: no score draft for this match.';
       return;
     }
-    const scores: Array<{ playerA: number; playerB: number }> = [];
-    for (const row of rows) {
-      const a = Number(row.a);
-      const b = Number(row.b);
-      if (row.a === '' && row.b === '') continue;
-      if (!Number.isFinite(a) || !Number.isFinite(b)) {
-        status = 'Each entered game needs two numeric scores.';
-        return;
-      }
-      scores.push({ playerA: a, playerB: b });
-    }
-    if (scores.length === 0) {
-      status = 'Enter at least one game score.';
+    const scores = scoresForSubmitFromRows(rows);
+    if (!scores) {
+      scoreModalHint =
+        'Complete each game in order (11+ with a two-point margin; above 11 the gap must be exactly two). The match must end with one player on three game wins (best of five).';
       return;
     }
     const bm = tournament.bracketMatches.find(
@@ -859,15 +1049,83 @@
     );
     const createCmdId = bm ? `cmd-m-${bm.id}` : undefined;
     const deps = createCmdId ? [createCmdId] : [];
-    const c = activeSession().controller;
+    const s = getActiveSession();
+    if (!s) return;
+    const c = s.controller;
     const r = c.enterScore(match.id, scores, deps, `cmd-score-${match.id}-${Date.now()}`);
     if (!r.success) {
+      scoreModalHint = r.reason ?? 'enterScore failed';
       status = r.reason ?? 'enterScore failed';
       pull();
       return;
     }
     status = `Saved scores for ${match.id}.`;
+    closeScoreModal();
     pull();
+  }
+
+  function summarizeLastCommand(cmd: Command, t: Tournament): string {
+    const pn = (id: string | undefined) => (id && t.players[id]?.name) || id || '—';
+    const tn = (id: string | undefined) => (id && t.teams[id]?.name) || id || '—';
+    switch (cmd.type) {
+      case 'CreatePlayer':
+        return `Added player “${cmd.payload.name}”.`;
+      case 'RenamePlayer':
+        return `Updated player “${pn(cmd.payload.playerId)}”.`;
+      case 'SetSeedings':
+        return `Set seeding order (${cmd.payload.playerIds.length} players).`;
+      case 'EnterScore': {
+        const m = t.matches[cmd.payload.matchId];
+        return m ? `Entered scores · ${pn(m.playerA)} vs ${pn(m.playerB)}` : 'Entered match scores.';
+      }
+      case 'EnterTeamScore': {
+        const tm = t.teamMatches[cmd.payload.matchId];
+        return tm ? `Entered team scores · ${tn(tm.teamA)} vs ${tn(tm.teamB)}` : 'Entered team match scores.';
+      }
+      case 'CreateMatch':
+        return `Created match · ${pn(cmd.payload.playerA)} vs ${pn(cmd.payload.playerB)}`;
+      case 'CreateTeam':
+        return `Created team “${cmd.payload.name}”.`;
+      case 'CreateTeamMatch':
+        return `Created team match · ${tn(cmd.payload.teamA)} vs ${tn(cmd.payload.teamB)}`;
+      case 'GenerateBracket':
+        return 'Generated bracket.';
+      case 'GenerateGroupRoundRobin':
+        return cmd.payload.classId ? 'Generated round‑robin for a class track.' : 'Generated group round‑robin.';
+      case 'SetGroups': {
+        if ('groups' in cmd.payload) {
+          const n = cmd.payload.groups.length;
+          return n === 0 ? 'Cleared groups.' : `Updated groups (${n} group${n === 1 ? '' : 's'}).`;
+        }
+        return 'Created groups from seeding.';
+      }
+      case 'SetClassGroups': {
+        const cname = t.classDefinitions.find((c) => c.id === cmd.payload.classId)?.name ?? cmd.payload.classId;
+        if ('groups' in cmd.payload) {
+          const n = cmd.payload.groups.length;
+          return n === 0 ? `Cleared groups for “${cname}”.` : `Updated groups for “${cname}”.`;
+        }
+        return `Created groups for class “${cname}”.`;
+      }
+      case 'SetTournamentClasses':
+        return `Set competition classes (${cmd.payload.classes.length}).`;
+      case 'SetPlayerClassFlags':
+        return `Updated class flags for ${pn(cmd.payload.playerId)}.`;
+      case 'SetRoundLock':
+        return cmd.payload.locked
+          ? `Locked bracket round ${cmd.payload.bracketRound}.`
+          : `Unlocked bracket round ${cmd.payload.bracketRound}.`;
+      case 'AssignTables':
+        return 'Assigned tables.';
+      case 'AdvanceBracketRound':
+        return 'Advanced bracket round.';
+      case 'PlayerForfeit':
+        return `Player forfeit (${cmd.payload.phase}).`;
+      case 'TeamForfeit':
+        return `Team forfeit (${cmd.payload.phase}).`;
+      case 'Undo':
+        return 'Undo.';
+    }
   }
 
   const bracketRounds = $derived(uniqueSortedRounds(tournament.bracketMatches));
@@ -878,6 +1136,18 @@
   );
 
   const useClassTabs = $derived(tournamentUsesClassTabs(tournament));
+
+  const activeSess = $derived(getActiveSession());
+  const showFormatStub = $derived(Boolean(activeSess && activeSess.tournamentFormat !== 'group-bracket'));
+
+  const lastCommandSummary = $derived.by(() => {
+    const s = getActiveSession();
+    if (!s) return '';
+    const t = tournament;
+    const log = s.controller.getCommandLog();
+    if (log.length === 0) return 'No actions yet.';
+    return summarizeLastCommand(log[log.length - 1]!, t);
+  });
 
   const singleTrackRestTabs = $derived.by((): Array<{ id: InnerTab; label: string }> => {
     const base: Array<{ id: InnerTab; label: string }> = [
@@ -895,8 +1165,8 @@
   });
 
   const classSubTabsList = $derived.by((): Array<{ id: ClassInnerTab; label: string }> => {
-    const s = activeSession();
-    if (s.nav.kind !== 'multi' || s.nav.screen === 'players') {
+    const s = getActiveSession();
+    if (!s || s.nav.kind !== 'multi' || s.nav.screen === 'players') {
       return [];
     }
     const cid = s.nav.screen.classId;
@@ -914,66 +1184,29 @@
   });
 
   const showPlayersPanel = $derived.by(() => {
-    const s = activeSession();
+    const s = getActiveSession();
+    if (!s) return false;
     if (s.nav.kind === 'single') return s.nav.inner === 'players';
     return s.nav.screen === 'players';
   });
 
   const multiClassScreen = $derived.by((): { classId: string; inner: ClassInnerTab } | null => {
-    const s = activeSession();
-    if (s.nav.kind !== 'multi' || s.nav.screen === 'players') return null;
+    const s = getActiveSession();
+    if (!s || s.nav.kind !== 'multi' || s.nav.screen === 'players') return null;
     return s.nav.screen;
   });
 
-  const singleTrackInner = $derived(activeSession().nav.kind === 'single' ? activeSession().nav.inner : null);
-
-  function updateClassEditorRow(index: number, name: string): void {
-    const s = activeSession();
-    const next = s.classEditorRows.map((row, i) => (i === index ? { ...row, name } : row));
-    patchActiveSession({ classEditorRows: next });
-  }
-
-  function addClassEditorRow(): void {
-    const s = activeSession();
-    patchActiveSession({ classEditorRows: [...s.classEditorRows, { id: newCompetitionClassId(), name: '' }] });
-  }
-
-  function removeClassEditorRow(index: number): void {
-    const s = activeSession();
-    const next = s.classEditorRows.filter((_, i) => i !== index);
-    patchActiveSession({ classEditorRows: next.length > 0 ? next : [{ id: newCompetitionClassId(), name: '' }] });
-  }
-
-  function applyCompetitionClasses(): void {
-    status = null;
-    const rows = activeSession()
-      .classEditorRows.map((r) => ({
-        id: r.id.trim() || newCompetitionClassId(),
-        name: r.name.trim(),
-      }))
-      .filter((r) => r.name.length > 0);
-    const c = activeSession().controller;
-    const cmdId = `cmd-classes-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
-    const r = c.setTournamentClasses(rows, [], cmdId);
-    if (!r.success) {
-      status = r.reason ?? 'Could not save competition classes';
-      pull();
-      return;
-    }
-    const t = c.getTournament();
-    patchActiveSession({
-      classEditorRows:
-        t.classDefinitions.length > 0
-          ? t.classDefinitions.map((d) => ({ id: d.id, name: d.name }))
-          : [{ id: newCompetitionClassId(), name: '' }],
-    });
-    status = rows.length >= 2 ? 'Competition classes saved. Use the class tabs for each track.' : 'Competition classes saved.';
-    pull();
-  }
+  const singleTrackInner = $derived.by((): InnerTab | null => {
+    const s = getActiveSession();
+    if (!s || s.nav.kind !== 'single') return null;
+    return s.nav.inner;
+  });
 
   function togglePlayerClass(playerId: string, classId: string, checked: boolean): void {
     status = null;
-    const c = activeSession().controller;
+    const s = getActiveSession();
+    if (!s) return;
+    const c = s.controller;
     const cmdId = `cmd-pcf-${playerId}-${classId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 8)}`;
     const r = c.setPlayerClassFlags(playerId, { [classId]: checked }, [`cmd-${playerId}`], cmdId);
     if (!r.success) {
@@ -985,57 +1218,160 @@
   pull();
 </script>
 
-<div class="app">
-  <header class="top-bar">
-    <div class="brand">
-      <span class="brand-mark">TTC</span>
-      <span class="brand-text">Tornooiapp</span>
-    </div>
-    <nav class="workspace-tabs" aria-label="Workspace">
-      <button
-        type="button"
-        class="workspace-tab"
-        class:active={workspaceTab === 'settings'}
-        onclick={() => selectWorkspaceTab('settings')}
-      >
-        Settings
-      </button>
-      {#each sessions as s (s.id)}
+<div class="app" class:app-with-footer={Boolean(activeSess)}>
+  <div class="app-sticky-head">
+    <header class="top-bar">
+      <div class="brand">
+        <span class="brand-mark">TTCB</span>
+        <span class="brand-text">Tornooiapp</span>
+      </div>
+      <nav class="workspace-tabs" aria-label="Workspace">
         <button
           type="button"
           class="workspace-tab"
-          class:active={workspaceTab === s.id}
-          onclick={() => selectWorkspaceTab(s.id)}
+          class:active={workspaceTab === 'settings'}
+          onclick={() => selectWorkspaceTab('settings')}
         >
-          {s.tournamentName}
+          Settings
         </button>
-      {/each}
-    </nav>
-  </header>
+        {#each sessions as s (s.id)}
+          <button
+            type="button"
+            class="workspace-tab"
+            class:active={workspaceTab === s.id}
+            onclick={() => selectWorkspaceTab(s.id)}
+          >
+            {s.tournamentName}
+          </button>
+        {/each}
+      </nav>
+    </header>
 
-  {#if status}
-    <div class="banner" role="status">{status}</div>
-  {/if}
+    {#if status}
+      <div class="banner status-banner" role="status">{status}</div>
+    {/if}
+  </div>
 
   <main class="main">
     {#if workspaceTab === 'settings'}
       <section class="card settings-card">
         <h1 class="h1">Tournament settings</h1>
         <p class="lead">
-          Export and import the command log (JSONL). Multiple open tournaments will share this area later; for now only one
-          tournament tab is available.
+          Create a tournament, import a command log (JSONL), or export the active tournament. Open tournaments appear as tabs in
+          the header.
         </p>
 
         <div class="settings-grid">
           <div class="settings-block">
             <h2 class="h2">Data</h2>
             <div class="btn-row">
-              <button type="button" class="btn primary" onclick={downloadJsonl}>Export JSONL</button>
+              <button
+                type="button"
+                class="btn primary"
+                disabled={!getActiveSession()}
+                title={getActiveSession() ? 'Export command log (JSONL)' : 'Create or import a tournament first'}
+                onclick={downloadJsonl}
+              >
+                Export JSONL
+              </button>
               <label class="file-btn">
                 Import JSONL
                 <input type="file" accept=".jsonl,.txt,application/json,text/plain" class="sr" onchange={onImportFile} />
               </label>
-              <button type="button" class="btn danger-ghost" onclick={newTournament}>New empty tournament</button>
+            </div>
+          </div>
+
+          <div class="settings-block new-tournament-block">
+            <h2 class="h2">New tournament</h2>
+            <label class="field-block">
+              <span class="field-label">Name</span>
+              <input
+                class="grow draft-tournament-name-input"
+                type="text"
+                bind:value={draftTournamentName}
+                maxlength="120"
+                autocomplete="off"
+              />
+            </label>
+
+            <fieldset class="type-fieldset">
+              <legend class="field-label">Tournament type</legend>
+              <label class="radio-line">
+                <input type="radio" name="draft-tournament-format" value="group-bracket" bind:group={draftTournamentFormat} />
+                <span>Group phase + brackets</span>
+              </label>
+              <label class="radio-line radio-line-disabled">
+                <input type="radio" name="draft-tournament-format" value="bracket-only" disabled />
+                <span>Direct to brackets <span class="muted small">(coming soon)</span></span>
+              </label>
+              <label class="radio-line radio-line-disabled">
+                <input type="radio" name="draft-tournament-format" value="team-vs-team" disabled />
+                <span>Team vs team <span class="muted small">(coming soon)</span></span>
+              </label>
+            </fieldset>
+
+            <label class="checkbox-line">
+              <input type="checkbox" bind:checked={draftHandicapEnabled} />
+              <span>Include handicap for players</span>
+            </label>
+
+            {#if !draftClassSectionOpen}
+              <p class="muted small">Competition classes are optional (separate tracks, e.g. junior / senior).</p>
+              <button type="button" class="btn subtle" onclick={() => (draftClassSectionOpen = true)}>
+                Add competition classes
+              </button>
+            {:else}
+              <div class="sub-card draft-classes">
+                <h3 class="h3">Competition classes</h3>
+                <p class="muted small">Enter a display name per row. Empty rows are ignored when you create the tournament.</p>
+                <table class="grid class-grid">
+                  <thead>
+                    <tr>
+                      <th>Display name</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each draftClassEditorRows as row, ri (row.id)}
+                      <tr>
+                        <td>
+                          <input
+                            class="grow"
+                            type="text"
+                            value={row.name}
+                            maxlength="80"
+                            autocomplete="off"
+                            aria-label="Class display name"
+                            oninput={(e) => updateDraftClassRow(ri, (e.currentTarget as HTMLInputElement).value)}
+                          />
+                        </td>
+                        <td>
+                          <button type="button" class="btn ghost small-inline" onclick={() => removeDraftClassRow(ri)}>
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+                <div class="btn-row">
+                  <button type="button" class="btn" onclick={addDraftClassRow}>Add class row</button>
+                  <button
+                    type="button"
+                    class="btn ghost"
+                    onclick={() => {
+                      draftClassSectionOpen = false;
+                      draftClassEditorRows = [{ id: newCompetitionClassId(), name: '' }];
+                    }}
+                  >
+                    Clear classes
+                  </button>
+                </div>
+              </div>
+            {/if}
+
+            <div class="btn-row">
+              <button type="button" class="btn primary" onclick={createTournamentFromWizard}>Create tournament</button>
             </div>
           </div>
 
@@ -1060,7 +1396,14 @@
         </div>
       </section>
     {:else}
+      {#if activeSess}
       <div class="tournament-shell">
+        {#if showFormatStub}
+          <div class="banner format-banner" role="status">
+            Only <strong>Group phase + brackets</strong> is fully implemented. You are viewing a placeholder for the selected
+            tournament type.
+          </div>
+        {/if}
         <div class="tournament-toolbar">
           <div class="title-block">
             <label class="title-label" for="tm-name-input">Tournament name</label>
@@ -1096,18 +1439,6 @@
                 Use suggested
               </button>
             </div>
-          </div>
-          <div class="toolbar-actions">
-            <button type="button" class="btn ghost" onclick={doUndo} title="Append Undo for latest undoable step">Undo</button>
-            <button
-              type="button"
-              class="btn ghost"
-              onclick={doRedo}
-              disabled={!activeSession().controller.canRedo()}
-              title="Drop last Undo from log"
-            >
-              Redo
-            </button>
           </div>
         </div>
 
@@ -1165,61 +1496,6 @@
             <section class="card">
               <h2 class="h2">Players</h2>
 
-              <div class="sub-card class-setup">
-                <h3 class="h3">Competition classes</h3>
-                <p class="muted small">
-                  Define one or more parallel tracks (e.g. junior / senior). With <strong>two or more</strong> classes, each
-                  class gets its own tab row below. Add classes <strong>before</strong> adding players; with players present you
-                  can only rename classes, not add or remove them.
-                </p>
-                <table class="grid class-grid">
-                  <thead>
-                    <tr>
-                      <th>Display name</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {#each activeSession().classEditorRows as row, ri (row.id)}
-                      <tr>
-                        <td>
-                          <input
-                            class="grow"
-                            type="text"
-                            value={row.name}
-                            maxlength="80"
-                            autocomplete="off"
-                            aria-label="Class display name"
-                            oninput={(e) => updateClassEditorRow(ri, (e.currentTarget as HTMLInputElement).value)}
-                          />
-                        </td>
-                        <td>
-                          <button
-                            type="button"
-                            class="btn ghost small-inline"
-                            disabled={tournament.classDefinitions.length >= 2 && Object.keys(tournament.players).length > 0}
-                            onclick={() => removeClassEditorRow(ri)}
-                          >
-                            Remove
-                          </button>
-                        </td>
-                      </tr>
-                    {/each}
-                  </tbody>
-                </table>
-                <div class="row">
-                  <button
-                    type="button"
-                    class="btn"
-                    disabled={tournament.classDefinitions.length >= 2 && Object.keys(tournament.players).length > 0}
-                    onclick={addClassEditorRow}
-                  >
-                    Add class row
-                  </button>
-                  <button type="button" class="btn primary" onclick={applyCompetitionClasses}>Save classes</button>
-                </div>
-              </div>
-
               <form
                 class="row"
                 onsubmit={(e) => {
@@ -1228,7 +1504,20 @@
                 }}
               >
                 <input class="grow" placeholder="Name" bind:value={newName} autocomplete="off" />
-                <input class="hc" type="number" bind:value={newHc} min="0" step="1" title="Handicap" />
+                {#if activeSess.handicapEnabled}
+                  <label class="hc-add-wrap" for="new-player-hc">
+                    <span class="hc-label">Handicap</span>
+                    <input
+                      id="new-player-hc"
+                      class="hc"
+                      type="number"
+                      bind:value={newHc}
+                      min="0"
+                      step="1"
+                      title="Handicap"
+                    />
+                  </label>
+                {/if}
                 <button type="submit" class="btn primary">Add player</button>
               </form>
               <p class="muted small">
@@ -1240,29 +1529,31 @@
                 {/if}
               </p>
               <ol class="seed-list">
-                {#each activeSession().playerOrder as pid (pid)}
+                {#each activeSess.playerOrder as pid (pid)}
                   <li class="player-row">
                     <div class="player-main">
                       <span class="name">{playerLabel(pid)}</span>
-                      <span class="hc-wrap">
-                        <label class="hc-label" for={`hc-${pid}`}>HC</label>
-                        <input
-                          id={`hc-${pid}`}
-                          class="hc-inline"
-                          type="number"
-                          min="0"
-                          step="1"
-                          aria-label={`Handicap for ${playerLabel(pid)}`}
-                          bind:value={handicapDrafts[pid]}
-                          onfocus={() => {
-                            handicapFocusPid = pid;
-                          }}
-                          onblur={() => {
-                            commitPlayerHandicap(pid);
-                            handicapFocusPid = null;
-                          }}
-                        />
-                      </span>
+                      {#if activeSess.handicapEnabled}
+                        <span class="hc-wrap">
+                          <label class="hc-label" for={`hc-${pid}`}>Handicap</label>
+                          <input
+                            id={`hc-${pid}`}
+                            class="hc-inline"
+                            type="number"
+                            min="0"
+                            step="1"
+                            aria-label={`Handicap for ${playerLabel(pid)}`}
+                            bind:value={handicapDrafts[pid]}
+                            onfocus={() => {
+                              handicapFocusPid = pid;
+                            }}
+                            onblur={() => {
+                              commitPlayerHandicap(pid);
+                              handicapFocusPid = null;
+                            }}
+                          />
+                        </span>
+                      {/if}
                       <code class="pid">{pid}</code>
                     </div>
                     {#if tournament.classDefinitions.length > 0}
@@ -1289,7 +1580,7 @@
               <h2 class="h2">Group phase</h2>
               <p class="muted small">
                 Pick a target group size (each group will have that many players, or one fewer where needed). Groups are
-                numbered <strong>1, 2, …</strong> in seeding order. Creating groups also creates all round‑robin matches.
+                named <strong>group 1</strong>, <strong>group 2</strong>, … in seeding order. Creating groups also creates all round‑robin matches.
               </p>
               <div class="row group-editor-head">
                 <label class="grow">
@@ -1299,7 +1590,7 @@
                     type="number"
                     min="1"
                     step="1"
-                    value={activeSession().groupTargetSize}
+                    value={activeSess.groupTargetSize}
                     aria-label="Target group size"
                     oninput={(e) => {
                       const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));
@@ -1308,27 +1599,20 @@
                   />
                 </label>
               </div>
-              <p class="field-label">Include in draw (seeding order)</p>
-              <div class="group-player-grid">
-                {#each eligibleGlobalGroupPlayerIds(tournament) as pid (pid)}
-                  <label class="chk tight">
-                    <input
-                      type="checkbox"
-                      checked={!activeSession().groupPlayerExcluded[pid]}
-                      onchange={(e) =>
-                        toggleGlobalGroupPlayerExcluded(pid, !(e.currentTarget as HTMLInputElement).checked)}
-                    />
-                    {playerLabel(pid)}
-                  </label>
+              <p class="muted small">
+                {#if eligibleGlobalGroupPlayerIds(tournament).length === 0}
+                  Add players on the Players tab first.
                 {:else}
-                  <p class="muted small">Add players on the Players tab first.</p>
-                {/each}
-              </div>
+                  All {eligibleGlobalGroupPlayerIds(tournament).length} seeded players are included, in seeding order.
+                {/if}
+              </p>
               <div class="row align-end">
                 <button type="button" class="btn danger-ghost" onclick={clearGlobalGroups}>Clear groups</button>
-                <button type="button" class="btn primary" onclick={createGlobalGroupsAndMatches}>
-                  Create groups & matches
-                </button>
+                {#if Object.keys(tournament.groups).length === 0}
+                  <button type="button" class="btn primary" onclick={createGlobalGroupsAndMatches}>
+                    Create groups & matches
+                  </button>
+                {/if}
               </div>
 
               <h3 class="h3">Groups</h3>
@@ -1366,24 +1650,9 @@
                     <strong>{playerLabel(match.playerA)}</strong> vs <strong>{playerLabel(match.playerB)}</strong>
                     <span class="meta">{groupLabelForMatch(tournament, match)} · {match.status}</span>
                   </header>
-                  {#if match.status === 'scheduled' && scoreDrafts()[match.id]}
-                    <table class="mini">
-                      <thead>
-                        <tr><th>#</th><th>{playerLabel(match.playerA)}</th><th>{playerLabel(match.playerB)}</th></tr>
-                      </thead>
-                      <tbody>
-                        {#each scoreDrafts()[match.id] as srow, gi (gi)}
-                          <tr>
-                            <td>{gi + 1}</td>
-                            <td><input type="number" bind:value={srow.a} /></td>
-                            <td><input type="number" bind:value={srow.b} /></td>
-                          </tr>
-                        {/each}
-                      </tbody>
-                    </table>
+                  {#if match.status === 'scheduled'}
                     <div class="row">
-                      <button type="button" class="btn" onclick={() => addGameRow(match.id)}>Add game row</button>
-                      <button type="button" class="btn primary" onclick={() => submitScores(match)}>Save scores</button>
+                      <button type="button" class="btn primary" onclick={() => openScoreModal(match)}>Enter games…</button>
                     </div>
                   {:else}
                     <ul class="done-scores">
@@ -1472,24 +1741,9 @@
                     <strong>{playerLabel(match.playerA)}</strong> vs <strong>{playerLabel(match.playerB)}</strong>
                     <span class="meta">{match.status}</span>
                   </header>
-                  {#if match.status === 'scheduled' && scoreDrafts()[match.id]}
-                    <table class="mini">
-                      <thead>
-                        <tr><th>#</th><th>{playerLabel(match.playerA)}</th><th>{playerLabel(match.playerB)}</th></tr>
-                      </thead>
-                      <tbody>
-                        {#each scoreDrafts()[match.id] as row, gi (gi)}
-                          <tr>
-                            <td>{gi + 1}</td>
-                            <td><input type="number" bind:value={row.a} /></td>
-                            <td><input type="number" bind:value={row.b} /></td>
-                          </tr>
-                        {/each}
-                      </tbody>
-                    </table>
+                  {#if match.status === 'scheduled'}
                     <div class="row">
-                      <button type="button" class="btn" onclick={() => addGameRow(match.id)}>Add game row</button>
-                      <button type="button" class="btn primary" onclick={() => submitScores(match)}>Save scores</button>
+                      <button type="button" class="btn primary" onclick={() => openScoreModal(match)}>Enter games…</button>
                     </div>
                   {:else}
                     <ul class="done-scores">
@@ -1554,7 +1808,7 @@
                 <h2 class="h2">Group phase · {def?.name ?? cid}</h2>
                 <p class="muted small">
                   Players listed here are in this class (from the Players tab). Target size controls group sizes (each
-                  group is that size or one smaller). Groups are numbered 1, 2, …; creating them also creates all
+                  group is that size or one smaller). Groups are named group 1, group 2, …; creating them also creates all
                   round‑robin matches for this class.
                 </p>
                 <div class="row group-editor-head">
@@ -1575,27 +1829,20 @@
                     />
                   </label>
                 </div>
-                <p class="field-label">Include in draw (class seeding order)</p>
-                <div class="group-player-grid">
-                  {#each slice.seedings as pid (pid)}
-                    <label class="chk tight">
-                      <input
-                        type="checkbox"
-                        checked={!isClassPlayerExcluded(cid, pid)}
-                        onchange={(e) =>
-                          toggleClassGroupPlayerExcluded(cid, pid, !(e.currentTarget as HTMLInputElement).checked)}
-                      />
-                      {playerLabel(pid)}
-                    </label>
+                <p class="muted small">
+                  {#if slice.seedings.length === 0}
+                    No players in this class yet — enable the class checkbox for players on the Players tab.
                   {:else}
-                    <p class="muted small">No players in this class yet — enable the class checkbox for players first.</p>
-                  {/each}
-                </div>
+                    All {slice.seedings.length} players in this class are included, in class seeding order.
+                  {/if}
+                </p>
                 <div class="row align-end">
                   <button type="button" class="btn danger-ghost" onclick={() => clearClassGroups(cid)}>Clear groups</button>
-                  <button type="button" class="btn primary" onclick={() => createClassGroupsAndMatches(cid)}>
-                    Create groups & matches
-                  </button>
+                  {#if Object.keys(slice.groups).length === 0}
+                    <button type="button" class="btn primary" onclick={() => createClassGroupsAndMatches(cid)}>
+                      Create groups & matches
+                    </button>
+                  {/if}
                 </div>
 
                 <h3 class="h3">Groups</h3>
@@ -1633,24 +1880,9 @@
                       <strong>{playerLabel(match.playerA)}</strong> vs <strong>{playerLabel(match.playerB)}</strong>
                       <span class="meta">{groupLabelForMatch(tournament, match)} · {match.status}</span>
                     </header>
-                    {#if match.status === 'scheduled' && scoreDrafts()[match.id]}
-                      <table class="mini">
-                        <thead>
-                          <tr><th>#</th><th>{playerLabel(match.playerA)}</th><th>{playerLabel(match.playerB)}</th></tr>
-                        </thead>
-                        <tbody>
-                          {#each scoreDrafts()[match.id] as srow, gi (gi)}
-                            <tr>
-                              <td>{gi + 1}</td>
-                              <td><input type="number" bind:value={srow.a} /></td>
-                              <td><input type="number" bind:value={srow.b} /></td>
-                            </tr>
-                          {/each}
-                        </tbody>
-                      </table>
+                    {#if match.status === 'scheduled'}
                       <div class="row">
-                        <button type="button" class="btn" onclick={() => addGameRow(match.id)}>Add game row</button>
-                        <button type="button" class="btn primary" onclick={() => submitScores(match)}>Save scores</button>
+                        <button type="button" class="btn primary" onclick={() => openScoreModal(match)}>Enter games…</button>
                       </div>
                     {:else}
                       <ul class="done-scores">
@@ -1726,24 +1958,9 @@
                         <strong>{playerLabel(match.playerA)}</strong> vs <strong>{playerLabel(match.playerB)}</strong>
                         <span class="meta">{match.status}</span>
                       </header>
-                      {#if match.status === 'scheduled' && scoreDrafts()[match.id]}
-                        <table class="mini">
-                          <thead>
-                            <tr><th>#</th><th>{playerLabel(match.playerA)}</th><th>{playerLabel(match.playerB)}</th></tr>
-                          </thead>
-                          <tbody>
-                            {#each scoreDrafts()[match.id] as row, gi (gi)}
-                              <tr>
-                                <td>{gi + 1}</td>
-                                <td><input type="number" bind:value={row.a} /></td>
-                                <td><input type="number" bind:value={row.b} /></td>
-                              </tr>
-                            {/each}
-                          </tbody>
-                        </table>
+                      {#if match.status === 'scheduled'}
                         <div class="row">
-                          <button type="button" class="btn" onclick={() => addGameRow(match.id)}>Add game row</button>
-                          <button type="button" class="btn primary" onclick={() => submitScores(match)}>Save scores</button>
+                          <button type="button" class="btn primary" onclick={() => openScoreModal(match)}>Enter games…</button>
                         </div>
                       {:else}
                         <ul class="done-scores">
@@ -1800,8 +2017,115 @@
           {/if}
         </div>
       </div>
+      {:else}
+      <section class="card empty-tournament-card">
+        <h2 class="h2">No tournament in this tab</h2>
+        <p class="muted">
+          Go to <button type="button" class="linkish" onclick={() => selectWorkspaceTab('settings')}>Settings</button> to
+          create a tournament or import JSONL.
+        </p>
+      </section>
+      {/if}
     {/if}
   </main>
+
+  {#if activeSess}
+    <footer class="tournament-footer app-dock-footer" aria-label="Tournament activity">
+      <p class="footer-last muted">{lastCommandSummary}</p>
+      <div class="footer-actions">
+        <button type="button" class="btn ghost" onclick={doUndo} title="Append Undo for latest undoable step">Undo</button>
+        <button
+          type="button"
+          class="btn ghost"
+          onclick={doRedo}
+          disabled={!activeSess.controller.canRedo()}
+          title="Drop last Undo from log"
+        >
+          Redo
+        </button>
+      </div>
+    </footer>
+  {/if}
+
+  {#if scoreModalMatchId}
+    {@const sm = tournament.matches[scoreModalMatchId]}
+    {#if sm}
+      {@const modalRows = scoreDrafts()[scoreModalMatchId] ?? defaultRows(MIN_GAME_ROWS)}
+      <div class="modal-root">
+        <button
+          type="button"
+          class="modal-scrim"
+          aria-label="Close score dialog"
+          onclick={() => cancelScoreModal()}
+        ></button>
+        <div
+          class="modal-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="score-modal-title"
+          tabindex="-1"
+        >
+          <header class="modal-head">
+            <h3 id="score-modal-title" class="modal-title">
+              Games · {playerLabel(sm.playerA)} vs {playerLabel(sm.playerB)}
+            </h3>
+            <button type="button" class="btn subtle small-inline" onclick={() => cancelScoreModal()}>Close</button>
+          </header>
+          <p class="muted small modal-lead">
+            Best of five (first to three games). Each game is won at 11+ with a two-point margin; once either player is
+            past 11, the winning margin must be exactly two. Extra rows appear automatically when the match is not decided
+            after three or four valid games (up to five games).
+          </p>
+          <table class="mini score-modal-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>{playerLabel(sm.playerA)}</th>
+                <th>{playerLabel(sm.playerB)}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each modalRows as srow, gi (gi)}
+                <tr class:row-muted={!rowIndexEnabled(modalRows, gi)}>
+                  <td>{gi + 1}</td>
+                  <td>
+                    <input
+                      type="number"
+                      min="0"
+                      disabled={!rowIndexEnabled(modalRows, gi)}
+                      value={srow.a === '' ? '' : srow.a}
+                      oninput={(e) =>
+                        setScoreModalCell(sm.id, gi, 'a', (e.currentTarget as HTMLInputElement).value)}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      min="0"
+                      disabled={!rowIndexEnabled(modalRows, gi)}
+                      value={srow.b === '' ? '' : srow.b}
+                      oninput={(e) =>
+                        setScoreModalCell(sm.id, gi, 'b', (e.currentTarget as HTMLInputElement).value)}
+                    />
+                  </td>
+                </tr>
+                {#if rowGameHint(srow)}
+                  <tr class="hint-row"><td colspan="3" class="game-hint">{rowGameHint(srow)}</td></tr>
+                {/if}
+              {/each}
+            </tbody>
+          </table>
+          {#if scoreModalHint}
+            <p class="modal-error">{scoreModalHint}</p>
+          {/if}
+          <div class="row modal-actions">
+            <button type="button" class="btn" onclick={() => cancelScoreModal()}>Cancel</button>
+            <button type="button" class="btn primary" onclick={() => submitScores(sm)}>Save match</button>
+          </div>
+        </div>
+      </div>
+    {/if}
+  {/if}
 </div>
 
 <style>
@@ -1809,8 +2133,17 @@
     min-height: 100vh;
     display: flex;
     flex-direction: column;
-    background: linear-gradient(165deg, #f1f5f9 0%, #e8eef5 40%, #f8fafc 100%);
+    background: linear-gradient(165deg, #f1f5f9 0%, #e8f3ec 40%, #f8fafc 100%);
     color: #0f172a;
+  }
+
+  .app-sticky-head {
+    position: sticky;
+    top: 0;
+    z-index: 25;
+    flex-shrink: 0;
+    background: linear-gradient(165deg, #f1f5f9 0%, #e8f3ec 40%, #f8fafc 100%);
+    box-shadow: 0 2px 10px rgb(15 23 42 / 8%);
   }
 
   .top-bar {
@@ -1823,9 +2156,6 @@
     background: rgb(255 255 255 / 88%);
     backdrop-filter: blur(10px);
     border-bottom: 1px solid #e2e8f0;
-    position: sticky;
-    top: 0;
-    z-index: 20;
   }
 
   .brand {
@@ -1842,7 +2172,7 @@
     justify-content: center;
     padding: 0.2rem 0.45rem;
     border-radius: 6px;
-    background: linear-gradient(135deg, #1d4ed8, #6366f1);
+    background: linear-gradient(135deg, #166534, #22c55e);
     color: #fff;
     font-size: 0.75rem;
     text-transform: uppercase;
@@ -1884,20 +2214,25 @@
 
   .workspace-tab.active {
     background: #fff;
-    color: #1e40af;
+    color: #166534;
     font-weight: 600;
     box-shadow: 0 1px 3px rgb(15 23 42 / 8%);
   }
 
   .banner {
-    margin: 0 1.25rem;
-    padding: 0.55rem 0.85rem;
-    border-radius: 0 0 10px 10px;
-    background: #e0f2fe;
-    border: 1px solid #7dd3fc;
-    border-top: none;
-    color: #0c4a6e;
+    padding: 0.55rem 1.25rem;
+    background: #ecfdf5;
+    color: #14532d;
     font-size: 0.9rem;
+  }
+
+  .status-banner {
+    margin: 0;
+    border-radius: 0;
+    border: none;
+    border-bottom: 1px solid #bbf7d0;
+    background: rgb(236 253 245 / 96%);
+    backdrop-filter: blur(8px);
   }
 
   .main {
@@ -1906,6 +2241,10 @@
     max-width: 58rem;
     margin: 0 auto;
     padding: 1.25rem 1.25rem 2.5rem;
+  }
+
+  .app-with-footer .main {
+    padding-bottom: calc(4.75rem + env(safe-area-inset-bottom, 0px));
   }
 
   .card {
@@ -1959,6 +2298,93 @@
     font-size: 0.88rem;
   }
 
+  .new-tournament-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .field-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .type-fieldset {
+    margin: 0;
+    padding: 0.65rem 0.85rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    background: #f8fafc;
+  }
+
+  .type-fieldset legend {
+    padding: 0 0.25rem;
+  }
+
+  .radio-line {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    margin: 0.35rem 0 0;
+    font-size: 0.92rem;
+    cursor: pointer;
+  }
+
+  .radio-line input {
+    margin-top: 0.2rem;
+  }
+
+  .radio-line-disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+
+  .checkbox-line {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.92rem;
+    cursor: pointer;
+  }
+
+  .draft-classes {
+    margin-top: 0.25rem;
+  }
+
+  .format-banner {
+    margin: 0 0 0.75rem;
+    border-radius: 10px;
+    border: 1px solid #bbf7d0;
+  }
+
+  .empty-tournament-card {
+    max-width: 28rem;
+  }
+
+  .linkish {
+    display: inline;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    color: #166534;
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .linkish:hover {
+    color: #14532d;
+  }
+
+  .hc-add-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
   .tournament-shell {
     display: flex;
     flex-direction: column;
@@ -2009,14 +2435,59 @@
     color: #0f172a;
   }
 
-  .title-input:focus {
-    outline: none;
-    border-color: #2563eb;
-    box-shadow: 0 0 0 3px rgb(37 99 235 / 14%);
+  .grow.draft-tournament-name-input {
+    padding: 0.28rem 0.55rem;
+    min-height: 0;
+    line-height: 1.35;
+    font-size: 0.95rem;
   }
 
-  .toolbar-actions {
+  .title-input:focus {
+    outline: none;
+    border-color: #16a34a;
+    box-shadow: 0 0 0 3px rgb(22 163 74 / 14%);
+  }
+
+  .tournament-footer {
     display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.65rem 1rem;
+    padding: 0.55rem 0.85rem;
+    background: rgb(255 255 255 / 92%);
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    box-shadow: 0 1px 4px rgb(15 23 42 / 5%);
+  }
+
+  .app-dock-footer.tournament-footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 19;
+    margin: 0;
+    max-width: none;
+    border-radius: 0;
+    border: none;
+    border-top: 1px solid #e2e8f0;
+    backdrop-filter: blur(10px);
+    padding: 0.55rem 1.25rem;
+    padding-bottom: calc(0.55rem + env(safe-area-inset-bottom, 0px));
+    box-shadow: 0 -2px 12px rgb(15 23 42 / 7%);
+  }
+
+  .footer-last {
+    margin: 0;
+    flex: 1 1 14rem;
+    font-size: 0.88rem;
+    line-height: 1.45;
+  }
+
+  .footer-actions {
+    display: flex;
+    flex-wrap: wrap;
     gap: 0.35rem;
     flex-shrink: 0;
   }
@@ -2067,10 +2538,10 @@
   }
 
   .inner-tab.active {
-    color: #1d4ed8;
+    color: #15803d;
     font-weight: 600;
     background: #fff;
-    border-bottom-color: #2563eb;
+    border-bottom-color: #16a34a;
   }
 
   .inner-panels {
@@ -2112,13 +2583,6 @@
     flex-wrap: wrap;
     align-items: flex-end;
     gap: 0.75rem;
-  }
-
-  .group-player-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem 0.75rem;
-    margin-top: 0.35rem;
   }
 
   .grid.compact th,
@@ -2200,10 +2664,6 @@
     color: #475569;
   }
 
-  .class-setup {
-    margin-bottom: 1rem;
-  }
-
   .class-grid {
     margin-top: 0.45rem;
   }
@@ -2239,8 +2699,8 @@
 
   .hc-inline:focus {
     outline: none;
-    border-color: #2563eb;
-    box-shadow: 0 0 0 2px rgb(37 99 235 / 12%);
+    border-color: #16a34a;
+    box-shadow: 0 0 0 2px rgb(22 163 74 / 12%);
   }
 
   .player-main .pid {
@@ -2370,14 +2830,14 @@
   }
 
   .btn.primary {
-    border-color: #2563eb;
-    background: #2563eb;
+    border-color: #16a34a;
+    background: #16a34a;
     color: #fff;
   }
 
   .btn.primary:hover:not(:disabled) {
-    background: #1d4ed8;
-    border-color: #1d4ed8;
+    background: #15803d;
+    border-color: #15803d;
   }
 
   .btn.ghost {
@@ -2422,5 +2882,89 @@
     padding: 0.35rem 0.5rem;
     border: 1px solid #cbd5e1;
     border-radius: 6px;
+  }
+
+  .modal-root {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 1.5rem 1rem 2rem;
+    overflow-y: auto;
+  }
+
+  .modal-scrim {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: rgb(15 23 42 / 45%);
+    cursor: pointer;
+  }
+
+  .modal-dialog {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 26rem;
+    margin-top: 2vh;
+    padding: 1rem 1.15rem 1.15rem;
+    border-radius: 14px;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 12px 40px rgb(15 23 42 / 18%);
+  }
+
+  .modal-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.35rem;
+  }
+
+  .modal-title {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+    line-height: 1.3;
+  }
+
+  .modal-lead {
+    margin: 0 0 0.75rem;
+  }
+
+  .modal-error {
+    margin: 0.5rem 0 0;
+    font-size: 0.88rem;
+    color: #b91c1c;
+  }
+
+  .modal-actions {
+    margin-top: 0.85rem;
+    justify-content: flex-end;
+  }
+
+  .score-modal-table {
+    margin-top: 0.25rem;
+  }
+
+  .score-modal-table tr.row-muted td {
+    opacity: 0.45;
+  }
+
+  .game-hint {
+    font-size: 0.78rem;
+    color: #b45309;
+    padding: 0.15rem 0 0.1rem;
+  }
+
+  .hint-row td {
+    border-bottom: 1px solid #e2e8f0;
+    padding-top: 0;
   }
 </style>

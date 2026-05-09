@@ -16,6 +16,12 @@ describe('Table Tennis score legality', () => {
 
     expect(gameWinner({ playerA: 12, playerB: 10 })).toBe('A');
     expect(isGameScoreLegal({ playerA: 12, playerB: 10 })).toBe(true);
+
+    expect(gameWinner({ playerA: 13, playerB: 10 })).toBe(undefined);
+    expect(isGameScoreLegal({ playerA: 13, playerB: 10 })).toBe(false);
+
+    expect(gameWinner({ playerA: 13, playerB: 11 })).toBe('A');
+    expect(isGameScoreLegal({ playerA: 13, playerB: 11 })).toBe(true);
   });
 
   it('should reject invalid game score with negative points', () => {

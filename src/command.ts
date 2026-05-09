@@ -11,6 +11,7 @@ import {
   generateBracket,
   type GroupDefinition,
   isBracketRoundComplete,
+  isMatchScoreLegal,
   playerMatchWinner,
   recomputeClassTournamentSlices,
   roundRobinPairs,
@@ -18,6 +19,7 @@ import {
   settleBracketWinners,
   teamMatchWinner,
   tournamentUsesClassTabs,
+  isPlayerDisplayNameTaken,
 } from './model';
 
 export type CommandType =
@@ -134,7 +136,7 @@ export interface GenerateGroupRoundRobinCommand extends CommandBase {
 
 export interface GenerateBracketCommand extends CommandBase {
   type: 'GenerateBracket';
-  payload: { fillByes: boolean; cullToPowerOfTwo: boolean };
+  payload: { fillByes: boolean; cullToPowerOfTwo: boolean; shuffleKey?: string };
 }
 
 export interface AssignTablesCommand extends CommandBase {
@@ -465,6 +467,9 @@ export class CommandRunner {
         if (tournament.players[playerId]) {
           return { success: false, reason: 'Player already exists' };
         }
+        if (isPlayerDisplayNameTaken(tournament, name)) {
+          return { success: false, reason: 'A player with this name already exists' };
+        }
         tournament.players[playerId] = { id: playerId, name, handicap };
         tournament.playerClassFlags[playerId] = {};
         for (const c of tournament.classDefinitions) {
@@ -543,6 +548,13 @@ export class CommandRunner {
         const round = findBracketRoundForPlayerPairing(tournament, match.playerA, match.playerB);
         if (round !== undefined && tournament.lockedBracketRounds.includes(round)) {
           return { success: false, reason: `Bracket round ${round} is locked` };
+        }
+        if (!isMatchScoreLegal(scores)) {
+          return {
+            success: false,
+            reason:
+              'Invalid scores: each game must finish at 11+ with a two-point margin, and the match must have a best-of-five winner (first to three games).',
+          };
         }
         match.scores = scores;
         match.status = 'finished';
@@ -909,11 +921,12 @@ export class CommandRunner {
         if (Object.keys(tournament.teamMatches).length > 0) {
           return { success: false, reason: 'Cannot generate bracket while a team vs team match exists' };
         }
-        const { fillByes, cullToPowerOfTwo } = command.payload;
+        const { fillByes, cullToPowerOfTwo, shuffleKey } = command.payload;
         try {
           const bm = generateBracket(tournament.seedings, tournament, {
             fillByes: fillByes ?? true,
             cullToPowerOfTwo: cullToPowerOfTwo ?? false,
+            ...(shuffleKey !== undefined ? { shuffleKey } : {}),
           });
           applyBracketToTournament(tournament, bm);
         } catch (e) {
@@ -942,6 +955,9 @@ export class CommandRunner {
         const p = tournament.players[playerId];
         if (!p) {
           return { success: false, reason: 'Player not found' };
+        }
+        if (isPlayerDisplayNameTaken(tournament, name, playerId)) {
+          return { success: false, reason: 'A player with this name already exists' };
         }
         p.name = name;
         if (handicap !== undefined) {

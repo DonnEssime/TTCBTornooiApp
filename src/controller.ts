@@ -272,13 +272,26 @@ export class TournamentController {
     return result;
   }
 
-  generateBracket(fillByes = true, cullToPowerOfTwo = false, dependsOn: string[] = [], commandId?: string): CommandResult {
+  generateBracket(
+    fillByes = true,
+    cullToPowerOfTwo = false,
+    dependsOn: string[] = [],
+    commandId?: string,
+    shuffleKey?: string,
+  ): CommandResult {
+    const payload: { fillByes: boolean; cullToPowerOfTwo: boolean; shuffleKey?: string } = {
+      fillByes,
+      cullToPowerOfTwo,
+    };
+    if (shuffleKey !== undefined) {
+      payload.shuffleKey = shuffleKey;
+    }
     const command: GenerateBracketCommand = {
       id: commandId ?? this.newCommandId(),
       type: 'GenerateBracket',
       timestamp: this.makeTimestamp(),
       dependsOn,
-      payload: { fillByes, cullToPowerOfTwo },
+      payload,
     };
     const result = this.runner.execute(command);
     if (!result.success) {

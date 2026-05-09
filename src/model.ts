@@ -136,6 +136,25 @@ export function createTournament(): Tournament {
   };
 }
 
+/** Normalize display name for duplicate checks (trim, collapse spaces, case-fold). */
+export function normalizedPlayerDisplayName(name: string): string {
+  return name.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
+ * True when another player already uses this display name (case-insensitive; leading/trailing/duplicate spaces ignored).
+ * Optional `exceptPlayerId` skips that player (e.g. rename-in-place). Player ids remain the canonical identity.
+ */
+export function isPlayerDisplayNameTaken(tournament: Tournament, name: string, exceptPlayerId?: PlayerId): boolean {
+  const key = normalizedPlayerDisplayName(name);
+  if (!key) return false;
+  for (const [id, p] of Object.entries(tournament.players)) {
+    if (exceptPlayerId !== undefined && id === exceptPlayerId) continue;
+    if (normalizedPlayerDisplayName(p.name) === key) return true;
+  }
+  return false;
+}
+
 export function emptyClassTournamentSlice(): ClassTournamentSlice {
   return {
     seedings: [],
@@ -213,7 +232,7 @@ export function partitionPlayerCountIntoGroupSizes(playerCount: number, targetSi
   return sizes;
 }
 
-/** Build groups with ids and labels "1", "2", … in order, splitting `playerIds` by {@link partitionPlayerCountIntoGroupSizes}. */
+/** Build groups with ids "1", "2", … and labels "group 1", "group 2", … in order, splitting `playerIds` by {@link partitionPlayerCountIntoGroupSizes}. */
 export function buildNumberedGroupsFromPlayerOrder(playerIds: PlayerId[], targetSize: number): GroupDefinition[] {
   const ids = [...playerIds].filter(Boolean);
   const n = ids.length;
@@ -226,7 +245,7 @@ export function buildNumberedGroupsFromPlayerOrder(playerIds: PlayerId[], target
     const chunk = ids.slice(offset, offset + sz);
     offset += sz;
     const num = String(gi + 1);
-    out.push({ id: num, label: num, playerIds: chunk });
+    out.push({ id: num, label: `group ${num}`, playerIds: chunk });
   }
   return out;
 }
@@ -267,8 +286,9 @@ export function gameWinner(score: GameScore, pointTarget = defaultPointTarget): 
     return playerA > playerB ? 'A' : 'B';
   }
 
-  if (maxScore > pointTarget && (maxScore - minScore) >= 2) {
-    return playerA > playerB ? 'A' : 'B';
+  /** Past 11–11 (i.e. either score > 11), the game must end on an exact two-point gap (e.g. 13–11, not 13–10). */
+  if (maxScore > pointTarget) {
+    return (maxScore - minScore) === 2 ? (playerA > playerB ? 'A' : 'B') : undefined;
   }
 
   return undefined;
@@ -398,6 +418,38 @@ export function previousPowerOfTwo(n: number): number {
   return p;
 }
 
+/** FNV-1a 32-bit hash for PRNG seeding (stable across engines). */
+function hashStringToSeed(str: string): number {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h >>> 0;
+}
+
+function mulberry32(seed: number): () => number {
+  return () => {
+    let t = (seed += 0x6d2b79f5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Fisher–Yates shuffle with a seeded RNG (same `seedString` → same permutation). */
+export function shuffleDeterministic<T>(items: T[], seedString: string): T[] {
+  const out = [...items];
+  const rand = mulberry32(hashStringToSeed(seedString));
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    const tmp = out[i]!;
+    out[i] = out[j]!;
+    out[j] = tmp;
+  }
+  return out;
+}
+
 function seedPositions(size: number): number[] {
   if (size === 1) return [1];
   if ((size & (size - 1)) !== 0) {
@@ -415,13 +467,16 @@ function seedPositions(size: number): number[] {
 
 export function generateBracket(
   seedings: string[],
-  tournamentOrOptions?: Tournament | { fillByes?: boolean; cullToPowerOfTwo?: boolean },
-  options: { fillByes?: boolean; cullToPowerOfTwo?: boolean } = { fillByes: true, cullToPowerOfTwo: false },
+  tournamentOrOptions?: Tournament | { fillByes?: boolean; cullToPowerOfTwo?: boolean; shuffleKey?: string },
+  options: { fillByes?: boolean; cullToPowerOfTwo?: boolean; shuffleKey?: string } = {
+    fillByes: true,
+    cullToPowerOfTwo: false,
+  },
 ): BracketMatch[] {
   if (!seedings || seedings.length === 0) return [];
 
   let tournament: Tournament | undefined;
-  let opts: { fillByes?: boolean; cullToPowerOfTwo?: boolean } = options;
+  let opts: { fillByes?: boolean; cullToPowerOfTwo?: boolean; shuffleKey?: string } = options;
 
   if (tournamentOrOptions) {
     if (
@@ -433,7 +488,7 @@ export function generateBracket(
     ) {
       tournament = tournamentOrOptions as Tournament;
     } else {
-      opts = tournamentOrOptions as { fillByes?: boolean; cullToPowerOfTwo?: boolean };
+      opts = tournamentOrOptions as { fillByes?: boolean; cullToPowerOfTwo?: boolean; shuffleKey?: string };
     }
   }
 
@@ -457,6 +512,13 @@ export function generateBracket(
     const maxForCull = previousPowerOfTwo(participants.length);
     if (maxForCull < participants.length) {
       participants = participants.slice(0, maxForCull);
+    }
+  }
+
+  if (opts.shuffleKey !== undefined) {
+    const key = String(opts.shuffleKey).trim() || 'Tournament';
+    if (participants.length > 1) {
+      participants = shuffleDeterministic(participants, key);
     }
   }
 
