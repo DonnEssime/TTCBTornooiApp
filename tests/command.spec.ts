@@ -186,4 +186,117 @@ describe('CommandRunner dependency-aware undo', () => {
     expect(runner.redoPop()).toEqual({ success: true });
     expect(runner.getTournament().players['p1']?.name).toBe('A');
   });
+
+  it('SetTournamentClasses then players yields per-class slice seedings from flags', () => {
+    const runner = new CommandRunner();
+    runner.execute({
+      id: 'tc',
+      type: 'SetTournamentClasses',
+      dependsOn: [],
+      payload: {
+        classes: [
+          { id: 'jun', name: 'Junior' },
+          { id: 'sen', name: 'Senior' },
+        ],
+      },
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    runner.execute({
+      id: 'p1',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p1', name: 'A', handicap: 0 },
+      timestamp: '2026-01-01T00:00:01.000Z',
+    });
+    runner.execute({
+      id: 'p2',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p2', name: 'B', handicap: 0 },
+      timestamp: '2026-01-01T00:00:02.000Z',
+    });
+    runner.execute({
+      id: 'seed',
+      type: 'SetSeedings',
+      dependsOn: ['p1', 'p2'],
+      payload: { playerIds: ['p1', 'p2'] },
+      timestamp: '2026-01-01T00:00:03.000Z',
+    });
+    runner.execute({
+      id: 'f1',
+      type: 'SetPlayerClassFlags',
+      dependsOn: ['p1'],
+      payload: { playerId: 'p1', flags: { jun: true, sen: false } },
+      timestamp: '2026-01-01T00:00:04.000Z',
+    });
+    runner.execute({
+      id: 'f2',
+      type: 'SetPlayerClassFlags',
+      dependsOn: ['p2'],
+      payload: { playerId: 'p2', flags: { jun: false, sen: true } },
+      timestamp: '2026-01-01T00:00:05.000Z',
+    });
+    const t = runner.getTournament();
+    expect(t.classTournaments['jun']?.seedings).toEqual(['p1']);
+    expect(t.classTournaments['sen']?.seedings).toEqual(['p2']);
+  });
+
+  it('rejects GenerateBracket when two competition classes are defined', () => {
+    const runner = new CommandRunner();
+    runner.execute({
+      id: 'tc',
+      type: 'SetTournamentClasses',
+      dependsOn: [],
+      payload: {
+        classes: [
+          { id: 'a', name: 'A' },
+          { id: 'b', name: 'B' },
+        ],
+      },
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    runner.execute({
+      id: 'p1',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p1', name: 'X', handicap: 0 },
+      timestamp: '2026-01-01T00:00:01.000Z',
+    });
+    runner.execute({
+      id: 'seed',
+      type: 'SetSeedings',
+      dependsOn: ['p1'],
+      payload: { playerIds: ['p1'] },
+      timestamp: '2026-01-01T00:00:02.000Z',
+    });
+    const r = runner.execute({
+      id: 'gen',
+      type: 'GenerateBracket',
+      dependsOn: ['seed'],
+      payload: { fillByes: true, cullToPowerOfTwo: false },
+      timestamp: '2026-01-01T00:00:03.000Z',
+    });
+    expect(r.success).toBe(false);
+    expect(r.reason).toMatch(/Global bracket|multiple competition classes/i);
+  });
+
+  it('SetTournamentClasses assigns ids when only display names are given', () => {
+    const runner = new CommandRunner();
+    runner.execute({
+      id: 'tc',
+      type: 'SetTournamentClasses',
+      dependsOn: [],
+      payload: {
+        classes: [{ name: 'Junior' }, { name: 'Senior' }],
+      },
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    const defs = runner.getTournament().classDefinitions;
+    expect(defs).toHaveLength(2);
+    expect(defs[0].name).toBe('Junior');
+    expect(defs[1].name).toBe('Senior');
+    expect(defs[0].id).toMatch(/^cid-/);
+    expect(defs[1].id).toMatch(/^cid-/);
+    expect(defs[0].id).not.toBe(defs[1].id);
+  });
 });

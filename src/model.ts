@@ -61,6 +61,21 @@ export interface GroupDefinition {
   playerIds: PlayerId[];
 }
 
+/** User-defined competition track within one tournament (e.g. junior, handicapped). */
+export interface TournamentClassDefinition {
+  id: string;
+  name: string;
+}
+
+/** Per-class competition state (seedings derived from global order + class flags). */
+export interface ClassTournamentSlice {
+  /** Player ids in global seed order that are entered in this class. */
+  seedings: PlayerId[];
+  groups: Record<string, GroupDefinition>;
+  bracketMatches: BracketMatch[];
+  lockedBracketRounds: number[];
+}
+
 export type ForfeitGroupMode = 'auto-win' | 'not-played';
 
 export interface ForfeitResults {
@@ -87,6 +102,12 @@ export interface Tournament {
   forfeitResults: ForfeitResults;
   /** Bracket rounds for which score edits on mapped player matches are blocked (v1: bracket player matches only). */
   lockedBracketRounds: number[];
+  /** When length ≥ 2, UI uses one tab row per class; bracket generation is per-class (see class slices). */
+  classDefinitions: TournamentClassDefinition[];
+  /** Per player, per class id — true means the player competes in that class track. */
+  playerClassFlags: Record<PlayerId, Record<string, boolean>>;
+  /** Per class id: derived seedings plus future group/bracket state for that track. */
+  classTournaments: Record<string, ClassTournamentSlice>;
 }
 
 export function createTournament(): Tournament {
@@ -103,7 +124,58 @@ export function createTournament(): Tournament {
     forfeitGroupMode: undefined,
     forfeitResults: { playerWins: {} },
     lockedBracketRounds: [],
+    classDefinitions: [],
+    playerClassFlags: {},
+    classTournaments: {},
   };
+}
+
+export function emptyClassTournamentSlice(): ClassTournamentSlice {
+  return {
+    seedings: [],
+    groups: {},
+    bracketMatches: [],
+    lockedBracketRounds: [],
+  };
+}
+
+function playerOptedIntoClass(t: Tournament, playerId: PlayerId, classId: string): boolean {
+  return Boolean(t.playerClassFlags[playerId]?.[classId]);
+}
+
+/** Refresh per-class slice seedings from global {@link Tournament.seedings} and flags; drops stale class keys. */
+export function recomputeClassTournamentSlices(t: Tournament): void {
+  const validIds = new Set(t.classDefinitions.map((c) => c.id));
+  for (const k of Object.keys(t.classTournaments)) {
+    if (!validIds.has(k)) {
+      delete t.classTournaments[k];
+    }
+  }
+
+  for (const def of t.classDefinitions) {
+    if (!t.classTournaments[def.id]) {
+      t.classTournaments[def.id] = emptyClassTournamentSlice();
+    }
+    const slice = t.classTournaments[def.id];
+    if (!slice.lockedBracketRounds) {
+      slice.lockedBracketRounds = [];
+    }
+    slice.seedings = t.seedings.filter((pid) => playerOptedIntoClass(t, pid, def.id));
+  }
+
+  for (const pid of Object.keys(t.playerClassFlags)) {
+    const row = t.playerClassFlags[pid];
+    for (const k of Object.keys(row)) {
+      if (!validIds.has(k)) {
+        delete row[k];
+      }
+    }
+  }
+}
+
+/** True when the tournament uses multiple class tabs (two or more definitions). */
+export function tournamentUsesClassTabs(t: Tournament): boolean {
+  return t.classDefinitions.length >= 2;
 }
 
 export function applyBracketToTournament(tournament: Tournament, bracketMatches: BracketMatch[]): Tournament {

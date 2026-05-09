@@ -10,9 +10,11 @@ import {
   generateBracket,
   isBracketRoundComplete,
   playerMatchWinner,
+  recomputeClassTournamentSlices,
   scheduleRound,
   settleBracketWinners,
   teamMatchWinner,
+  tournamentUsesClassTabs,
 } from './model';
 
 export type CommandType =
@@ -26,6 +28,8 @@ export type CommandType =
   | 'TeamForfeit'
   | 'SetRoundLock'
   | 'SetSeedings'
+  | 'SetTournamentClasses'
+  | 'SetPlayerClassFlags'
   | 'GenerateBracket'
   | 'AssignTables'
   | 'AdvanceBracketRound'
@@ -89,6 +93,16 @@ export interface SetSeedingsCommand extends CommandBase {
   payload: { playerIds: string[] };
 }
 
+export interface SetTournamentClassesCommand extends CommandBase {
+  type: 'SetTournamentClasses';
+  payload: { classes: Array<{ id?: string; name: string }> };
+}
+
+export interface SetPlayerClassFlagsCommand extends CommandBase {
+  type: 'SetPlayerClassFlags';
+  payload: { playerId: string; flags: Record<string, boolean> };
+}
+
 export interface GenerateBracketCommand extends CommandBase {
   type: 'GenerateBracket';
   payload: { fillByes: boolean; cullToPowerOfTwo: boolean };
@@ -125,6 +139,8 @@ export type Command =
   | TeamForfeitCommand
   | SetRoundLockCommand
   | SetSeedingsCommand
+  | SetTournamentClassesCommand
+  | SetPlayerClassFlagsCommand
   | GenerateBracketCommand
   | AssignTablesCommand
   | AdvanceBracketRoundCommand
@@ -159,6 +175,14 @@ function dependsReach(cmd: Command, ancestorId: string, byId: Map<string, Comman
   return false;
 }
 
+function newTournamentClassId(): string {
+  const u = globalThis.crypto?.randomUUID?.();
+  if (u) {
+    return `cid-${u.replace(/-/g, '').slice(0, 12)}`;
+  }
+  return `cid-${Math.random().toString(36).slice(2, 14)}`;
+}
+
 export class CommandRunner {
   private tournament: Tournament;
   /** Append-only command log (includes {@link UndoCommand}). */
@@ -169,6 +193,15 @@ export class CommandRunner {
     this.tournament = tournament ?? createTournament();
     if (!this.tournament.lockedBracketRounds) {
       this.tournament.lockedBracketRounds = [];
+    }
+    if (!this.tournament.classDefinitions) {
+      this.tournament.classDefinitions = [];
+    }
+    if (!this.tournament.playerClassFlags) {
+      this.tournament.playerClassFlags = {};
+    }
+    if (!this.tournament.classTournaments) {
+      this.tournament.classTournaments = {};
     }
   }
 
@@ -347,7 +380,6 @@ export class CommandRunner {
     const { suppressed } = this.computeSuppressedWithVictims(sorted, byId);
 
     const t = createTournament();
-    if (!t.lockedBracketRounds) t.lockedBracketRounds = [];
 
     for (const c of sorted) {
       if (c.type === 'Undo') continue;
@@ -370,6 +402,11 @@ export class CommandRunner {
           return { success: false, reason: 'Player already exists' };
         }
         tournament.players[playerId] = { id: playerId, name, handicap };
+        tournament.playerClassFlags[playerId] = {};
+        for (const c of tournament.classDefinitions) {
+          tournament.playerClassFlags[playerId][c.id] = false;
+        }
+        recomputeClassTournamentSlices(tournament);
         return { success: true };
       }
       case 'CreateTeam': {
@@ -510,9 +547,96 @@ export class CommandRunner {
           }
         }
         tournament.seedings = [...playerIds];
+        recomputeClassTournamentSlices(tournament);
+        return { success: true };
+      }
+      case 'SetTournamentClasses': {
+        const { classes } = command.payload;
+        if (!Array.isArray(classes)) {
+          return { success: false, reason: 'classes must be an array' };
+        }
+
+        const normalized: Array<{ id: string; name: string }> = [];
+        for (const c of classes) {
+          const name = String(c.name ?? '').trim();
+          if (!name) {
+            return { success: false, reason: 'Each class needs a non-empty display name' };
+          }
+          let id = String(c.id ?? '').trim();
+          if (!id) {
+            id = newTournamentClassId();
+          }
+          normalized.push({ id, name });
+        }
+        const idSet = new Set<string>();
+        for (const c of normalized) {
+          if (idSet.has(c.id)) {
+            return { success: false, reason: 'Duplicate class id' };
+          }
+          idSet.add(c.id);
+        }
+
+        const hasPlayers = Object.keys(tournament.players).length > 0;
+        const hadMulti = tournament.classDefinitions.length >= 2;
+        const willMulti = normalized.length >= 2;
+
+        if (hasPlayers && !hadMulti && willMulti) {
+          return {
+            success: false,
+            reason: 'Define at least two competition classes before adding players.',
+          };
+        }
+        if (hasPlayers && hadMulti && willMulti) {
+          const oldIds = new Set(tournament.classDefinitions.map((x) => x.id));
+          if (oldIds.size !== idSet.size || [...oldIds].some((id) => !idSet.has(id))) {
+            return {
+              success: false,
+              reason: 'Cannot add or remove a competition class while players exist.',
+            };
+          }
+        }
+
+        tournament.classDefinitions = normalized;
+        for (const pid of Object.keys(tournament.players)) {
+          if (!tournament.playerClassFlags[pid]) {
+            tournament.playerClassFlags[pid] = {};
+          }
+          for (const def of tournament.classDefinitions) {
+            if (tournament.playerClassFlags[pid][def.id] === undefined) {
+              tournament.playerClassFlags[pid][def.id] = false;
+            }
+          }
+        }
+        recomputeClassTournamentSlices(tournament);
+        return { success: true };
+      }
+      case 'SetPlayerClassFlags': {
+        const { playerId, flags } = command.payload;
+        if (!tournament.players[playerId]) {
+          return { success: false, reason: 'Player not found' };
+        }
+        if (!flags || typeof flags !== 'object') {
+          return { success: false, reason: 'flags object required' };
+        }
+        if (!tournament.playerClassFlags[playerId]) {
+          tournament.playerClassFlags[playerId] = {};
+        }
+        const valid = new Set(tournament.classDefinitions.map((c) => c.id));
+        for (const [k, v] of Object.entries(flags)) {
+          if (!valid.has(k)) continue;
+          tournament.playerClassFlags[playerId][k] = Boolean(v);
+        }
+        recomputeClassTournamentSlices(tournament);
         return { success: true };
       }
       case 'GenerateBracket': {
+        if (tournamentUsesClassTabs(tournament)) {
+          return {
+            success: false,
+            reason:
+              'Global bracket is disabled when multiple competition classes are defined; generate a bracket from each class tab instead.',
+          };
+        }
         if (Object.keys(tournament.teamMatches).length > 0) {
           return { success: false, reason: 'Cannot generate bracket while a team vs team match exists' };
         }

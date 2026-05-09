@@ -11,6 +11,8 @@ import {
   GenerateBracketCommand,
   SetRoundLockCommand,
   SetSeedingsCommand,
+  SetTournamentClassesCommand,
+  SetPlayerClassFlagsCommand,
   type AssignTablesCommand,
   type AdvanceBracketRoundCommand,
   type PlayerForfeitCommand,
@@ -165,6 +167,43 @@ export class TournamentController {
     };
     const result = this.runner.execute(command);
     this.view?.renderMessage(`SetSeedings: ${JSON.stringify(result)}`);
+    this.view?.renderTournament(this.getTournament());
+    return result;
+  }
+
+  setTournamentClasses(
+    classes: Array<{ id?: string; name: string }>,
+    dependsOn: string[] = [],
+    commandId?: string,
+  ): CommandResult {
+    const command: SetTournamentClassesCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'SetTournamentClasses',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: { classes },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`SetTournamentClasses: ${JSON.stringify(result)}`);
+    this.view?.renderTournament(this.getTournament());
+    return result;
+  }
+
+  setPlayerClassFlags(
+    playerId: string,
+    flags: Record<string, boolean>,
+    dependsOn: string[] = [],
+    commandId?: string,
+  ): CommandResult {
+    const command: SetPlayerClassFlagsCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'SetPlayerClassFlags',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: { playerId, flags },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`SetPlayerClassFlags: ${JSON.stringify(result)}`);
     this.view?.renderTournament(this.getTournament());
     return result;
   }
