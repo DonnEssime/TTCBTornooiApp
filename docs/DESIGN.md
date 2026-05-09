@@ -1,5 +1,7 @@
 # Tournament Tracker (Table Tennis first) — Design Document (Decisions Only)
 
+**Implementation:** delivery status, gaps, and next steps live in [IMPLEMENTATION.md](IMPLEMENTATION.md) (design vs code cross-link).
+
 ## Goals (what we’re building)
 
 - **Portable web app**: remotely hosted, works well on phones/tablets/laptops.
@@ -35,12 +37,20 @@ Anything that looks like a **team tournament** (several teams, team standings fe
 ### 1) Hosting & runtime model
 
 - **Static SPA vs SSR/MPA**: purely static hosting (CDN) vs server-rendered pages.
+
+Decision (v1 hosting): **static site only** — e.g. **GitHub Pages** or any static host (no server-rendered app requirement for v1). All application logic runs in the browser; assets are fetched once, then organizer flows work **offline-first** per below.
+
 - **Offline-first**: should the app work fully offline once loaded?
+
+Decision (offline-first): once the app is **loaded**, **admin flows must work fully offline** — **read and write** tournament data **without network**, using the local persistence model in §2/§4 (browser storage APIs, picked files, or equivalent). Viewers may still use optional network refresh where explicitly designed; the **organizer path** is offline-capable.
+
 - **Device constraints**: minimum supported browsers and any “kiosk mode” for tournament desks.
 
 ### 2) Local data storage target (“variable spot”)
 
 Decide what “variable spot” means in practice (decision: **admin device is Chrome; local filesystem or transparently network-mounted filesystem**):
+
+Decision (v1 primary write path): **File System Access API** (or equivalent **folder/file pick** with persistent handles) as the **primary** way to read/write the per-tournament `.jsonl` where the browser supports it; **fallback** flows (download / re-upload, or copy of files) remain required for browsers that lack the API—format is unchanged.
 
 - **User-selected file storage**: admin device can use direct folder/file picking in Chrome/Edge.
 - **Fallback import/export**: Safari/iOS and Firefox can use download/upload (e.g. a zipped bundle or selected JSONL files) for viewer-style consumption.
@@ -51,6 +61,9 @@ Decide what “variable spot” means in practice (decision: **admin device is C
 ### 3) Browser-local cached settings
 
 - **What is cached**: UI preferences only vs also “last opened tournament” pointers, recently used directories, etc.
+
+Decision (v1): cache **UI preferences** **and** a **full recent-tournaments list** — each entry includes at least **title** (and identifiers needed to re-open the file or tournament, e.g. name + path/handle token per browser limits). Cap list length reasonably (e.g. last N) to bound storage.
+
 - **Privacy posture**: what metadata is acceptable to persist locally.
 - **Migration strategy**: versioning of settings as the app evolves.
 
@@ -61,7 +74,12 @@ Decide what “variable spot” means in practice (decision: **admin device is C
 ### 4) JSONL as the source of truth
 
 - **Log structure**: one JSON object per line (decision: **store commands** for maximal reproducibility; commands are **structured-but-not-friendly** for manual editing).
+
+Decision (primary tournament file): **one append-only `.jsonl` per tournament**, **commands only** (no parallel mandatory snapshot file in v1). A folder may hold **multiple** tournaments (each its own log); tournament identity must appear consistently in command payloads or a small agreed header convention if we add one later.
+
 - **Schema versioning**: per-line version fields, global manifest, or both.
+
+Decision (v1): **header convention** — the log begins with a **first line** (or fixed header block) carrying **schema / format version**; subsequent command lines omit a per-line version field **until** a breaking change forces a bump (then document whether new lines carry their own version or the file is migrated as a whole).
 - **Referential integrity**: IDs, stable references, and how to handle deleted/merged entities.
 - **Determinism**: rules to ensure replay reconstructs identical state (time, randomness, ordering).
 - **Indexing**: whether to maintain derived indexes (locally) for fast UI.
@@ -70,11 +88,14 @@ Decide what “variable spot” means in practice (decision: **admin device is C
 
 Define which concepts are first-class entities:
 
-- **Player**, **Team** (even if TT is mostly singles), **Match**, **Game** (set), **Round**, **Court/Table**, **Tournament**, **Event/Command**.
+- **Player**, **Team** (even if TT is mostly singles), **Match**, **Game** (table-tennis **game**; not “set” by default), **Round**, **Court/Table**, **Tournament**, **Event/Command**.
 
 Decide:
 
 - **Match vs game/set**: what gets stored and validated at which level.
+
+Decision (v1): **Match** is the **command atomicity** unit for results: **one `EnterScore`-style command carries the full list of per-**game** scores for that match** (not one command per finished game). Each **game** remains a first-class scoring unit inside the payload for validation and display.
+
 - **Lineups/doubles**: how teams map to players (for future).
 - **Seeding, groups, brackets**: modeled explicitly or as tournament-type plugins.
 
@@ -85,12 +106,19 @@ Decision (tournament initialization): when creating a new tournament from an exi
 ### 6) Identifier strategy
 
 - **ID type**: UUID-like strings, short IDs, human-readable codes.
+
+Decision (v1): **short random strings** (e.g. nanoid-style) for **player and team** entity IDs generated by the app; human-readable display names remain separate from `id`.
+
 - **Stability**: how to handle renames, merges, duplicate players.
+
+Decision (identity / renames): treat identity as **log-versioned** — any change to canonical participant fields (rename, merge, etc.) is represented by **explicit commands** only (e.g. `RenamePlayer`, future merge commands). **No** silent out-of-band edits to history; replay must reconstruct the same state, and undo remains meaningful.
+
 - **Cross-file references**: consistent IDs across JSONL files.
 
 ### 7) Tournament reconstruction & “single source”
 
-- **What constitutes “the tournament”**: one folder with multiple JSONL files? one combined JSONL? manifest + logs?
+- **What constitutes “the tournament”**: **Resolved** — see §4: **one command-only `.jsonl` per tournament**; multiple tournaments ⇒ multiple files in a folder (or subtrees), each with explicit tournament identity in data.
+
 - **Import/export**: packaging format (zip?), partial exports, anonymization.
 
 Decision: support **multiple tournaments per folder**, with explicit tournament identity in data references.
@@ -113,6 +141,9 @@ Define the command catalog (conceptually), e.g.:
 Decisions:
 
 - **Coarse vs fine commands**: e.g. “enter match result” as one command vs multiple incremental steps.
+
+Decision (v1): **one command per completed match** for score entry — a single command carries **all game scores** for that match (see also §5). Finer per-point commands are **out of scope** for v1.
+
 - **Atomicity**: what must be atomic for correctness and for undo to feel right.
 
 ### 9) Result/event representation
@@ -147,6 +178,8 @@ This requires:
 - After lock/finalization, edits are blocked due to downstream implications.
 - Lock/finalization is reversible only with a **significant warning** and only after deleting **all dependent downstream stages**.
 
+Decision (v1 — lock as command): **Round (or stage) lock is explicit and command-backed** — e.g. a dedicated `SetRoundLock` / `LockStage` command (exact name TBD) records lock state so it participates in **dependency-aware undo** like any other mutation. Unlocking is likewise a **command** (with guardrails / warnings per above), not a hidden toggle.
+
 ### 11) Concurrency and conflicts (if multi-device)
 
 If multiple devices can write:
@@ -174,7 +207,13 @@ Decision: **single-writer (admin device only)**. Viewers are read-only.
 Decisions (individual group stage → bracket):
 
 - **Bracket count**: support a configurable number of brackets formed by **in-group performance bands** (e.g. one bracket with everyone; or separate “top half” and “bottom half” brackets per group; etc.).
+
+Decision (v1 product): ship **one combined bracket** from group results by default; **multiple performance bands → multiple brackets** may exist **behind a feature flag** or later milestone, but architecture should **allow** it without a rewrite.
+
 - **Seeding**: use standard seeding patterns (e.g. 1–8, 2–7, …) while trying to keep **#1 and #2 from the same group as far apart as possible** in the bracket.
+
+Decision (same-group top-two separation): apply **strict maximum separation** in the bracket between each group’s **#1 and #2** seeds when pairing/placing them. When the bracket size is awkward (byes, non-power-of-two, early **bye / “free” rounds** where one side advances without a played match), **measure separation ignoring those free rounds** — i.e. count effective path distance only through **played** bracket slots (document precisely in implementation notes when coding).
+
 - **Power-of-two handling (lowest bracket)**: provide an option to either:
   - **fill** to the next power-of-two (assigning byes / free wins to top seeds), or
   - **cull** down to the previous power-of-two (cutting off lowest-ranked players).
@@ -254,7 +293,7 @@ Decisions to define (TT-only implementation, but via sport abstraction):
 
 Decisions:
 
-- **Score entry**: always require **per-game scores** (for all sports types), no winner-only shortcut in v1.
+- **Score entry**: always require **per-game scores** (for all sports types), **no winner-only shortcut in v1** — **confirmed; not revisiting for v1**.
 - **Non-played outcomes**: separate outcome type (initially only **forfeit** supported).
 - **Per-stage configuration**: match format can vary by tournament stage (e.g. groups vs bracket).
 
@@ -265,6 +304,10 @@ Decide consistent terms in UI and data:
 - **Table** vs **court**
 - **Game** vs **set**
 - **Match** vs **fixture**
+
+Decision (playing surface, TT-first): default term is **Table** (table-tennis–native). “Court” is not the default in UI or copy; localization may choose differently later.
+
+Decision (game vs set, TT-first): use **game** in UI and copy (ITTF-aligned); **set** is not the default term.
 
 Localization considerations (if multilingual is a future possibility).
 
@@ -299,7 +342,7 @@ Localization considerations (if multilingual is a future possibility).
 
 Decision: matches are **always decisive** (no draws); outcomes are win/loss or a separate outcome type (e.g. forfeit).
 
-Decision (group standings default): rank by **total matches won**, then **head-to-head among the tied top players** (resolving two-way ties), then **games/sets**, then **points scored**.
+Decision (group standings default): rank by **total matches won**, then **head-to-head among the tied top players** (resolving two-way ties), then **games**, then **points scored**.
 
 ---
 
@@ -318,10 +361,14 @@ Decision (group standings default): rank by **total matches won**, then **head-t
 - Upcoming matches queue/scheduling
 - Comprehensive audit/undo history visualization
 
+**Team-vs-team match entry (UX)** — decision: present cross-team play as a **flat list**: **one row per pairing** of a player from side A vs a player from side B (no team-first hierarchy as the primary layout). *Implementation note:* the **current** domain layer uses a single aggregate `TeamMatch` (games scored as team A vs team B). For rosters with more than one player per side, aligning UI with this flat list may require **per-pairing matches/commands** in a later iteration, or a single row when each team fields one player.
+
 ### 23) Interaction design & debug features
 
 - **Fast score entry**: mobile-friendly numeric entry, minimizing taps.
 - **Error prevention**: validation feedback timing (live vs on submit).
+
+Decision (v1): **live** validation for **score legality** as the user edits (immediate feedback); tune copy so it does not feel noisy on partial input (e.g. only flag clear impossibilities, or stage hints by field).
 - **Correction flows**: edit/undo without fear; confirm prompts.
 - **Accessibility**: font sizes, contrast, color-blind safe brackets, keyboard support.
 
@@ -335,6 +382,8 @@ Decision (group standings default): rank by **total matches won**, then **head-t
 - **Roles**: organizer/admin vs player vs viewer.
 - **Permissions**: who can edit results or undo.
 
+Decision (v1): **defer** dedicated roles UI and accounts — assume **single organizer device** with the writable tournament file; viewers consume **read-only** exports or shared views. Revisit PIN/passphrase or multi-role when requirements mature.
+
 ---
 
 ## Reliability, testing, and safety decisions
@@ -343,14 +392,17 @@ Decision (group standings default): rank by **total matches won**, then **head-t
 
 - **Backups**: automatic export reminders, redundant storage options.
 - **Corruption handling**: partial lines, truncated files, schema mismatch.
+
+Decision (v1 load / replay): on **malformed JSONL** (bad line, truncated file, unexpected shape), **stop** replay, show the **1-based line number** of the first offending line, and **do not** silently skip. The organizer may **manually fix** the file (or a copy) and **resume** loading from a corrected log; the app should support a clear **“retry after edit”** path once the file is valid again.
+
 - **Recovery tools**: verify logs, rebuild indexes, repair commands.
 
 ### 26) Test-Driven Development (TDD) strategy
 
 This project will follow a **test-first approach**: tests are formulated ahead of implementation and serve as executable specifications.
 
-**Testing framework selection criteria** (to be decided):
-- **Unit test framework**: must support property-based testing, fixtures, parameterization, and clear assertion messages.
+**Testing framework selection criteria** (largely satisfied in repo today):
+- **Unit test framework**: **Vitest** (with room for **fast-check** per §31).
 - **Integration test framework**: ability to test command-result workflows end-to-end with deterministic replay.
 - **Test data generation**: fixtures or factories for tournaments, players, matches, JSONL logs.
 - **Test isolation**: ability to test domain logic independently from storage/UI concerns.
@@ -417,11 +469,11 @@ This project will follow a **test-first approach**: tests are formulated ahead o
 
 **Decisions made**:
 - **Primary language**: **TypeScript** (web-first SPA as first-class concern)
-- **Test framework**: **Vitest** or **Jest** for unit/integration testing
+- **Test framework**: **Vitest** for unit/integration testing
 - **Architecture pattern**: **Model-Controller-View** with clean separation:
   - **Model layer** (domain logic): fully testable in isolation; no I/O dependencies
   - **Controller layer**: command handlers, state mutation, dependency injection points
-  - **View layer**: React/Vue/similar UI framework (TBD)
+  - **View layer**: **Svelte** (v1 choice) — small runtime, compile-time model, strong fit for a **static SPA** with forms, lists, and bracket views without a heavy VDOM stack; team comfort may still pick **Vue** or **React** later if needed, but v1 standardizes on Svelte for weight vs. capability.
   - Dependency injection: enable swapping real storage/randomness with test doubles
 - **Property-based testing**: **fast-check** (or similar) for invariant validation (deterministic replay, undo correctness)
 - **Test approach**: 
@@ -440,7 +492,7 @@ This project will follow a **test-first approach**: tests are formulated ahead o
 - **Handicap system**: numeric default, custom notations.
 - **Ordering algorithm**: pluggable; default aims for minimal break variance.
 - **Tie-breakers**: sport-specific ranking rules.
-- **Naming conventions**: terminology (game vs set, table vs court, etc.).
+- **Naming conventions**: terminology (game vs set, table vs court, etc.) — **game** and **Table** decided for TT-first v1 (§18).
 
 How config is stored: JSON manifest, within logs, versioned, with migration path.
 
@@ -456,9 +508,40 @@ How config is stored: JSON manifest, within logs, versioned, with migration path
 
 ## Open Q&A checklist (TDD-driven design refinement)
 
+### Recorded answers (explicit product discussion)
+
+These items were **confirmed in writing** during design discussion for this project and take precedence over older “open” bullets where they overlap.
+
+| Topic | Decision |
+|-------|----------|
+| **Tournament modes** | Support **only** individual per-player tournaments **and**, optionally, **at most one** aggregate team-vs-team match per tournament (two teams, side A vs side B games). **No** team-based tournaments: no multi-team events, team-only group stages, team brackets, or full cross-team player grids. Same detail as § [Current implementation scope (tournament modes)](#current-implementation-scope-tournament-modes). |
+| **Offline-first (admin)** | After load: **full offline** for organizer/admin — **read + write** local tournament data **without network**. |
+| **Primary tournament document** | **One append-only `.jsonl` per tournament**, **commands only**; multiple tournaments per folder allowed (§4, §7). |
+| **Score entry v1** | **Strict per-game scores only**; **no** winner-only shortcut in v1 (not revisiting). |
+| **Playing surface term (TT-first)** | Default **Table** (not “court”). |
+| **Team-vs-team entry layout** | **Flat list**: **one row per cross-team player pairing** (A player vs B player). See §22 implementation note vs aggregate `TeamMatch`. |
+| **v1 hosting** | **Static site** (e.g. **GitHub Pages**); SPA, no SSR requirement. |
+| **v1 storage (primary)** | **File System Access API** / persistent file pick where supported; same `.jsonl` format with fallbacks elsewhere. |
+| **Command log versioning (v1)** | **Header / first-line** format version; not every line carries version until a breaking change policy says otherwise. |
+| **Entity IDs (v1)** | **Short random** app-generated strings (not UUID-by-default). |
+| **Group → bracket bands (v1)** | **One** bracket in product by default; **multi-band** allowed **behind a flag** / later; architecture stays extensible. |
+| **Score validation UX (v1)** | **Live** as user edits (with UX tuning to limit noise). |
+| **Roles (v1)** | **Deferred** — single organizer device + read-only viewers; no accounts in v1. |
+| **Local settings (v1)** | **Full recent-tournaments list with titles** (+ fields needed to reopen), capped to last **N**; plus UI prefs. |
+| **Renames / identity** | **Log-versioned** — only **explicit commands** (e.g. `RenamePlayer`); no silent edits to history. |
+| **Score command granularity** | **One command per completed match** (full per-**game** score list in payload). |
+| **Round lock** | **Explicit commands** (`SetRoundLock` / `LockStage` TBD); lock and unlock participate in **undo** like other mutations. |
+| **Same-group #1 vs #2 in bracket** | **Strict max separation**; ignore **bye / free rounds** when measuring separation under awkward bracket sizes. |
+| **TT term: game vs set** | Default **game** (not “set”). |
+| **UI framework (v1)** | **Svelte** — lightweight static-SPA default (see §31). |
+| **Corrupt JSONL load** | **Stop**, show **line number** (1-based), **no silent skip**; user **manually fixes** file and **resumes**. |
+
+**Note:** Kiosk/browser floor, import zip, and other §§ may still need decisions; add rows here as they are confirmed.
+
 **[DECIDED]** Framework & testing setup:
 - ✅ Language: **TypeScript** (web-first SPA)
-- ✅ Test framework: **Vitest/Jest** with **fast-check** for property-based tests
+- ✅ Test framework: **Vitest** with **fast-check** for property-based tests
+- ✅ View (v1): **Svelte**
 - ✅ Architecture: **Model-Controller-View** with clean DI seams for testability
 - ✅ Test approach: incremental + pre-E2E stubs, both unit and integration tests
 - ✅ Property-based tests: **yes** (deterministic replay, undo/redo invariants)
@@ -472,28 +555,39 @@ How config is stored: JSON manifest, within logs, versioned, with migration path
 - ✅ Minimum v1 views: **tournament setup, round/match entry, bracket view, standings**
 - ✅ Debug mode: **mock result filling** with feature flag for rapid UI iteration
 - ✅ Fast entry: numeric-friendly score input with mobile optimization
+- ✅ Default surface term: **Table** (TT-first)
+- ✅ Team-vs-team match entry: **flat list, one row per cross-team player pairing** (§22; model alignment TBD)
+- ✅ Score validation: **live** feedback in v1 (§23)
 
-**Remaining clarifications**:
+**[DECIDED]** Platform & persistence (v1):
+- ✅ Hosting: **static SPA** (e.g. GitHub Pages)
+- ✅ Tournament file: **FS Access primary**; fallbacks same format
+- ✅ Log versioning: **header / first line**
+- ✅ IDs: **short random** strings
+- ✅ Bracket bands: **one bracket** shipped; **multi-band** behind flag / later
+- ✅ Roles: **deferred**; single-organizer assumption
+- ✅ Recent tournaments: **full list with titles** in local settings
+- ✅ Renames: **command-only**, log-versioned identity
+- ✅ Enter score: **one command per match**
+- ✅ Lock: **explicit lock/unlock commands**, undoable
+- ✅ Bracket: **strict #1/#2 separation**, **ignoring bye rounds** in distance metric
+- ✅ Terminology: **game** (not set) for TT
+- ✅ View: **Svelte**
+- ✅ Corrupt log: **fail at line**, manual fix + resume
 
-1. **Score entry UX**: 
-   - Should we also support "quick match result entry" (just winner, no per-game breakdown) as an alternative, or is per-game-score-entry always required?
-   - Any particular mobile-oriented numeric keypad design preferences?
+**Remaining clarifications** (still open unless decided elsewhere in this doc):
 
-2. **Single team-vs-team match (UI)**:
-   - Layout for entering per-game scores when only two **team** sides exist (no grid of player pairings).
+1. **Score entry UX**: **Mobile-oriented input** only (keypad layout); **live** validation is **decided** (§23).
 
-3. **Bracket seeding & draw (player tournaments)**:
-   - Open questions from §12 that still apply to **individual** brackets only.
+2. ~~**Single team-vs-team match (UI)**~~ **Decided** — flat pairing rows (§22); backend may need to grow to match multi-row UX.
 
-4. **Initial test specification priorities**:
-   - Which test cases should we pre-write **first** before any implementation? (e.g., TT score legality tests, bracket-generation tests, undo-dependency tests, etc.)
-   - Full **team tournament** test batches remain **deferred** until that format is in scope again.
+3. ~~**Bracket seeding & draw**~~ **Partially decided** — same-group **#1 vs #2 max separation**, **ignoring free/bye rounds** in the separation metric (§12). Remaining product detail: **band count** (behind flag), **fill vs cull** default copy.
 
-Which of these would you like to tackle next?
+4. **Initial test specification priorities**: Which cases to pre-write **first** as the domain grows (e.g. TT score legality, bracket generation, undo dependencies). **Team-tournament test batches (Batch 3)** are **out of scope** under the recorded tournament-mode decision, not merely postponed.
 
 ---
 
 ## Process note
 
-Design is intentionally incomplete. We must continue this clarifying Q&A in a later session and resolve the remaining decisions before starting implementation.
+Design is intentionally incomplete for topics not yet copied into **Recorded answers** or marked decided in a numbered section. Domain and tests may proceed in parallel; when you settle a topic, add it to **Recorded answers** or edit the relevant § in place so “open” lists stay honest. Track what ships in code via [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
