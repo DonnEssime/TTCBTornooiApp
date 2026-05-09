@@ -1,3 +1,6 @@
+# Vite / Svelte web app build output
+web/dist/
+
 # Node modules
 node_modules/
 
@@ -65,6 +68,9 @@ jspm_packages/
 *.tmp
 *.temp
 *.swp
+
+# Library package build output (tsup)
+dist/
 
 # TypeScript
 *.tsbuildinfo

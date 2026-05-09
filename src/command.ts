@@ -1,4 +1,19 @@
-import { Tournament, createTournament, forfeitPlayer, forfeitTeam, playerMatchWinner, teamMatchWinner } from './model';
+import {
+  Tournament,
+  advanceBracketRound,
+  applyBracketToTournament,
+  bracketRoundHasFinishedPlayerMatch,
+  createTournament,
+  findBracketRoundForPlayerPairing,
+  forfeitPlayer,
+  forfeitTeam,
+  generateBracket,
+  isBracketRoundComplete,
+  playerMatchWinner,
+  scheduleRound,
+  settleBracketWinners,
+  teamMatchWinner,
+} from './model';
 
 export type CommandType =
   | 'CreatePlayer'
@@ -9,13 +24,19 @@ export type CommandType =
   | 'EnterTeamScore'
   | 'PlayerForfeit'
   | 'TeamForfeit'
-  | 'SetRoundLock';
+  | 'SetRoundLock'
+  | 'SetSeedings'
+  | 'GenerateBracket'
+  | 'AssignTables'
+  | 'AdvanceBracketRound'
+  | 'RenamePlayer'
+  | 'Undo';
 
 export interface CommandBase {
   id: string;
   type: CommandType;
   timestamp: string;
-  dependsOn: string[]; // command IDs this command depends on
+  dependsOn: string[];
 }
 
 export interface CreatePlayerCommand extends CommandBase {
@@ -58,6 +79,41 @@ export interface TeamForfeitCommand extends CommandBase {
   payload: { teamId: string; phase: 'group' | 'bracket'; groupMode?: 'auto-win' | 'not-played' };
 }
 
+export interface SetRoundLockCommand extends CommandBase {
+  type: 'SetRoundLock';
+  payload: { bracketRound: number; locked: boolean };
+}
+
+export interface SetSeedingsCommand extends CommandBase {
+  type: 'SetSeedings';
+  payload: { playerIds: string[] };
+}
+
+export interface GenerateBracketCommand extends CommandBase {
+  type: 'GenerateBracket';
+  payload: { fillByes: boolean; cullToPowerOfTwo: boolean };
+}
+
+export interface AssignTablesCommand extends CommandBase {
+  type: 'AssignTables';
+  payload: { tableIds: string[]; round: number };
+}
+
+export interface AdvanceBracketRoundCommand extends CommandBase {
+  type: 'AdvanceBracketRound';
+  payload: Record<string, never>;
+}
+
+export interface RenamePlayerCommand extends CommandBase {
+  type: 'RenamePlayer';
+  payload: { playerId: string; name: string; handicap?: number };
+}
+
+export interface UndoCommand extends CommandBase {
+  type: 'Undo';
+  payload: { targetCommandId: string };
+}
+
 export type Command =
   | CreatePlayerCommand
   | CreateTeamCommand
@@ -66,133 +122,281 @@ export type Command =
   | EnterScoreCommand
   | EnterTeamScoreCommand
   | PlayerForfeitCommand
-  | TeamForfeitCommand;
+  | TeamForfeitCommand
+  | SetRoundLockCommand
+  | SetSeedingsCommand
+  | GenerateBracketCommand
+  | AssignTablesCommand
+  | AdvanceBracketRoundCommand
+  | RenamePlayerCommand
+  | UndoCommand;
 
 export interface CommandResult {
   success: boolean;
   reason?: string;
 }
 
+function sortLog(log: Command[]): Command[] {
+  return [...log].sort((a, b) => a.timestamp.localeCompare(b.timestamp) || a.id.localeCompare(b.id));
+}
+
+function dependsReach(cmd: Command, ancestorId: string, byId: Map<string, Command>): boolean {
+  const stack = [...cmd.dependsOn];
+  const seen = new Set<string>();
+  while (stack.length) {
+    const d = stack.pop()!;
+    if (d === ancestorId) return true;
+    if (seen.has(d)) continue;
+    seen.add(d);
+    const p = byId.get(d);
+    if (!p) continue;
+    if (p.type === 'Undo') {
+      stack.push(p.payload.targetCommandId);
+    } else {
+      stack.push(...p.dependsOn);
+    }
+  }
+  return false;
+}
+
 export class CommandRunner {
   private tournament: Tournament;
-  private history: Map<string, Command> = new Map();
-  private dependents: Map<string, Set<string>> = new Map();
+  /** Append-only command log (includes {@link UndoCommand}). */
+  private orderedLog: Command[] = [];
+  private commandById = new Map<string, Command>();
 
   constructor(tournament?: Tournament) {
     this.tournament = tournament ?? createTournament();
+    if (!this.tournament.lockedBracketRounds) {
+      this.tournament.lockedBracketRounds = [];
+    }
   }
 
   execute(command: Command): CommandResult {
-    if (this.history.has(command.id)) {
+    if (this.commandById.has(command.id)) {
       return { success: false, reason: 'Command ID already exists' };
     }
 
     for (const dep of command.dependsOn || []) {
-      if (!this.history.has(dep)) {
+      if (!this.commandById.has(dep)) {
         return { success: false, reason: `Missing dependency: ${dep}` };
       }
     }
 
-    // apply command to tournament state
-    const applyResult = this.applyCommand(command);
-    if (!applyResult.success) {
-      return applyResult;
-    }
-
-    this.history.set(command.id, command);
-
-    // dependency graph building
-    for (const dep of command.dependsOn || []) {
-      if (!this.dependents.has(dep)) {
-        this.dependents.set(dep, new Set());
+    if (command.type === 'Undo') {
+      const u = command as UndoCommand;
+      const ok = this.canAppendUndo(u.payload.targetCommandId);
+      if (!ok.ok) {
+        return { success: false, reason: ok.reason ?? 'Cannot append Undo' };
       }
-      this.dependents.get(dep)!.add(command.id);
     }
 
-    if (!this.dependents.has(command.id)) {
-      this.dependents.set(command.id, new Set());
+    this.orderedLog.push(command);
+    this.commandById.set(command.id, command);
+
+    const err = this.rebuildFromLog();
+    if (err) {
+      this.orderedLog.pop();
+      this.commandById.delete(command.id);
+      return { success: false, reason: err };
     }
 
     return { success: true };
   }
 
   canUndo(commandId: string): boolean {
-    if (!this.history.has(commandId)) return false;
-    const deps = this.dependents.get(commandId); // dependents of this command
-    return !deps || deps.size === 0;
+    return this.canAppendUndo(commandId).ok;
   }
 
-  undo(commandId: string): CommandResult {
-    if (!this.history.has(commandId)) {
-      return { success: false, reason: 'Command not found' };
+  /** Whether a new Undo could target this command (no active dependents after it). */
+  canAppendUndo(targetCommandId: string): { ok: boolean; reason?: string } {
+    const sorted = sortLog(this.orderedLog);
+    const byId = new Map(sorted.map((c) => [c.id, c]));
+    const tgt = byId.get(targetCommandId);
+    if (!tgt) {
+      return { ok: false, reason: 'Command not found' };
     }
 
-    if (!this.canUndo(commandId)) {
-      return { success: false, reason: 'Command has dependents; cannot undo' };
+    if (tgt.type === 'Undo') {
+      const pos = sorted.findIndex((c) => c.id === targetCommandId);
+      if (pos < 0) {
+        return { ok: false, reason: 'Command not found' };
+      }
+      const { suppressed } = this.computeSuppressedWithVictims(sorted, byId);
+      for (let i = pos + 1; i < sorted.length; i++) {
+        const v = sorted[i];
+        if (v.type === 'Undo') {
+          continue;
+        }
+        if (suppressed.has(v.id)) {
+          continue;
+        }
+        return {
+          ok: false,
+          reason: 'Cannot reverse this Undo while later active mutations exist',
+        };
+      }
+      return { ok: true };
     }
 
-    const cmd = this.history.get(commandId)!;
+    const { suppressed } = this.computeSuppressedWithVictims(sorted, byId);
+    if (suppressed.has(targetCommandId)) {
+      return { ok: false, reason: 'Target is already undone' };
+    }
 
-    // remove command from the state by full replay
-    this.history.delete(commandId);
+    const pos = sorted.findIndex((c) => c.id === targetCommandId);
+    if (pos < 0) return { ok: false, reason: 'Command not found' };
 
-    // update dependent graph
-    for (const [target, deps] of this.dependents.entries()) {
-      if (deps.has(commandId)) {
-        deps.delete(commandId);
+    for (let i = pos + 1; i < sorted.length; i++) {
+      const c = sorted[i];
+      if (c.type === 'Undo') continue;
+      if (suppressed.has(c.id)) continue;
+      if (dependsReach(c, targetCommandId, byId)) {
+        return { ok: false, reason: 'Command has active dependents; cannot undo' };
       }
     }
-    this.dependents.delete(commandId);
 
-    // reconstruct state from scratch from remaining history
-    this.tournament = createTournament();
-    const remainingCommands = Array.from(this.history.values()).sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    return { ok: true };
+  }
 
-    this.history = new Map();
-    this.dependents = new Map();
+  /** True if the last log entry is an Undo (redo can pop it). */
+  canRedo(): boolean {
+    const last = this.orderedLog[this.orderedLog.length - 1];
+    return Boolean(last && last.type === 'Undo');
+  }
 
-    for (const c of remainingCommands) {
-      this.execute(c);
+  /** Redo is not a command: removes the trailing Undo entry and rebuilds. */
+  redoPop(): CommandResult {
+    const last = this.orderedLog[this.orderedLog.length - 1];
+    if (!last || last.type !== 'Undo') {
+      return { success: false, reason: 'Nothing to redo' };
     }
-
+    this.orderedLog.pop();
+    this.commandById.delete(last.id);
+    const err = this.rebuildFromLog();
+    if (err) {
+      this.orderedLog.push(last);
+      this.commandById.set(last.id, last);
+      return { success: false, reason: err };
+    }
     return { success: true };
   }
 
-  private applyCommand(command: Command): CommandResult {
+  getTournament(): Tournament {
+    return this.tournament;
+  }
+
+  getHistory(): Command[] {
+    return sortLog(this.orderedLog);
+  }
+
+  private computeSuppressedWithVictims(
+    sorted: Command[],
+    byId: Map<string, Command>,
+  ): { suppressed: Set<string>; undoVictims: Map<string, Set<string>> } {
+    const suppressed = new Set<string>();
+    const undoVictims = new Map<string, Set<string>>();
+
+    for (const c of sorted) {
+      if (c.type !== 'Undo') continue;
+      const u = c as UndoCommand;
+      const t = u.payload.targetCommandId;
+      const tgt = byId.get(t);
+      if (!tgt) continue;
+
+      if (tgt.type === 'Undo') {
+        const victims = undoVictims.get(t);
+        if (victims) {
+          for (const v of victims) {
+            suppressed.delete(v);
+          }
+        }
+        undoVictims.delete(t);
+        continue;
+      }
+
+      const before = new Set(suppressed);
+      suppressed.add(t);
+      let growth = true;
+      while (growth) {
+        growth = false;
+        for (const cmd of sorted) {
+          if (cmd.type === 'Undo') continue;
+          if (suppressed.has(cmd.id)) continue;
+          if (cmd.dependsOn.some((d) => suppressed.has(d))) {
+            suppressed.add(cmd.id);
+            growth = true;
+          }
+        }
+      }
+      const victims = new Set<string>();
+      for (const id of suppressed) {
+        if (!before.has(id)) {
+          victims.add(id);
+        }
+      }
+      undoVictims.set(c.id, victims);
+    }
+
+    return { suppressed, undoVictims: undoVictims };
+  }
+
+  private rebuildFromLog(): string | undefined {
+    const sorted = sortLog(this.orderedLog);
+    const byId = new Map(sorted.map((c) => [c.id, c]));
+    const { suppressed } = this.computeSuppressedWithVictims(sorted, byId);
+
+    const t = createTournament();
+    if (!t.lockedBracketRounds) t.lockedBracketRounds = [];
+
+    for (const c of sorted) {
+      if (c.type === 'Undo') continue;
+      if (suppressed.has(c.id)) continue;
+      const r = this.applyCommandCore(t, c);
+      if (!r.success) {
+        return r.reason ?? 'Replay failed';
+      }
+    }
+
+    this.tournament = t;
+    return undefined;
+  }
+
+  private applyCommandCore(tournament: Tournament, command: Command): CommandResult {
     switch (command.type) {
       case 'CreatePlayer': {
         const { playerId, name, handicap } = command.payload;
-        if (this.tournament.players[playerId]) {
+        if (tournament.players[playerId]) {
           return { success: false, reason: 'Player already exists' };
         }
-        this.tournament.players[playerId] = { id: playerId, name, handicap };
+        tournament.players[playerId] = { id: playerId, name, handicap };
         return { success: true };
       }
       case 'CreateTeam': {
         const { teamId, name, memberIds } = command.payload;
-        if (this.tournament.teams[teamId]) {
+        if (tournament.teams[teamId]) {
           return { success: false, reason: 'Team already exists' };
         }
         for (const playerId of memberIds) {
-          if (!this.tournament.players[playerId]) {
+          if (!tournament.players[playerId]) {
             return { success: false, reason: `Player not found: ${playerId}` };
           }
         }
-        this.tournament.teams[teamId] = { id: teamId, name, memberIds };
+        tournament.teams[teamId] = { id: teamId, name, memberIds };
         return { success: true };
       }
       case 'CreateMatch': {
         const { matchId, playerA, playerB } = command.payload;
-        if (Object.keys(this.tournament.teamMatches).length > 0) {
+        if (Object.keys(tournament.teamMatches).length > 0) {
           return { success: false, reason: 'Player matches are not allowed in a team vs team fixture' };
         }
-        if (this.tournament.matches[matchId]) {
+        if (tournament.matches[matchId]) {
           return { success: false, reason: 'Match already exists' };
         }
-        if (!this.tournament.players[playerA] || !this.tournament.players[playerB]) {
+        if (!tournament.players[playerA] || !tournament.players[playerB]) {
           return { success: false, reason: 'Player not found' };
         }
-        this.tournament.matches[matchId] = {
+        tournament.matches[matchId] = {
           id: matchId,
           playerA,
           playerB,
@@ -203,22 +407,22 @@ export class CommandRunner {
       }
       case 'CreateTeamMatch': {
         const { matchId, teamA, teamB } = command.payload;
-        if (this.tournament.bracketMatches.length > 0) {
+        if (tournament.bracketMatches.length > 0) {
           return { success: false, reason: 'Team vs team matches cannot be used alongside a player bracket' };
         }
-        if (Object.keys(this.tournament.teamMatches).length > 0) {
+        if (Object.keys(tournament.teamMatches).length > 0) {
           return { success: false, reason: 'Only one team vs team match is allowed per tournament' };
         }
-        if (this.tournament.teamMatches[matchId]) {
+        if (tournament.teamMatches[matchId]) {
           return { success: false, reason: 'Team match already exists' };
         }
-        if (!this.tournament.teams[teamA] || !this.tournament.teams[teamB]) {
+        if (!tournament.teams[teamA] || !tournament.teams[teamB]) {
           return { success: false, reason: 'Team not found' };
         }
         if (teamA === teamB) {
           return { success: false, reason: 'A team cannot play itself' };
         }
-        this.tournament.teamMatches[matchId] = {
+        tournament.teamMatches[matchId] = {
           id: matchId,
           teamA,
           teamB,
@@ -229,43 +433,127 @@ export class CommandRunner {
       }
       case 'EnterScore': {
         const { matchId, scores } = command.payload;
-        const match = this.tournament.matches[matchId];
+        const match = tournament.matches[matchId];
         if (!match) {
           return { success: false, reason: 'Match not found' };
+        }
+        const round = findBracketRoundForPlayerPairing(tournament, match.playerA, match.playerB);
+        if (round !== undefined && tournament.lockedBracketRounds.includes(round)) {
+          return { success: false, reason: `Bracket round ${round} is locked` };
         }
         match.scores = scores;
         match.status = 'finished';
         match.winner = playerMatchWinner(match);
+        this.reconcileBracketAfterScore(tournament);
         return { success: true };
       }
       case 'EnterTeamScore': {
         const { matchId, scores } = command.payload;
-        const teamMatch = this.tournament.teamMatches[matchId];
+        const teamMatch = tournament.teamMatches[matchId];
         if (!teamMatch) {
           return { success: false, reason: 'Team match not found' };
         }
         teamMatch.scores = scores;
         teamMatch.status = 'finished';
         teamMatch.winner = teamMatchWinner(teamMatch);
+        this.reconcileBracketAfterScore(tournament);
         return { success: true };
       }
       case 'PlayerForfeit': {
-        const { playerId, phase, groupMode } = command.payload as { playerId: string; phase: 'group' | 'bracket'; groupMode?: 'auto-win' | 'not-played' };
-        if (!this.tournament.players[playerId]) {
+        const { playerId, phase, groupMode } = command.payload;
+        if (!tournament.players[playerId]) {
           return { success: false, reason: 'Player not found' };
         }
-        forfeitPlayer(this.tournament, playerId, phase, groupMode);
+        forfeitPlayer(tournament, playerId, phase, groupMode);
         return { success: true };
       }
       case 'TeamForfeit': {
-        const { teamId, phase } = command.payload as { teamId: string; phase: 'group' | 'bracket' };
-        if (!this.tournament.teams[teamId]) {
+        const { teamId, phase } = command.payload;
+        if (!tournament.teams[teamId]) {
           return { success: false, reason: 'Team not found' };
         }
         if (phase === 'group') {
           return { success: false, reason: 'Team group forfeits are not supported' };
         }
-        forfeitTeam(this.tournament, teamId, phase);
+        forfeitTeam(tournament, teamId, phase);
+        return { success: true };
+      }
+      case 'SetRoundLock': {
+        const { bracketRound, locked } = command.payload;
+        if (!Number.isInteger(bracketRound) || bracketRound < 1) {
+          return { success: false, reason: 'Invalid bracket round' };
+        }
+        if (locked) {
+          if (!tournament.lockedBracketRounds.includes(bracketRound)) {
+            tournament.lockedBracketRounds.push(bracketRound);
+            tournament.lockedBracketRounds.sort((a, b) => a - b);
+          }
+          return { success: true };
+        }
+        if (!tournament.lockedBracketRounds.includes(bracketRound)) {
+          return { success: true };
+        }
+        if (bracketRoundHasFinishedPlayerMatch(tournament, bracketRound)) {
+          return { success: false, reason: 'Cannot unlock: a match in this bracket round already has scores' };
+        }
+        tournament.lockedBracketRounds = tournament.lockedBracketRounds.filter((r) => r !== bracketRound);
+        return { success: true };
+      }
+      case 'SetSeedings': {
+        const { playerIds } = command.payload;
+        if (!Array.isArray(playerIds) || playerIds.length === 0) {
+          return { success: false, reason: 'Seedings must be a non-empty ordered player id list' };
+        }
+        for (const pid of playerIds) {
+          if (!tournament.players[pid]) {
+            return { success: false, reason: `Unknown player in seedings: ${pid}` };
+          }
+        }
+        tournament.seedings = [...playerIds];
+        return { success: true };
+      }
+      case 'GenerateBracket': {
+        if (Object.keys(tournament.teamMatches).length > 0) {
+          return { success: false, reason: 'Cannot generate bracket while a team vs team match exists' };
+        }
+        const { fillByes, cullToPowerOfTwo } = command.payload;
+        try {
+          const bm = generateBracket(tournament.seedings, tournament, {
+            fillByes: fillByes ?? true,
+            cullToPowerOfTwo: cullToPowerOfTwo ?? false,
+          });
+          applyBracketToTournament(tournament, bm);
+        } catch (e) {
+          return { success: false, reason: e instanceof Error ? e.message : String(e) };
+        }
+        return { success: true };
+      }
+      case 'AssignTables': {
+        const { tableIds, round } = command.payload;
+        if (!tableIds?.length) {
+          return { success: false, reason: 'At least one table id is required' };
+        }
+        scheduleRound(tournament, tableIds, round);
+        return { success: true };
+      }
+      case 'AdvanceBracketRound': {
+        try {
+          advanceBracketRound(tournament);
+        } catch (e) {
+          return { success: false, reason: e instanceof Error ? e.message : String(e) };
+        }
+        return { success: true };
+      }
+      case 'RenamePlayer': {
+        const { playerId, name, handicap } = command.payload;
+        const p = tournament.players[playerId];
+        if (!p) {
+          return { success: false, reason: 'Player not found' };
+        }
+        p.name = name;
+        if (handicap !== undefined) {
+          p.handicap = handicap;
+        }
         return { success: true };
       }
       default:
@@ -273,11 +561,14 @@ export class CommandRunner {
     }
   }
 
-  getTournament(): Tournament {
-    return this.tournament;
-  }
-
-  getHistory(): Command[] {
-    return Array.from(this.history.values());
+  private reconcileBracketAfterScore(tournament: Tournament): void {
+    if (tournament.bracketMatches.length === 0) {
+      return;
+    }
+    settleBracketWinners(tournament);
+    const currentRound = Math.max(0, ...tournament.bracketMatches.map((m) => m.round));
+    if (isBracketRoundComplete(tournament, currentRound)) {
+      advanceBracketRound(tournament);
+    }
   }
 }

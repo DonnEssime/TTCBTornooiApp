@@ -4,6 +4,10 @@ export function commandToJsonLine(command: Command): string {
   return JSON.stringify(command);
 }
 
+export function exportCommandsAsJsonLines(commands: Command[]): string {
+  return commands.map(commandToJsonLine).join('\n') + (commands.length > 0 ? '\n' : '');
+}
+
 export function commandFromJsonLine(line: string): Command | null {
   try {
     const parsed = JSON.parse(line) as Command;

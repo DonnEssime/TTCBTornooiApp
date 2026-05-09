@@ -85,6 +85,8 @@ export interface Tournament {
   forfeits: ForfeitState;
   forfeitGroupMode?: ForfeitGroupMode;
   forfeitResults: ForfeitResults;
+  /** Bracket rounds for which score edits on mapped player matches are blocked (v1: bracket player matches only). */
+  lockedBracketRounds: number[];
 }
 
 export function createTournament(): Tournament {
@@ -100,6 +102,7 @@ export function createTournament(): Tournament {
     forfeits: { players: {}, teams: {} },
     forfeitGroupMode: undefined,
     forfeitResults: { playerWins: {} },
+    lockedBracketRounds: [],
   };
 }
 
@@ -108,6 +111,7 @@ export function applyBracketToTournament(tournament: Tournament, bracketMatches:
     throw new Error('Cannot apply a player bracket while team vs team matches exist');
   }
   tournament.bracketMatches = bracketMatches;
+  tournament.lockedBracketRounds = [];
   return tournament;
 }
 
@@ -420,6 +424,28 @@ function findMatchByPlayers(tournament: Tournament, playerA: string, playerB: st
     const same = (m.playerA === playerA && m.playerB === playerB) || (m.playerA === playerB && m.playerB === playerA);
     return same && m.status === 'finished' && m.winner; // also requires winner computed
   });
+}
+
+/** Bracket round for a player pairing, if it appears in the current bracket structure. */
+export function findBracketRoundForPlayerPairing(tournament: Tournament, playerA: PlayerId, playerB: PlayerId): number | undefined {
+  for (const bm of tournament.bracketMatches) {
+    if (!bm.seedA || !bm.seedB) continue;
+    const same =
+      (bm.seedA === playerA && bm.seedB === playerB) || (bm.seedA === playerB && bm.seedB === playerA);
+    if (same) return bm.round;
+  }
+  return undefined;
+}
+
+/** True if any player match mapped to this bracket round has scores entered or is finished. */
+export function bracketRoundHasFinishedPlayerMatch(tournament: Tournament, round: number): boolean {
+  for (const m of Object.values(tournament.matches)) {
+    const r = findBracketRoundForPlayerPairing(tournament, m.playerA, m.playerB);
+    if (r === round && (m.status === 'finished' || m.scores.length > 0)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function settleBracketWinners(tournament: Tournament): Tournament {

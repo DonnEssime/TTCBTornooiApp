@@ -12,12 +12,12 @@ describe('End-to-end tournament flow', () => {
     expect(controller.createPlayer('p3', 'Charlie', 0, 'cmd-p3')).toEqual({ success: true });
     expect(controller.createPlayer('p4', 'Dana', 0, 'cmd-p4')).toEqual({ success: true });
 
-    controller.getTournament().seedings = ['p1', 'p2', 'p3', 'p4'];
-    controller.generateBracket(true, false);
+    expect(controller.setSeedings(['p1', 'p2', 'p3', 'p4'], [], 'cmd-seed')).toEqual({ success: true });
+    expect(controller.generateBracket(true, false, ['cmd-seed'], 'cmd-gen')).toEqual({ success: true });
     expect(controller.getTournament().bracketMatches.filter((m) => m.round === 1)).toHaveLength(2);
 
-    expect(controller.createMatch('match-a', 'p1', 'p4', ['cmd-p1', 'cmd-p4'], 'cmd-match-a')).toEqual({ success: true });
-    expect(controller.createMatch('match-b', 'p2', 'p3', ['cmd-p2', 'cmd-p3'], 'cmd-match-b')).toEqual({ success: true });
+    expect(controller.createMatch('match-a', 'p1', 'p4', ['cmd-gen', 'cmd-p1', 'cmd-p4'], 'cmd-match-a')).toEqual({ success: true });
+    expect(controller.createMatch('match-b', 'p2', 'p3', ['cmd-gen', 'cmd-p2', 'cmd-p3'], 'cmd-match-b')).toEqual({ success: true });
 
     expect(
       controller.enterScore(
@@ -49,7 +49,7 @@ describe('End-to-end tournament flow', () => {
     expect(mid.bracketMatches.some((m) => m.round === 1 && m.winner)).toBe(true);
     expect(mid.bracketMatches.some((m) => m.round === 2)).toBe(true);
 
-    controller.assignTables(['Table1', 'Table2'], 2);
+    expect(controller.assignTables(['Table1', 'Table2'], 2)).toEqual({ success: true });
     expect(controller.getTournament().tableAssignments[0]).toMatchObject({ tableId: 'Table1', round: 2 });
 
     const undoResult = controller.undo('cmd-score-b');
@@ -87,8 +87,11 @@ describe('End-to-end tournament flow', () => {
     ).toEqual({ success: true });
     expect(controller.getTournament().teamMatches['tm1']?.status).toBe('finished');
 
-    controller.getTournament().seedings = ['p1', 'p2'];
-    controller.generateBracket(true, false);
+    expect(controller.setSeedings(['p1', 'p2'], [], 'cmd-seed2')).toEqual({ success: true });
+    expect(controller.generateBracket(true, false, ['cmd-seed2'], 'cmd-gen2')).toEqual({
+      success: false,
+      reason: 'Cannot generate bracket while a team vs team match exists',
+    });
     expect(controller.getTournament().bracketMatches.length).toBe(0);
 
     expect(controller.createMatch('m1', 'p1', 'p2', ['c-p1', 'c-p2'], 'c-m1')).toEqual({

@@ -1,6 +1,24 @@
 import { describe, it, expect } from 'vitest';
 import { teamMatchWinner, isTeamMatchScoreLegal, createTournament } from '../src/model';
-import { CommandRunner, CreatePlayerCommand, CreateTeamCommand, CreateTeamMatchCommand, EnterTeamScoreCommand } from '../src/command';
+import {
+  CommandRunner,
+  CreatePlayerCommand,
+  CreateTeamCommand,
+  CreateTeamMatchCommand,
+  EnterTeamScoreCommand,
+  type UndoCommand,
+} from '../src/command';
+
+function appendUndo(runner: CommandRunner, targetId: string, undoId: string): ReturnType<CommandRunner['execute']> {
+  const u: UndoCommand = {
+    id: undoId,
+    type: 'Undo',
+    timestamp: new Date().toISOString(),
+    dependsOn: [targetId],
+    payload: { targetCommandId: targetId },
+  };
+  return runner.execute(u);
+}
 
 describe('Single team-vs-team match (not a team tournament)', () => {
   it('should resolve team match winner and legality using per-game rules', () => {
@@ -90,10 +108,10 @@ describe('Single team-vs-team match (not a team tournament)', () => {
     expect(runner.execute(enterScore)).toEqual({ success: true });
 
     expect(runner.canUndo('tm1')).toBe(false);
-    expect(runner.undo('tm1').success).toBe(false);
+    expect(appendUndo(runner, 'tm1', 'ux').success).toBe(false);
 
     expect(runner.canUndo('tm1-s')).toBe(true);
-    expect(runner.undo('tm1-s')).toEqual({ success: true });
+    expect(appendUndo(runner, 'tm1-s', 'u-score')).toEqual({ success: true });
     expect(runner.getTournament().teamMatches['teamMatch1']?.status).toBe('scheduled');
   });
 

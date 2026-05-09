@@ -1,0 +1,23 @@
+{
+  "name": "@ttc-tornooiapp/web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json"
+  },
+  "dependencies": {
+    "ttc-tornooiapp": "file:.."
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.1.2",
+    "@tsconfig/svelte": "^5.0.6",
+    "svelte": "^5.46.4",
+    "svelte-check": "^4.3.4",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.3"
+  }
+}

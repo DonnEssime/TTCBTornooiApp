@@ -1,7 +1,5 @@
 # Tournament Tracker (Table Tennis first) — Design Document (Decisions Only)
 
-**Implementation:** delivery status, gaps, and next steps live in [IMPLEMENTATION.md](IMPLEMENTATION.md) (design vs code cross-link).
-
 ## Goals (what we’re building)
 
 - **Portable web app**: remotely hosted, works well on phones/tablets/laptops.
@@ -29,6 +27,26 @@ For now the product and domain code support **only**:
 2. **At most one team-vs-team match per tournament** — two teams, game scores recorded between **team A and team B** as sides (not a tournament of many teams). This mode cannot be combined with a player bracket in the same tournament data.
 
 Anything that looks like a **team tournament** (several teams, team standings feeding a team bracket, cross-team player grids, etc.) is **explicitly out of scope** until revisited.
+
+---
+
+## Web interface (current): run locally and open in a browser
+
+The shipped UI is the **Svelte + Vite** app under **`web/`**. It consumes the **`ttc-tornooiapp`** TypeScript package from the repo root (in dev, Vite resolves that package from source so you do not need a separate library build to try the UI).
+
+**Prerequisites:** Node.js and npm (workspace-aware).
+
+**Start the dev server** from the repository root (after `npm install` if you have not already):
+
+```bash
+npm run dev:web
+```
+
+This runs `npm run dev -w web`, which starts Vite with **`--host 0.0.0.0`** so the app is reachable on your LAN, not only via `localhost`.
+
+**Open in the browser:** when Vite starts, it prints URLs in the terminal. Use the **Local** URL (by default Vite serves on port **5173**, e.g. `http://localhost:5173/`). If that port is in use, Vite picks the next free port and shows the correct URL—always follow what the terminal prints.
+
+**Static build + preview:** `npm run build -w web` produces assets under `web/dist/`. You can serve that folder with any static host, or run `npm run preview -w web` after a build to open a local preview URL Vite prints (useful for checking production bundling).
 
 ---
 
@@ -589,5 +607,5 @@ These items were **confirmed in writing** during design discussion for this proj
 
 ## Process note
 
-Design is intentionally incomplete for topics not yet copied into **Recorded answers** or marked decided in a numbered section. Domain and tests may proceed in parallel; when you settle a topic, add it to **Recorded answers** or edit the relevant § in place so “open” lists stay honest. Track what ships in code via [IMPLEMENTATION.md](IMPLEMENTATION.md).
+Design is intentionally incomplete for topics not yet copied into **Recorded answers** or marked decided in a numbered section. Domain and tests may proceed in parallel; when you settle a topic, add it to **Recorded answers** or edit the relevant § in place so “open” lists stay honest. What actually ships is defined by the repository (source and tests), not a separate implementation status file.
 

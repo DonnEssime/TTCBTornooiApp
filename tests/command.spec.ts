@@ -1,5 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import { CommandRunner, CreatePlayerCommand, CreateMatchCommand, EnterScoreCommand } from '../src/command';
+import { CommandRunner, CreatePlayerCommand, CreateMatchCommand, type UndoCommand } from '../src/command';
+
+function appendUndo(runner: CommandRunner, targetId: string, undoId: string): ReturnType<CommandRunner['execute']> {
+  const u: UndoCommand = {
+    id: undoId,
+    type: 'Undo',
+    timestamp: new Date().toISOString(),
+    dependsOn: [targetId],
+    payload: { targetCommandId: targetId },
+  };
+  return runner.execute(u);
+}
 
 describe('CommandRunner dependency-aware undo', () => {
   it('should execute and undo independent command', () => {
@@ -14,7 +25,7 @@ describe('CommandRunner dependency-aware undo', () => {
 
     expect(runner.execute(c1)).toEqual({ success: true });
     expect(runner.canUndo('c1')).toBe(true);
-    expect(runner.undo('c1')).toEqual({ success: true });
+    expect(appendUndo(runner, 'c1', 'u1')).toEqual({ success: true });
     expect(runner.getTournament().players).toEqual({});
   });
 
@@ -49,7 +60,7 @@ describe('CommandRunner dependency-aware undo', () => {
     runner.execute(c2);
 
     expect(runner.canUndo('c1')).toBe(false);
-    expect(runner.undo('c1').success).toBe(false);
+    expect(appendUndo(runner, 'c1', 'ux').success).toBe(false);
   });
 
   it('should allow player forfeit in bracket', () => {
@@ -128,5 +139,51 @@ describe('CommandRunner dependency-aware undo', () => {
     expect(runner.getTournament().forfeitGroupMode).toBe('not-played');
     expect(runner.getTournament().forfeitResults.playerWins['p2']).toBeUndefined();
     expect(runner.getTournament().forfeitResults.playerWins['p3']).toBeUndefined();
+  });
+
+  it('allows undo-of-undo after a new mutation so history stays coherent', () => {
+    const runner = new CommandRunner();
+    runner.execute({
+      id: 'a',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p1', name: 'A', handicap: 0 },
+      timestamp: '2024-01-01T00:00:00.000Z',
+    });
+    runner.execute({
+      id: 'b',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p2', name: 'B', handicap: 0 },
+      timestamp: '2024-01-01T00:00:01.000Z',
+    });
+    expect(appendUndo(runner, 'b', 'ub')).toEqual({ success: true });
+    expect(Object.keys(runner.getTournament().players)).toEqual(['p1']);
+    runner.execute({
+      id: 'c',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p3', name: 'C', handicap: 0 },
+      timestamp: '2024-01-01T00:00:02.000Z',
+    });
+    expect(appendUndo(runner, 'ub', 'uub')).toEqual({ success: true });
+    expect(runner.getTournament().players['p2']?.name).toBe('B');
+    expect(runner.getTournament().players['p3']?.name).toBe('C');
+  });
+
+  it('redoPop removes the last Undo and reapplies its target', () => {
+    const runner = new CommandRunner();
+    runner.execute({
+      id: 'c1',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p1', name: 'A', handicap: 0 },
+      timestamp: '2024-01-01T00:00:00.000Z',
+    });
+    expect(appendUndo(runner, 'c1', 'u1')).toEqual({ success: true });
+    expect(runner.getTournament().players).toEqual({});
+    expect(runner.canRedo()).toBe(true);
+    expect(runner.redoPop()).toEqual({ success: true });
+    expect(runner.getTournament().players['p1']?.name).toBe('A');
   });
 });

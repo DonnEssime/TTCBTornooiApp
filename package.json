@@ -6,11 +6,16 @@
   "directories": {
     "doc": "docs"
   },
+  "workspaces": [
+    "web"
+  ],
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts",
     "test": "vitest",
     "test:watch": "vitest --watch",
-    "lint": "echo 'no lint configured yet'"
+    "lint": "echo 'no lint configured yet'",
+    "dev:web": "npm run dev -w web",
+    "build:web": "npm run build -w web"
   },
   "keywords": [],
   "author": "",

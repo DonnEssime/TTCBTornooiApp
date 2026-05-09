@@ -1,20 +1,33 @@
-import { CommandRunner, CommandResult, CreatePlayerCommand, CreateTeamCommand, CreateMatchCommand, CreateTeamMatchCommand, EnterScoreCommand, EnterTeamScoreCommand } from './command';
 import {
-  Tournament,
-  createTournament,
-  generateBracket,
-  applyBracketToTournament,
-  settleBracketWinners,
-  isBracketRoundComplete,
-  advanceBracketRound,
-  scheduleRound,
-  forfeitPlayer,
-  forfeitTeam,
-} from './model';
+  CommandRunner,
+  CommandResult,
+  type Command,
+  CreatePlayerCommand,
+  CreateTeamCommand,
+  CreateMatchCommand,
+  CreateTeamMatchCommand,
+  EnterScoreCommand,
+  EnterTeamScoreCommand,
+  GenerateBracketCommand,
+  SetRoundLockCommand,
+  SetSeedingsCommand,
+  type AssignTablesCommand,
+  type AdvanceBracketRoundCommand,
+  type PlayerForfeitCommand,
+  type TeamForfeitCommand,
+  type RenamePlayerCommand,
+  type UndoCommand,
+} from './command';
+import { Tournament } from './model';
+import { replayCommandsFromJsonLines } from './storage';
 import { TournamentView } from './view';
 
 export interface ControllerOptions {
   debug?: boolean;
+}
+
+function sortHistory(commands: Command[]): Command[] {
+  return [...commands].sort((a, b) => a.timestamp.localeCompare(b.timestamp) || a.id.localeCompare(b.id));
 }
 
 export class TournamentController {
@@ -22,8 +35,12 @@ export class TournamentController {
   private view?: TournamentView;
   private options: ControllerOptions;
 
-  constructor(tournament?: Tournament, options: ControllerOptions = {}) {
-    this.runner = new CommandRunner(tournament);
+  constructor(init?: Tournament | CommandRunner, options: ControllerOptions = {}) {
+    if (init instanceof CommandRunner) {
+      this.runner = init;
+    } else {
+      this.runner = new CommandRunner(init);
+    }
     this.options = options;
   }
 
@@ -35,13 +52,21 @@ export class TournamentController {
     return this.runner.getTournament();
   }
 
+  getCommandLog(): Command[] {
+    return sortHistory(this.runner.getHistory());
+  }
+
   private makeTimestamp(): string {
     return new Date().toISOString();
   }
 
+  private newCommandId(): string {
+    return `cmd-${Math.random().toString(36).substring(2, 10)}`;
+  }
+
   createPlayer(playerId: string, name: string, handicap = 0, commandId?: string): CommandResult {
     const command: CreatePlayerCommand = {
-      id: commandId ?? `cmd-${Math.random().toString(36).substring(2, 10)}`,
+      id: commandId ?? this.newCommandId(),
       type: 'CreatePlayer',
       timestamp: this.makeTimestamp(),
       dependsOn: [],
@@ -55,7 +80,7 @@ export class TournamentController {
 
   createTeam(teamId: string, name: string, memberIds: string[], dependsOn: string[] = [], commandId?: string): CommandResult {
     const command: CreateTeamCommand = {
-      id: commandId ?? `cmd-${Math.random().toString(36).substring(2, 10)}`,
+      id: commandId ?? this.newCommandId(),
       type: 'CreateTeam',
       timestamp: this.makeTimestamp(),
       dependsOn,
@@ -69,7 +94,7 @@ export class TournamentController {
 
   createMatch(matchId: string, playerA: string, playerB: string, dependsOn: string[] = [], commandId?: string): CommandResult {
     const command: CreateMatchCommand = {
-      id: commandId ?? `cmd-${Math.random().toString(36).substring(2, 10)}`,
+      id: commandId ?? this.newCommandId(),
       type: 'CreateMatch',
       timestamp: this.makeTimestamp(),
       dependsOn,
@@ -83,7 +108,7 @@ export class TournamentController {
 
   createTeamMatch(matchId: string, teamA: string, teamB: string, dependsOn: string[] = [], commandId?: string): CommandResult {
     const command: CreateTeamMatchCommand = {
-      id: commandId ?? `cmd-${Math.random().toString(36).substring(2, 10)}`,
+      id: commandId ?? this.newCommandId(),
       type: 'CreateTeamMatch',
       timestamp: this.makeTimestamp(),
       dependsOn,
@@ -97,98 +122,222 @@ export class TournamentController {
 
   enterScore(matchId: string, scores: Array<{ playerA: number; playerB: number }>, dependsOn: string[] = [], commandId?: string): CommandResult {
     const command: EnterScoreCommand = {
-      id: commandId ?? `cmd-${Math.random().toString(36).substring(2, 10)}`,
+      id: commandId ?? this.newCommandId(),
       type: 'EnterScore',
       timestamp: this.makeTimestamp(),
       dependsOn,
       payload: { matchId, scores },
     };
     const result = this.runner.execute(command);
-    this.settleAndAdvance();
     this.view?.renderMessage(`EnterScore: ${JSON.stringify(result)}`);
     this.view?.renderTournament(this.getTournament());
+    if (result.success && this.getTournament().bracketMatches.length > 0) {
+      this.view?.renderBracket(this.getTournament());
+    }
     return result;
   }
 
   enterTeamScore(matchId: string, scores: Array<{ playerA: number; playerB: number }>, dependsOn: string[] = [], commandId?: string): CommandResult {
     const command: EnterTeamScoreCommand = {
-      id: commandId ?? `cmd-${Math.random().toString(36).substring(2, 10)}`,
+      id: commandId ?? this.newCommandId(),
       type: 'EnterTeamScore',
       timestamp: this.makeTimestamp(),
       dependsOn,
       payload: { matchId, scores },
     };
     const result = this.runner.execute(command);
-    this.settleAndAdvance();
     this.view?.renderMessage(`EnterTeamScore: ${JSON.stringify(result)}`);
+    this.view?.renderTournament(this.getTournament());
+    if (result.success && this.getTournament().bracketMatches.length > 0) {
+      this.view?.renderBracket(this.getTournament());
+    }
+    return result;
+  }
+
+  /** Ordered player ids for bracket generation (command-logged for replay). */
+  setSeedings(playerIds: string[], dependsOn: string[] = [], commandId?: string): CommandResult {
+    const command: SetSeedingsCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'SetSeedings',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: { playerIds },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`SetSeedings: ${JSON.stringify(result)}`);
     this.view?.renderTournament(this.getTournament());
     return result;
   }
 
-  private settleAndAdvance(): void {
-    const tournament = this.getTournament();
-    settleBracketWinners(tournament);
-
-    const currentRound = Math.max(0, ...tournament.bracketMatches.map((m) => m.round));
-    if (isBracketRoundComplete(tournament, currentRound)) {
-      this.view?.renderMessage(`Bracket round ${currentRound} complete; advancing to next round`);
-      advanceBracketRound(tournament);
-      this.view?.renderBracket(tournament);
+  generateBracket(fillByes = true, cullToPowerOfTwo = false, dependsOn: string[] = [], commandId?: string): CommandResult {
+    const command: GenerateBracketCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'GenerateBracket',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: { fillByes, cullToPowerOfTwo },
+    };
+    const result = this.runner.execute(command);
+    if (!result.success) {
+      this.view?.renderMessage(`generateBracket failed: ${result.reason ?? ''}`);
+      return result;
     }
+    this.view?.renderBracket(this.getTournament());
+    return result;
   }
 
-  generateBracket(fillByes = true, cullToPowerOfTwo = false): void {
-    const tournament = this.getTournament();
-    if (Object.keys(tournament.teamMatches).length > 0) {
-      this.view?.renderMessage('Cannot generate bracket while a team vs team match exists');
-      return;
+  setRoundLock(bracketRound: number, locked: boolean, dependsOn: string[] = [], commandId?: string): CommandResult {
+    const command: SetRoundLockCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'SetRoundLock',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: { bracketRound, locked },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`SetRoundLock: ${JSON.stringify(result)}`);
+    this.view?.renderTournament(this.getTournament());
+    return result;
+  }
+
+  advanceBracketRound(dependsOn: string[] = [], commandId?: string): CommandResult {
+    const command: AdvanceBracketRoundCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'AdvanceBracketRound',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: {},
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`AdvanceBracketRound: ${JSON.stringify(result)}`);
+    if (result.success) {
+      this.view?.renderBracket(this.getTournament());
     }
-    try {
-      const bracketMatches = generateBracket(tournament.seedings, tournament, { fillByes, cullToPowerOfTwo });
-      applyBracketToTournament(tournament, bracketMatches);
-    } catch (e) {
-      this.view?.renderMessage(`generateBracket failed: ${e instanceof Error ? e.message : String(e)}`);
-      return;
+    return result;
+  }
+
+  assignTables(tables: string[], round: number, dependsOn: string[] = [], commandId?: string): CommandResult {
+    const command: AssignTablesCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'AssignTables',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: { tableIds: tables, round },
+    };
+    const result = this.runner.execute(command);
+    if (result.success) {
+      this.view?.renderMessage(`Scheduled round ${round} on tables: ${tables.join(', ')}`);
+    } else {
+      this.view?.renderMessage(`AssignTables failed: ${result.reason ?? ''}`);
     }
-    this.view?.renderBracket(tournament);
+    this.view?.renderTournament(this.getTournament());
+    return result;
   }
 
-  advanceBracketRound(): void {
-    const tournament = this.getTournament();
-    advanceBracketRound(tournament);
-    this.view?.renderBracket(tournament);
-  }
-
-  assignTables(tables: string[], round: number): void {
-    const tournament = this.getTournament();
-    scheduleRound(tournament, tables, round);
-    this.view?.renderMessage(`Scheduled round ${round} on tables: ${tables.join(', ')}`);
-    this.view?.renderTournament(tournament);
-  }
-
-  playerForfeit(playerId: string, phase: 'group' | 'bracket', groupMode?: 'auto-win' | 'not-played'): void {
-    const tournament = this.getTournament();
-    forfeitPlayer(tournament, playerId, phase, groupMode);
-    this.view?.renderMessage(`Player ${playerId} forfeited in ${phase}`);
-    this.view?.renderTournament(tournament);
+  playerForfeit(
+    playerId: string,
+    phase: 'group' | 'bracket',
+    groupMode?: 'auto-win' | 'not-played',
+    dependsOn: string[] = [],
+    commandId?: string,
+  ): CommandResult {
+    const command: PlayerForfeitCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'PlayerForfeit',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: { playerId, phase, groupMode },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`PlayerForfeit: ${JSON.stringify(result)}`);
+    if (result.success) {
+      this.view?.renderMessage(`Player ${playerId} forfeited in ${phase}`);
+    }
+    this.view?.renderTournament(this.getTournament());
+    return result;
   }
 
   /** Forfeits the team in standalone team vs team matches (not supported for group-stage team tournaments). */
-  teamForfeit(teamId: string): void {
-    const tournament = this.getTournament();
-    forfeitTeam(tournament, teamId, 'bracket');
-    this.view?.renderMessage(`Team ${teamId} forfeited in bracket`);
-    this.view?.renderTournament(tournament);
+  teamForfeit(teamId: string, dependsOn: string[] = [], commandId?: string): CommandResult {
+    const command: TeamForfeitCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'TeamForfeit',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: { teamId, phase: 'bracket' },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`TeamForfeit: ${JSON.stringify(result)}`);
+    if (result.success) {
+      this.view?.renderMessage(`Team ${teamId} forfeited in bracket`);
+    }
+    this.view?.renderTournament(this.getTournament());
+    return result;
+  }
+
+  renamePlayer(playerId: string, name: string, handicap?: number, dependsOn: string[] = [], commandId?: string): CommandResult {
+    const command: RenamePlayerCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'RenamePlayer',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: handicap !== undefined ? { playerId, name, handicap } : { playerId, name },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`RenamePlayer: ${JSON.stringify(result)}`);
+    this.view?.renderTournament(this.getTournament());
+    return result;
   }
 
   canUndo(commandId: string): boolean {
     return this.runner.canUndo(commandId);
   }
 
-  undo(commandId: string): CommandResult {
-    const result = this.runner.undo(commandId);
-    this.view?.renderMessage(`Undo ${commandId}: ${JSON.stringify(result)}`);
+  canRedo(): boolean {
+    return this.runner.canRedo();
+  }
+
+  /**
+   * Records an {@link UndoCommand} in the log. Redo is not a command: use {@link redo} to pop the last Undo.
+   */
+  undo(targetCommandId: string, commandId?: string): CommandResult {
+    const id = commandId ?? this.newCommandId();
+    const command: UndoCommand = {
+      id,
+      type: 'Undo',
+      timestamp: this.makeTimestamp(),
+      dependsOn: [targetCommandId],
+      payload: { targetCommandId },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`Undo ${targetCommandId}: ${JSON.stringify(result)}`);
     this.view?.renderTournament(this.getTournament());
+    if (result.success && this.getTournament().bracketMatches.length > 0) {
+      this.view?.renderBracket(this.getTournament());
+    }
+    return result;
+  }
+
+  /** Append Undo for the latest active (non-Undone) mutation, if allowed. */
+  undoLast(commandId?: string): CommandResult {
+    const hist = sortHistory(this.runner.getHistory());
+    for (let i = hist.length - 1; i >= 0; i--) {
+      const c = hist[i];
+      if (c.type === 'Undo') continue;
+      if (!this.runner.canUndo(c.id)) continue;
+      return this.undo(c.id, commandId);
+    }
+    return { success: false, reason: 'Nothing to undo' };
+  }
+
+  /** Removes the trailing Undo from the log (redo); not recorded as a command. */
+  redo(): CommandResult {
+    const result = this.runner.redoPop();
+    this.view?.renderMessage(`Redo: ${JSON.stringify(result)}`);
+    this.view?.renderTournament(this.getTournament());
+    if (result.success && this.getTournament().bracketMatches.length > 0) {
+      this.view?.renderBracket(this.getTournament());
+    }
     return result;
   }
 
@@ -196,4 +345,18 @@ export class TournamentController {
     if (!this.options.debug) return;
     this.view?.renderMessage('Running debug sequence');
   }
+}
+
+/** Build a controller whose runner was produced by replaying JSONL command lines. */
+export function tournamentControllerFromCommandLog(
+  text: string,
+  options: ControllerOptions = {},
+): { controller: TournamentController; replay: ReturnType<typeof replayCommandsFromJsonLines> } {
+  const lines = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  const runner = new CommandRunner();
+  const replay = replayCommandsFromJsonLines(lines, runner);
+  return { controller: new TournamentController(runner, options), replay };
 }
