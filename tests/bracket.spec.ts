@@ -63,21 +63,31 @@ describe('Bracket generation', () => {
     expect(areTopSeedsSeparated(bracket, 'p1', 'p2')).toBe(true);
   });
 
-  it('resolves bracket winners from finished team matches and can assign tables', () => {
+  it('resolves bracket winners from finished player matches and can assign tables', () => {
     const tournament = {
-      players: {},
-      teams: { t1: { id: 't1', name: 'Team 1', memberIds: [] }, t2: { id: 't2', name: 'Team 2', memberIds: [] } },
-      matches: {},
-      teamMatches: {
-        tm1: { id: 'tm1', teamA: 't1', teamB: 't2', scores: [{ playerA: 11, playerB: 5 }, { playerA: 11, playerB: 7 }], status: 'finished', winner: 't1' },
+      players: {
+        p1: { id: 'p1', name: 'A', handicap: 0 },
+        p2: { id: 'p2', name: 'B', handicap: 0 },
       },
-      bracketMatches: [{ id: 'm1', seedA: 't1', seedB: 't2', round: 1 }],
+      teams: {},
+      matches: {
+        m1: {
+          id: 'm1',
+          playerA: 'p1',
+          playerB: 'p2',
+          scores: [{ playerA: 11, playerB: 5 }, { playerA: 11, playerB: 7 }],
+          status: 'finished',
+          winner: 'p1',
+        },
+      },
+      teamMatches: {},
+      bracketMatches: [{ id: 'm1', seedA: 'p1', seedB: 'p2', round: 1 }],
       tableAssignments: [],
-      seedings: ['t1', 't2'],
+      seedings: ['p1', 'p2'],
     } as any;
 
     settleBracketWinners(tournament);
-    expect(tournament.bracketMatches[0].winner).toBe('t1');
+    expect(tournament.bracketMatches[0].winner).toBe('p1');
 
     scheduleRound(tournament, ['T1', 'T2'], 1);
     expect(tournament.tableAssignments).toEqual([{ tableId: 'T1', matchId: 'm1', round: 1 }]);
@@ -95,15 +105,15 @@ describe('Bracket generation', () => {
     expect(tournament.bracketMatches[0].winner).toBe('p2');
   });
 
-  it('advances bracket match when a seeded team forfeits in bracket', () => {
+  it('forfeits a scheduled team vs team match (standalone, not bracket-seeded)', () => {
     const tournament = createTournament();
     tournament.teams['t1'] = { id: 't1', name: 'Team 1', memberIds: [] };
     tournament.teams['t2'] = { id: 't2', name: 'Team 2', memberIds: [] };
-    tournament.bracketMatches = [{ id: 'm2', seedA: 't1', seedB: 't2', round: 1 }];
+    tournament.teamMatches['tm1'] = { id: 'tm1', teamA: 't1', teamB: 't2', scores: [], status: 'scheduled' };
 
     forfeitTeam(tournament, 't1', 'bracket');
-    settleBracketWinners(tournament);
 
-    expect(tournament.bracketMatches[0].winner).toBe('t2');
+    expect(tournament.teamMatches['tm1'].status).toBe('forfeit');
+    expect(tournament.teamMatches['tm1'].winner).toBe('t2');
   });
 });

@@ -507,6 +507,8 @@ If fails: indicates undo order sensitivity for independent commands
 
 ## Priority Batch 3: Team-Versus-Team Match Logic (D)
 
+> **Scope note (current codebase):** Individual player tournaments and **at most one aggregate team-vs-team match** per tournament are in scope. The batches below describe a **full team tournament** (multi-match grids, team brackets, team seeding) — **deferred / not targeted** until `docs/DESIGN.md` puts that back in scope. Keep Batch 3 as a future spec; do not treat it as required for the present implementation.
+
 ### D1: Team-Versus-Team Match Structure
 
 #### Unit Tests: Team Composition & Matchup Generation

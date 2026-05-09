@@ -1,4 +1,4 @@
-import { Tournament, createTournament, forfeitPlayer, forfeitTeam } from './model';
+import { Tournament, createTournament, forfeitPlayer, forfeitTeam, playerMatchWinner, teamMatchWinner } from './model';
 
 export type CommandType =
   | 'CreatePlayer'
@@ -183,6 +183,9 @@ export class CommandRunner {
       }
       case 'CreateMatch': {
         const { matchId, playerA, playerB } = command.payload;
+        if (Object.keys(this.tournament.teamMatches).length > 0) {
+          return { success: false, reason: 'Player matches are not allowed in a team vs team fixture' };
+        }
         if (this.tournament.matches[matchId]) {
           return { success: false, reason: 'Match already exists' };
         }
@@ -200,6 +203,12 @@ export class CommandRunner {
       }
       case 'CreateTeamMatch': {
         const { matchId, teamA, teamB } = command.payload;
+        if (this.tournament.bracketMatches.length > 0) {
+          return { success: false, reason: 'Team vs team matches cannot be used alongside a player bracket' };
+        }
+        if (Object.keys(this.tournament.teamMatches).length > 0) {
+          return { success: false, reason: 'Only one team vs team match is allowed per tournament' };
+        }
         if (this.tournament.teamMatches[matchId]) {
           return { success: false, reason: 'Team match already exists' };
         }
@@ -226,6 +235,7 @@ export class CommandRunner {
         }
         match.scores = scores;
         match.status = 'finished';
+        match.winner = playerMatchWinner(match);
         return { success: true };
       }
       case 'EnterTeamScore': {
@@ -236,6 +246,7 @@ export class CommandRunner {
         }
         teamMatch.scores = scores;
         teamMatch.status = 'finished';
+        teamMatch.winner = teamMatchWinner(teamMatch);
         return { success: true };
       }
       case 'PlayerForfeit': {
@@ -247,11 +258,14 @@ export class CommandRunner {
         return { success: true };
       }
       case 'TeamForfeit': {
-        const { teamId, phase, groupMode } = command.payload as { teamId: string; phase: 'group' | 'bracket'; groupMode?: 'auto-win' | 'not-played' };
+        const { teamId, phase } = command.payload as { teamId: string; phase: 'group' | 'bracket' };
         if (!this.tournament.teams[teamId]) {
           return { success: false, reason: 'Team not found' };
         }
-        forfeitTeam(this.tournament, teamId, phase, groupMode);
+        if (phase === 'group') {
+          return { success: false, reason: 'Team group forfeits are not supported' };
+        }
+        forfeitTeam(this.tournament, teamId, phase);
         return { success: true };
       }
       default:

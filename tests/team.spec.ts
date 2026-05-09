@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { teamMatchWinner, isTeamMatchScoreLegal, createTournament } from '../src/model';
 import { CommandRunner, CreatePlayerCommand, CreateTeamCommand, CreateTeamMatchCommand, EnterTeamScoreCommand } from '../src/command';
 
-describe('Team mode', () => {
+describe('Single team-vs-team match (not a team tournament)', () => {
   it('should resolve team match winner and legality using per-game rules', () => {
     const tournament = createTournament();
     tournament.teams['t1'] = { id: 't1', name: 'Team A', memberIds: [] } as any;
@@ -95,5 +95,61 @@ describe('Team mode', () => {
     expect(runner.canUndo('tm1-s')).toBe(true);
     expect(runner.undo('tm1-s')).toEqual({ success: true });
     expect(runner.getTournament().teamMatches['teamMatch1']?.status).toBe('scheduled');
+  });
+
+  it('rejects a second team vs team match in the same tournament', () => {
+    const runner = new CommandRunner();
+    const p1: CreatePlayerCommand = {
+      id: 'p1',
+      type: 'CreatePlayer',
+      timestamp: '2025-01-01T00:00:00.000Z',
+      dependsOn: [],
+      payload: { playerId: 'a1', name: 'A', handicap: 0 },
+    };
+    const p2: CreatePlayerCommand = {
+      id: 'p2',
+      type: 'CreatePlayer',
+      timestamp: '2025-01-01T00:01:00.000Z',
+      dependsOn: [],
+      payload: { playerId: 'b1', name: 'B', handicap: 0 },
+    };
+    const t1: CreateTeamCommand = {
+      id: 't1',
+      type: 'CreateTeam',
+      timestamp: '2025-01-01T00:02:00.000Z',
+      dependsOn: ['p1'],
+      payload: { teamId: 'teamA', name: 'A', memberIds: ['a1'] },
+    };
+    const t2: CreateTeamCommand = {
+      id: 't2',
+      type: 'CreateTeam',
+      timestamp: '2025-01-01T00:03:00.000Z',
+      dependsOn: ['p2'],
+      payload: { teamId: 'teamB', name: 'B', memberIds: ['b1'] },
+    };
+    const tm1: CreateTeamMatchCommand = {
+      id: 'tm1',
+      type: 'CreateTeamMatch',
+      timestamp: '2025-01-01T00:04:00.000Z',
+      dependsOn: ['t1', 't2'],
+      payload: { matchId: 'm1', teamA: 'teamA', teamB: 'teamB' },
+    };
+    const tm2: CreateTeamMatchCommand = {
+      id: 'tm2',
+      type: 'CreateTeamMatch',
+      timestamp: '2025-01-01T00:05:00.000Z',
+      dependsOn: ['t1', 't2'],
+      payload: { matchId: 'm2', teamA: 'teamA', teamB: 'teamB' },
+    };
+
+    expect(runner.execute(p1)).toEqual({ success: true });
+    expect(runner.execute(p2)).toEqual({ success: true });
+    expect(runner.execute(t1)).toEqual({ success: true });
+    expect(runner.execute(t2)).toEqual({ success: true });
+    expect(runner.execute(tm1)).toEqual({ success: true });
+    expect(runner.execute(tm2)).toEqual({
+      success: false,
+      reason: 'Only one team vs team match is allowed per tournament',
+    });
   });
 });

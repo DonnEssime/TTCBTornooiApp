@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createTournament } from '../src/model';
-import { ConsoleTournamentView, DebugTournamentView, InMemoryTournamentView, HtmlStringTournamentView } from '../src/view';
+import { ConsoleTournamentView, DebugTournamentView, InMemoryTournamentView, HtmlStringTournamentView, DomTournamentView, DomRoot } from '../src/view';
 
 describe('View module', () => {
   it('ConsoleTournamentView is defined and can render', () => {
@@ -56,5 +56,27 @@ describe('View module', () => {
     expect(view.tournamentHtml).toContain('Team A');
     expect(view.bracketHtml).toContain('Bracket');
     expect(view.bracketHtml).toContain('b1');
+  });
+
+  it('DomTournamentView writes to root.innerHTML and logs messages', () => {
+    const root: DomRoot = { innerHTML: '' };
+    const view = new DomTournamentView(root);
+    const tournament = createTournament();
+
+    tournament.players['p1'] = { id: 'p1', name: 'Alice', handicap: 0 };
+    tournament.teams['t1'] = { id: 't1', name: 'Team A', memberIds: ['p1'] };
+    tournament.bracketMatches.push({ id: 'b1', seedA: 'p1', seedB: 'BYE', round: 1 });
+
+    view.renderMessage('hello world');
+    expect(view.messageLog).toEqual(['hello world']);
+    expect(root.innerHTML).toContain('<p>hello world</p>');
+
+    view.renderTournament(tournament);
+    expect(root.innerHTML).toContain('<section class="tournament">');
+    expect(root.innerHTML).toContain('Alice');
+
+    view.renderBracket(tournament);
+    expect(root.innerHTML).toContain('<section class="bracket">');
+    expect(root.innerHTML).toContain('b1');
   });
 });

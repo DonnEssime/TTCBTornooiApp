@@ -59,16 +59,20 @@ export interface ForfeitState {
 export interface GroupDefinition {
   id: string;
   playerIds: PlayerId[];
-  teamIds?: TeamId[];
 }
 
 export type ForfeitGroupMode = 'auto-win' | 'not-played';
 
 export interface ForfeitResults {
+  /** Group-stage forfeit side-effects (player tournaments only). */
   playerWins: Record<PlayerId, number>;
-  teamWins: Record<TeamId, number>;
 }
 
+/**
+ * Supported modes (for now): (1) individual player tournaments — brackets/matches among players;
+ * (2) optionally a single team-vs-team match (two teams, aggregate games), mutually exclusive with a player bracket.
+ * Team-based tournaments (multi-team events, team brackets, cross-team player grids) are not supported.
+ */
 export interface Tournament {
   players: Record<PlayerId, Player>;
   teams: Record<TeamId, Team>;
@@ -95,11 +99,14 @@ export function createTournament(): Tournament {
     groups: {},
     forfeits: { players: {}, teams: {} },
     forfeitGroupMode: undefined,
-    forfeitResults: { playerWins: {}, teamWins: {} },
+    forfeitResults: { playerWins: {} },
   };
 }
 
 export function applyBracketToTournament(tournament: Tournament, bracketMatches: BracketMatch[]): Tournament {
+  if (Object.keys(tournament.teamMatches).length > 0) {
+    throw new Error('Cannot apply a player bracket while team vs team matches exist');
+  }
   tournament.bracketMatches = bracketMatches;
   return tournament;
 }
@@ -203,6 +210,16 @@ export function isMatchScoreLegal(scores: GameScore[], bestOf = 5, pointTarget =
   return Boolean(winner);
 }
 
+export function playerMatchWinner(
+  match: Match,
+  bestOf = 5,
+  pointTarget = defaultPointTarget,
+): PlayerId | undefined {
+  const winner = matchWinner(match.scores, bestOf, pointTarget);
+  if (!winner) return undefined;
+  return winner === 'A' ? match.playerA : match.playerB;
+}
+
 export function teamMatchWinner(
   teamMatch: TeamMatch,
   bestOf = 3,
@@ -296,12 +313,11 @@ export function generateBracket(
 
   let participants = [...seedings];
 
-  // Remove group-forfeited players/teams from participants pre-bracket
+  // Remove group-forfeited players from participants pre-bracket (player tournaments only).
   if (tournament?.forfeits) {
     participants = participants.filter((p) => {
       const playerForfeit = tournament.forfeits.players[p as PlayerId];
-      const teamForfeit = tournament.forfeits.teams[p as TeamId];
-      if (playerForfeit?.phase === 'group' || teamForfeit?.phase === 'group') {
+      if (playerForfeit?.phase === 'group') {
         return false;
       }
       return true;
@@ -406,18 +422,11 @@ function findMatchByPlayers(tournament: Tournament, playerA: string, playerB: st
   });
 }
 
-function findTeamMatchByTeams(tournament: Tournament, teamA: string, teamB: string): TeamMatch | undefined {
-  return Object.values(tournament.teamMatches).find((tm) => {
-    const same = (tm.teamA === teamA && tm.teamB === teamB) || (tm.teamA === teamB && tm.teamB === teamA);
-    return same && tm.status === 'finished' && tm.winner;
-  });
-}
-
 export function settleBracketWinners(tournament: Tournament): Tournament {
   for (const bm of tournament.bracketMatches) {
     if (!bm.winner && bm.seedA && bm.seedB) {
-      const seedAforfeit = tournament.forfeits?.players?.[bm.seedA] || tournament.forfeits?.teams?.[bm.seedA];
-      const seedBforfeit = tournament.forfeits?.players?.[bm.seedB] || tournament.forfeits?.teams?.[bm.seedB];
+      const seedAforfeit = tournament.forfeits?.players?.[bm.seedA];
+      const seedBforfeit = tournament.forfeits?.players?.[bm.seedB];
 
       if (seedAforfeit?.phase === 'bracket' && seedBforfeit?.phase !== 'bracket') {
         bm.winner = bm.seedB;
@@ -432,19 +441,9 @@ export function settleBracketWinners(tournament: Tournament): Tournament {
         continue;
       }
 
-      let winner: string | undefined;
-      const teamMatch = findTeamMatchByTeams(tournament, bm.seedA, bm.seedB);
-      if (teamMatch) {
-        winner = teamMatch.winner;
-      } else {
-        const match = findMatchByPlayers(tournament, bm.seedA, bm.seedB);
-        if (match) {
-          winner = match.winner;
-        }
-      }
-
-      if (winner) {
-        bm.winner = winner;
+      const match = findMatchByPlayers(tournament, bm.seedA, bm.seedB);
+      if (match?.winner) {
+        bm.winner = match.winner;
       }
     }
   }
@@ -500,28 +499,17 @@ export function forfeitPlayer(
   return tournament;
 }
 
-export function forfeitTeam(
-  tournament: Tournament,
-  teamId: TeamId,
-  phase: ForfeitPhase,
-  configuredGroupMode?: ForfeitGroupMode,
-): Tournament {
+/** Forfeits for standalone team vs team matches only (bracket phase / in-flight matches). Team-based group tournaments are not supported. */
+export function forfeitTeam(tournament: Tournament, teamId: TeamId, phase: ForfeitPhase): Tournament {
   if (!tournament.teams[teamId]) {
     throw new Error('Team not found');
   }
-  if (phase === 'group' && configuredGroupMode) {
-    if (!tournament.forfeitGroupMode) {
-      tournament.forfeitGroupMode = configuredGroupMode;
-    }
+  if (phase === 'group') {
+    throw new Error('Team group forfeits are not supported');
   }
 
   tournament.forfeits.teams[teamId] = { phase, timestamp: new Date().toISOString() };
-
-  if (phase === 'group') {
-    handleGroupForfeitForTeam(tournament, teamId);
-  } else {
-    applyForfeitToOngoingTeamMatches(tournament, teamId);
-  }
+  applyForfeitToOngoingTeamMatches(tournament, teamId);
 
   return tournament;
 }
@@ -572,19 +560,6 @@ function applyForfeitToOngoingTeamMatches(tournament: Tournament, teamId: TeamId
       if (match.teamA === teamId || match.teamB === teamId) {
         handleTeamMatchForfeit(tournament, match.id, teamId);
       }
-    }
-  }
-}
-
-function handleGroupForfeitForTeam(tournament: Tournament, teamId: TeamId): void {
-  const group = Object.values(tournament.groups).find((g) => g.teamIds?.includes(teamId));
-  if (!group || !group.teamIds) return;
-
-  const mode = tournament.forfeitGroupMode ?? 'auto-win';
-  for (const other of group.teamIds) {
-    if (other === teamId) continue;
-    if (mode === 'auto-win') {
-      tournament.forfeitResults.teamWins[other] = (tournament.forfeitResults.teamWins[other] ?? 0) + 1;
     }
   }
 }

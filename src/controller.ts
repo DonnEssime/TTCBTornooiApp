@@ -139,8 +139,17 @@ export class TournamentController {
 
   generateBracket(fillByes = true, cullToPowerOfTwo = false): void {
     const tournament = this.getTournament();
-    const bracketMatches = generateBracket(tournament.seedings, tournament, { fillByes, cullToPowerOfTwo });
-    applyBracketToTournament(tournament, bracketMatches);
+    if (Object.keys(tournament.teamMatches).length > 0) {
+      this.view?.renderMessage('Cannot generate bracket while a team vs team match exists');
+      return;
+    }
+    try {
+      const bracketMatches = generateBracket(tournament.seedings, tournament, { fillByes, cullToPowerOfTwo });
+      applyBracketToTournament(tournament, bracketMatches);
+    } catch (e) {
+      this.view?.renderMessage(`generateBracket failed: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
     this.view?.renderBracket(tournament);
   }
 
@@ -164,10 +173,11 @@ export class TournamentController {
     this.view?.renderTournament(tournament);
   }
 
-  teamForfeit(teamId: string, phase: 'group' | 'bracket', groupMode?: 'auto-win' | 'not-played'): void {
+  /** Forfeits the team in standalone team vs team matches (not supported for group-stage team tournaments). */
+  teamForfeit(teamId: string): void {
     const tournament = this.getTournament();
-    forfeitTeam(tournament, teamId, phase, groupMode);
-    this.view?.renderMessage(`Team ${teamId} forfeited in ${phase}`);
+    forfeitTeam(tournament, teamId, 'bracket');
+    this.view?.renderMessage(`Team ${teamId} forfeited in bracket`);
     this.view?.renderTournament(tournament);
   }
 

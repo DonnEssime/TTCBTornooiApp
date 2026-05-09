@@ -17,6 +17,16 @@
 - Multi-sport rules beyond **table tennis** (keep interfaces, but don’t implement other sports yet).
 - “Always-online” centralized backend storage (unless we later decide we need collaboration).
 - Final UI/visual design decisions (this doc lists choices to make, not answers).
+- **Team-based tournaments**: no multi-team events, no team-only group stages, no team brackets, and no “each player plays every opposing player” team round-robins. The codebase may still model **squads** only to support a **single optional team-vs-team match** (one aggregate contest between two teams, mutually exclusive with an individual player bracket in the same tournament).
+
+## Current implementation scope (tournament modes)
+
+For now the product and domain code support **only**:
+
+1. **Individual per-player tournaments** — players, scheduling/brackets, and scoring at the player–player match level.
+2. **At most one team-vs-team match per tournament** — two teams, game scores recorded between **team A and team B** as sides (not a tournament of many teams). This mode cannot be combined with a player bracket in the same tournament data.
+
+Anything that looks like a **team tournament** (several teams, team standings feeding a team bracket, cross-team player grids, etc.) is **explicitly out of scope** until revisited.
 
 ---
 
@@ -157,10 +167,9 @@ Decision: **single-writer (admin device only)**. Viewers are read-only.
 - **Shared primitives**: groups, Swiss, round-robin, single elim, double elim, etc. (listed as future, not implemented yet).
 - **Transition rules**: how you move from stage to stage (groups → bracket).
 
-Decision: first usable version supports:
+**In-scope now (see “Current implementation scope” above):**
 
-- **Individual group stage → bracket**
-- **Team-versus-team** (two teams, variable team sizes, not necessarily equal; each player plays every opposing player; team result compiled from individual results)
+- **Individual group stage → bracket** for **players** (not teams-as-competitors).
 
 Decisions (individual group stage → bracket):
 
@@ -170,9 +179,9 @@ Decisions (individual group stage → bracket):
   - **fill** to the next power-of-two (assigning byes / free wins to top seeds), or
   - **cull** down to the previous power-of-two (cutting off lowest-ranked players).
 
-Decision (team-versus-team winner): decide winner by total **matches won**, with tie-breakers by total **games/sets won**, then total **points won**.
+**Deferred / not in current scope — full team-versus-team *tournaments*** (multiple teams, team standings, each player vs each opposing player, team bracket seeding, unequal roster scheduling rules, etc.). A future design pass may revive these; they are **not** targets for the current codebase.
 
-Decision (team-versus-team team sizes): unequal team sizes are allowed; this is accepted as part of the format. Constraint: **every player on the same team plays the same number of matches**, and each team’s total match count is comparable across the fixture.
+**Single team-vs-team match (only)**: winner is determined from the **aggregate game scores** of that one contest (same table-tennis legality as a normal match, with “A”/“B” mapping to the two teams). Squad `memberIds` are for roster metadata and validation; they do **not** drive a matrix of individual matches in v1.
 
 ### 13) “Round” definition
 
@@ -180,7 +189,7 @@ Decision (team-versus-team team sizes): unequal team sizes are allowed; this is 
 - **Partial rounds**: can a round be started before all matches are scheduled?
 - **Late joins/withdrawals**: allowed mid-tournament?
 
-Decision (team-versus-team): rounds are required; aim for each person to play **at most one game per round** (bounded by smallest team size), to make breaks controllable between rounds.
+**Deferred (team tournaments)**: if full team tournaments return to scope, rounds and per-player scheduling constraints would be decided then.
 
 ### 14) Match generation vs match ordering
 
@@ -199,7 +208,7 @@ Decision: ordering remains **properly abstracted** (decision rules must be swapp
 
 Decision (default constraint): add a hard constraint like **“no back-to-back matches if avoidable”** even if it slightly increases break variance.
 
-Decision (team-versus-team optimizer): a different optimizer is needed; desired experience is to play the **closest-in-strength** games at the end, with **top-vs-top** the very last.
+**Deferred (team tournaments)**: a dedicated ordering optimizer for cross-team player grids is **out of scope** until team tournaments are.
 
 ---
 
@@ -455,7 +464,7 @@ How config is stored: JSON manifest, within logs, versioned, with migration path
 - ✅ Property-based tests: **yes** (deterministic replay, undo/redo invariants)
 
 **[DECIDED]** Tournament structure & algorithm:
-- ✅ Scope: **both individual group→bracket AND team-versus-team from v1** (forces proper abstractions)
+- ✅ Scope: **individual group→bracket** for players, plus **at most one team-vs-team match** per tournament if needed — **no team-based tournaments** in current scope
 - ✅ Bracket sizing: **default to fill** (assign byes to top seeds) with option to cull
 - ✅ Undo semantics: **dependency-aware** (allow undoing any action if no downstream action depends on it)
 
@@ -470,17 +479,15 @@ How config is stored: JSON manifest, within logs, versioned, with migration path
    - Should we also support "quick match result entry" (just winner, no per-game breakdown) as an alternative, or is per-game-score-entry always required?
    - Any particular mobile-oriented numeric keypad design preferences?
 
-2. **Team-versus-team specifics**:
-   - How to display "player A vs player B from opposing teams" in the match entry view? (e.g. separate rows per player matchup, or team-level summary first?)
-   - For team result tie-breakers: if two teams have same match wins and same game ratio, do we need head-to-head calculation?
+2. **Single team-vs-team match (UI)**:
+   - Layout for entering per-game scores when only two **team** sides exist (no grid of player pairings).
 
-3. **Bracket seeding & draw**:
-   - For team-versus-team bracket seeding: should we seed by "strongest player on the team" or aggregate team strength?
-   - How should we handle unequal-team-size pairings in the bracket? (e.g., 3-player vs 4-player teams entering finals)
+3. **Bracket seeding & draw (player tournaments)**:
+   - Open questions from §12 that still apply to **individual** brackets only.
 
 4. **Initial test specification priorities**:
    - Which test cases should we pre-write **first** before any implementation? (e.g., TT score legality tests, bracket-generation tests, undo-dependency tests, etc.)
-   - Should we also pre-write starter tests for team-versus-team match logic, or tackle those later?
+   - Full **team tournament** test batches remain **deferred** until that format is in scope again.
 
 Which of these would you like to tackle next?
 

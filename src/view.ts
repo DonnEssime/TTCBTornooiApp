@@ -136,3 +136,71 @@ export class HtmlStringTournamentView implements TournamentView {
     `;
   }
 }
+
+export interface DomRoot {
+  innerHTML: string;
+}
+
+export class DomTournamentView implements TournamentView {
+  public root: DomRoot;
+  public messageLog: string[] = [];
+
+  constructor(root: DomRoot) {
+    this.root = root;
+  }
+
+  renderTournament(tournament: Tournament): void {
+    this.root.innerHTML = this.renderTournamentToHtml(tournament);
+  }
+
+  renderBracket(tournament: Tournament): void {
+    this.root.innerHTML = this.renderBracketToHtml(tournament);
+  }
+
+  renderMessage(message: string): void {
+    this.messageLog.push(message);
+    this.root.innerHTML += `<p>${this.escapeHtml(message)}</p>`;
+  }
+
+  private escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  private renderTournamentToHtml(tournament: Tournament): string {
+    const playersHtml = Object.values(tournament.players)
+      .map((p) => `<li>${this.escapeHtml(p.id)}: ${this.escapeHtml(p.name)} (handicap ${p.handicap})</li>`)
+      .join('');
+    const teamsHtml = Object.values(tournament.teams)
+      .map((t) => `<li>${this.escapeHtml(t.id)}: ${this.escapeHtml(t.name)} (${t.memberIds.map((id) => this.escapeHtml(id)).join(', ')})</li>`)
+      .join('');
+
+    return `
+      <section class="tournament">
+        <h2>Tournament</h2>
+        <div>Players</div>
+        <ul>${playersHtml}</ul>
+        <div>Teams</div>
+        <ul>${teamsHtml}</ul>
+        <div>Table assignments: ${tournament.tableAssignments.length}</div>
+      </section>
+    `;
+  }
+
+  private renderBracketToHtml(tournament: Tournament): string {
+    const rows = tournament.bracketMatches
+      .map((m) => `<li>${this.escapeHtml(m.id)}: ${this.escapeHtml(String(m.seedA))} vs ${this.escapeHtml(String(m.seedB))} (round ${m.round})</li>`)
+      .join('');
+
+    return `
+      <section class="bracket">
+        <h2>Bracket</h2>
+        <ul>${rows}</ul>
+      </section>
+    `;
+  }
+}
