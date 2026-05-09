@@ -3,14 +3,17 @@ import {
   advanceBracketRound,
   applyBracketToTournament,
   bracketRoundHasFinishedPlayerMatch,
+  buildNumberedGroupsFromPlayerOrder,
   createTournament,
   findBracketRoundForPlayerPairing,
   forfeitPlayer,
   forfeitTeam,
   generateBracket,
+  type GroupDefinition,
   isBracketRoundComplete,
   playerMatchWinner,
   recomputeClassTournamentSlices,
+  roundRobinPairs,
   scheduleRound,
   settleBracketWinners,
   teamMatchWinner,
@@ -30,6 +33,9 @@ export type CommandType =
   | 'SetSeedings'
   | 'SetTournamentClasses'
   | 'SetPlayerClassFlags'
+  | 'SetGroups'
+  | 'SetClassGroups'
+  | 'GenerateGroupRoundRobin'
   | 'GenerateBracket'
   | 'AssignTables'
   | 'AdvanceBracketRound'
@@ -55,7 +61,7 @@ export interface CreateTeamCommand extends CommandBase {
 
 export interface CreateMatchCommand extends CommandBase {
   type: 'CreateMatch';
-  payload: { matchId: string; playerA: string; playerB: string };
+  payload: { matchId: string; playerA: string; playerB: string; groupId?: string; classId?: string };
 }
 
 export interface CreateTeamMatchCommand extends CommandBase {
@@ -103,6 +109,29 @@ export interface SetPlayerClassFlagsCommand extends CommandBase {
   payload: { playerId: string; flags: Record<string, boolean> };
 }
 
+export type SetGroupsPayload =
+  | { groups: Array<{ id: string; label?: string; playerIds: string[] }> }
+  | { targetGroupSize: number; playerIds: string[] };
+
+export interface SetGroupsCommand extends CommandBase {
+  type: 'SetGroups';
+  payload: SetGroupsPayload;
+}
+
+export type SetClassGroupsPayload =
+  | { groups: Array<{ id: string; label?: string; playerIds: string[] }> }
+  | { targetGroupSize: number; playerIds: string[] };
+
+export interface SetClassGroupsCommand extends CommandBase {
+  type: 'SetClassGroups';
+  payload: { classId: string } & SetClassGroupsPayload;
+}
+
+export interface GenerateGroupRoundRobinCommand extends CommandBase {
+  type: 'GenerateGroupRoundRobin';
+  payload: { classId?: string };
+}
+
 export interface GenerateBracketCommand extends CommandBase {
   type: 'GenerateBracket';
   payload: { fillByes: boolean; cullToPowerOfTwo: boolean };
@@ -141,6 +170,9 @@ export type Command =
   | SetSeedingsCommand
   | SetTournamentClassesCommand
   | SetPlayerClassFlagsCommand
+  | SetGroupsCommand
+  | SetClassGroupsCommand
+  | GenerateGroupRoundRobinCommand
   | GenerateBracketCommand
   | AssignTablesCommand
   | AdvanceBracketRoundCommand
@@ -153,7 +185,39 @@ export interface CommandResult {
 }
 
 function sortLog(log: Command[]): Command[] {
-  return [...log].sort((a, b) => a.timestamp.localeCompare(b.timestamp) || a.id.localeCompare(b.id));
+  return [...log.entries()]
+    .sort(([i, a], [j, b]) => {
+      const byTime = a.timestamp.localeCompare(b.timestamp);
+      if (byTime !== 0) return byTime;
+      return i - j;
+    })
+    .map(([, c]) => c);
+}
+
+/** Create scheduled round-robin matches for each group (skips existing match ids). */
+function addGroupRoundRobinMatches(
+  tournament: Tournament,
+  groupsRecord: Record<string, GroupDefinition>,
+  classId?: string,
+): void {
+  for (const g of Object.values(groupsRecord)) {
+    for (const [a, b] of roundRobinPairs(g.playerIds)) {
+      const sortedPair = [a, b].sort((x, y) => x.localeCompare(y));
+      const mid = classId
+        ? `gm-${classId}-${g.id}-${sortedPair[0]}-${sortedPair[1]}`
+        : `gm-${g.id}-${sortedPair[0]}-${sortedPair[1]}`;
+      if (tournament.matches[mid]) continue;
+      tournament.matches[mid] = {
+        id: mid,
+        playerA: a,
+        playerB: b,
+        scores: [],
+        status: 'scheduled',
+        groupId: g.id,
+        ...(classId ? { classId } : {}),
+      };
+    }
+  }
 }
 
 function dependsReach(cmd: Command, ancestorId: string, byId: Map<string, Command>): boolean {
@@ -423,7 +487,7 @@ export class CommandRunner {
         return { success: true };
       }
       case 'CreateMatch': {
-        const { matchId, playerA, playerB } = command.payload;
+        const { matchId, playerA, playerB, groupId, classId } = command.payload;
         if (Object.keys(tournament.teamMatches).length > 0) {
           return { success: false, reason: 'Player matches are not allowed in a team vs team fixture' };
         }
@@ -439,6 +503,8 @@ export class CommandRunner {
           playerB,
           scores: [],
           status: 'scheduled',
+          ...(groupId ? { groupId: String(groupId) } : {}),
+          ...(classId ? { classId: String(classId) } : {}),
         };
         return { success: true };
       }
@@ -627,6 +693,209 @@ export class CommandRunner {
           tournament.playerClassFlags[playerId][k] = Boolean(v);
         }
         recomputeClassTournamentSlices(tournament);
+        return { success: true };
+      }
+      case 'SetGroups': {
+        if (tournamentUsesClassTabs(tournament)) {
+          return {
+            success: false,
+            reason: 'Use SetClassGroups from each class tab when multiple competition classes are defined',
+          };
+        }
+        if (Object.keys(tournament.teamMatches).length > 0) {
+          return { success: false, reason: 'Groups are not available alongside a team vs team match' };
+        }
+        const payload = command.payload as SetGroupsPayload;
+        const hasGroups = 'groups' in payload && payload.groups !== undefined;
+        const hasSize = 'targetGroupSize' in payload;
+        if (hasGroups && hasSize) {
+          return {
+            success: false,
+            reason: 'SetGroups: pass either groups or targetGroupSize with playerIds, not both',
+          };
+        }
+        let groups: Array<{ id: string; label?: string; playerIds: string[] }>;
+        if (hasSize) {
+          const ts = Number((payload as { targetGroupSize: number }).targetGroupSize);
+          const tInt = Math.floor(ts);
+          if (!Number.isFinite(ts) || tInt < 1) {
+            return { success: false, reason: 'targetGroupSize must be a positive integer' };
+          }
+          const rawList = (payload as { playerIds: unknown }).playerIds;
+          if (!Array.isArray(rawList)) {
+            return { success: false, reason: 'playerIds must be an array when using targetGroupSize' };
+          }
+          const ordered: string[] = [];
+          const seenPid = new Set<string>();
+          for (const x of rawList) {
+            const pid = String(x ?? '').trim();
+            if (!pid || seenPid.has(pid)) continue;
+            if (!tournament.players[pid]) {
+              return { success: false, reason: `Unknown player: ${pid}` };
+            }
+            seenPid.add(pid);
+            ordered.push(pid);
+          }
+          const defs = buildNumberedGroupsFromPlayerOrder(ordered, tInt);
+          groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
+        } else if (hasGroups) {
+          const arr = (payload as { groups: unknown }).groups;
+          if (!Array.isArray(arr)) {
+            return { success: false, reason: 'groups must be an array' };
+          }
+          groups = arr as Array<{ id: string; label?: string; playerIds: string[] }>;
+        } else {
+          return { success: false, reason: 'SetGroups requires groups or targetGroupSize + playerIds' };
+        }
+        for (const mid of Object.keys(tournament.matches)) {
+          const m = tournament.matches[mid];
+          if (m.groupId && !m.classId) {
+            delete tournament.matches[mid];
+          }
+        }
+        const rec: Record<string, GroupDefinition> = {};
+        const gidSeen = new Set<string>();
+        const pidSeen = new Set<string>();
+        for (const raw of groups) {
+          const id = String(raw.id ?? '').trim();
+          if (!id) {
+            return { success: false, reason: 'Each group needs an id' };
+          }
+          if (gidSeen.has(id)) {
+            return { success: false, reason: 'Duplicate group id' };
+          }
+          gidSeen.add(id);
+          const label = String(raw.label ?? '').trim();
+          const playerIds = Array.isArray(raw.playerIds) ? [...raw.playerIds] : [];
+          for (const pid of playerIds) {
+            if (!tournament.players[pid]) {
+              return { success: false, reason: `Unknown player in group ${id}: ${pid}` };
+            }
+            if (pidSeen.has(pid)) {
+              return { success: false, reason: `Player ${pid} cannot appear in more than one group` };
+            }
+            pidSeen.add(pid);
+          }
+          rec[id] = { id, ...(label ? { label } : {}), playerIds };
+        }
+        tournament.groups = rec;
+        addGroupRoundRobinMatches(tournament, rec, undefined);
+        return { success: true };
+      }
+      case 'SetClassGroups': {
+        if (!tournamentUsesClassTabs(tournament)) {
+          return { success: false, reason: 'SetClassGroups is only used when multiple competition classes are defined' };
+        }
+        if (Object.keys(tournament.teamMatches).length > 0) {
+          return { success: false, reason: 'Groups are not available alongside a team vs team match' };
+        }
+        const payload = command.payload as { classId: string } & SetClassGroupsPayload;
+        const cid = String(payload.classId ?? '').trim();
+        if (!cid || !tournament.classDefinitions.some((c) => c.id === cid)) {
+          return { success: false, reason: 'Unknown class id' };
+        }
+        const slice = tournament.classTournaments[cid];
+        if (!slice) {
+          return { success: false, reason: 'Class slice not found' };
+        }
+        const eligible = new Set(slice.seedings);
+        const hasGroups = 'groups' in payload && payload.groups !== undefined;
+        const hasSize = 'targetGroupSize' in payload;
+        if (hasGroups && hasSize) {
+          return {
+            success: false,
+            reason: 'SetClassGroups: pass either groups or targetGroupSize with playerIds, not both',
+          };
+        }
+        let groups: Array<{ id: string; label?: string; playerIds: string[] }>;
+        if (hasSize) {
+          const ts = Number((payload as { targetGroupSize: number }).targetGroupSize);
+          const tInt = Math.floor(ts);
+          if (!Number.isFinite(ts) || tInt < 1) {
+            return { success: false, reason: 'targetGroupSize must be a positive integer' };
+          }
+          const rawList = (payload as { playerIds: unknown }).playerIds;
+          if (!Array.isArray(rawList)) {
+            return { success: false, reason: 'playerIds must be an array when using targetGroupSize' };
+          }
+          const ordered: string[] = [];
+          const seenPid = new Set<string>();
+          for (const x of rawList) {
+            const pid = String(x ?? '').trim();
+            if (!pid || seenPid.has(pid)) continue;
+            if (!eligible.has(pid)) {
+              return { success: false, reason: `Player ${pid} is not in this class seeding list` };
+            }
+            seenPid.add(pid);
+            ordered.push(pid);
+          }
+          const defs = buildNumberedGroupsFromPlayerOrder(ordered, tInt);
+          groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
+        } else if (hasGroups) {
+          const arr = (payload as { groups: unknown }).groups;
+          if (!Array.isArray(arr)) {
+            return { success: false, reason: 'groups must be an array' };
+          }
+          groups = arr as Array<{ id: string; label?: string; playerIds: string[] }>;
+        } else {
+          return { success: false, reason: 'SetClassGroups requires groups or targetGroupSize + playerIds' };
+        }
+        for (const mid of Object.keys(tournament.matches)) {
+          const m = tournament.matches[mid];
+          if (m.classId === cid && m.groupId) {
+            delete tournament.matches[mid];
+          }
+        }
+        const rec: Record<string, GroupDefinition> = {};
+        const gidSeen = new Set<string>();
+        const pidSeen = new Set<string>();
+        for (const raw of groups) {
+          const id = String(raw.id ?? '').trim();
+          if (!id) {
+            return { success: false, reason: 'Each group needs an id' };
+          }
+          if (gidSeen.has(id)) {
+            return { success: false, reason: 'Duplicate group id' };
+          }
+          gidSeen.add(id);
+          const label = String(raw.label ?? '').trim();
+          const playerIds = Array.isArray(raw.playerIds) ? [...raw.playerIds] : [];
+          for (const pid of playerIds) {
+            if (!eligible.has(pid)) {
+              return { success: false, reason: `Player ${pid} is not in this class seeding list` };
+            }
+            if (pidSeen.has(pid)) {
+              return { success: false, reason: `Player ${pid} cannot appear in more than one group` };
+            }
+            pidSeen.add(pid);
+          }
+          rec[id] = { id, ...(label ? { label } : {}), playerIds };
+        }
+        slice.groups = rec;
+        addGroupRoundRobinMatches(tournament, rec, cid);
+        return { success: true };
+      }
+      case 'GenerateGroupRoundRobin': {
+        const { classId: cidRaw } = command.payload;
+        const cid = cidRaw ? String(cidRaw).trim() : undefined;
+        if (tournamentUsesClassTabs(tournament)) {
+          if (!cid || !tournament.classDefinitions.some((c) => c.id === cid)) {
+            return {
+              success: false,
+              reason: 'classId is required and must be valid to generate group matches for a class track',
+            };
+          }
+        } else if (cid) {
+          return { success: false, reason: 'classId must not be set when only one competition class is in use' };
+        }
+        if (Object.keys(tournament.teamMatches).length > 0) {
+          return { success: false, reason: 'Group round robin is not available alongside a team vs team match' };
+        }
+        const groupsRecord = cid ? tournament.classTournaments[cid]?.groups ?? {} : tournament.groups;
+        if (Object.keys(groupsRecord).length === 0) {
+          return { success: false, reason: 'Define groups before generating round-robin matches' };
+        }
+        addGroupRoundRobinMatches(tournament, groupsRecord, cid);
         return { success: true };
       }
       case 'GenerateBracket': {

@@ -27,6 +27,10 @@ export interface Match {
   scores: GameScore[];
   status: MatchStatus;
   winner?: PlayerId;
+  /** Set for group-stage player matches (not bracket). */
+  groupId?: string;
+  /** Set for group-stage matches in a multi-class track. */
+  classId?: string;
 }
 
 export interface TeamMatch {
@@ -58,6 +62,8 @@ export interface ForfeitState {
 
 export interface GroupDefinition {
   id: string;
+  /** Display name; falls back to id in the UI when missing. */
+  label?: string;
   playerIds: PlayerId[];
 }
 
@@ -176,6 +182,53 @@ export function recomputeClassTournamentSlices(t: Tournament): void {
 /** True when the tournament uses multiple class tabs (two or more definitions). */
 export function tournamentUsesClassTabs(t: Tournament): boolean {
   return t.classDefinitions.length >= 2;
+}
+
+/** All unordered pairs for a round-robin (player ids sorted lexicographically per pair). */
+export function roundRobinPairs(playerIds: PlayerId[]): Array<[PlayerId, PlayerId]> {
+  const ids = [...new Set(playerIds)].filter(Boolean).sort((a, b) => a.localeCompare(b));
+  const out: Array<[PlayerId, PlayerId]> = [];
+  for (let i = 0; i < ids.length; i++) {
+    for (let j = i + 1; j < ids.length; j++) {
+      out.push([ids[i], ids[j]]);
+    }
+  }
+  return out;
+}
+
+/**
+ * Partition N players into consecutive group sizes, each between S−1 and S (when N > S),
+ * or a single group of N when N ≤ S. Used for “target group size” with balanced fill.
+ */
+export function partitionPlayerCountIntoGroupSizes(playerCount: number, targetSize: number): number[] {
+  if (playerCount <= 0) return [];
+  const S = Math.max(1, Math.floor(targetSize));
+  if (S === 1) return Array.from({ length: playerCount }, () => 1);
+  if (playerCount <= S) return [playerCount];
+  const g = Math.ceil(playerCount / S);
+  const kLarge = playerCount - g * (S - 1);
+  const sizes: number[] = [];
+  for (let i = 0; i < kLarge; i++) sizes.push(S);
+  for (let i = 0; i < g - kLarge; i++) sizes.push(S - 1);
+  return sizes;
+}
+
+/** Build groups with ids and labels "1", "2", … in order, splitting `playerIds` by {@link partitionPlayerCountIntoGroupSizes}. */
+export function buildNumberedGroupsFromPlayerOrder(playerIds: PlayerId[], targetSize: number): GroupDefinition[] {
+  const ids = [...playerIds].filter(Boolean);
+  const n = ids.length;
+  if (n === 0) return [];
+  const sizes = partitionPlayerCountIntoGroupSizes(n, targetSize);
+  const out: GroupDefinition[] = [];
+  let offset = 0;
+  for (let gi = 0; gi < sizes.length; gi++) {
+    const sz = sizes[gi];
+    const chunk = ids.slice(offset, offset + sz);
+    offset += sz;
+    const num = String(gi + 1);
+    out.push({ id: num, label: num, playerIds: chunk });
+  }
+  return out;
 }
 
 export function applyBracketToTournament(tournament: Tournament, bracketMatches: BracketMatch[]): Tournament {
@@ -492,10 +545,12 @@ export function getFirstRoundMatchPosition(bracketMatches: BracketMatch[], playe
 }
 
 function findMatchByPlayers(tournament: Tournament, playerA: string, playerB: string): Match | undefined {
-  return Object.values(tournament.matches).find((m) => {
+  const candidates = Object.values(tournament.matches).filter((m) => {
     const same = (m.playerA === playerA && m.playerB === playerB) || (m.playerA === playerB && m.playerB === playerA);
-    return same && m.status === 'finished' && m.winner; // also requires winner computed
+    return same && m.status === 'finished' && m.winner;
   });
+  const bracketish = candidates.find((m) => !m.groupId);
+  return bracketish ?? candidates[0];
 }
 
 /** Bracket round for a player pairing, if it appears in the current bracket structure. */

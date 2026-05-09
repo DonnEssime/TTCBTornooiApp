@@ -13,6 +13,9 @@ import {
   SetSeedingsCommand,
   SetTournamentClassesCommand,
   SetPlayerClassFlagsCommand,
+  SetGroupsCommand,
+  SetClassGroupsCommand,
+  GenerateGroupRoundRobinCommand,
   type AssignTablesCommand,
   type AdvanceBracketRoundCommand,
   type PlayerForfeitCommand,
@@ -29,7 +32,13 @@ export interface ControllerOptions {
 }
 
 function sortHistory(commands: Command[]): Command[] {
-  return [...commands].sort((a, b) => a.timestamp.localeCompare(b.timestamp) || a.id.localeCompare(b.id));
+  return [...commands.entries()]
+    .sort(([i, a], [j, b]) => {
+      const byTime = a.timestamp.localeCompare(b.timestamp);
+      if (byTime !== 0) return byTime;
+      return i - j;
+    })
+    .map(([, c]) => c);
 }
 
 export class TournamentController {
@@ -204,6 +213,61 @@ export class TournamentController {
     };
     const result = this.runner.execute(command);
     this.view?.renderMessage(`SetPlayerClassFlags: ${JSON.stringify(result)}`);
+    this.view?.renderTournament(this.getTournament());
+    return result;
+  }
+
+  setGroups(
+    payload:
+      | Array<{ id: string; label?: string; playerIds: string[] }>
+      | { targetGroupSize: number; playerIds: string[] },
+    dependsOn: string[] = [],
+    commandId?: string,
+  ): CommandResult {
+    const command: SetGroupsCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'SetGroups',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: Array.isArray(payload) ? { groups: payload } : payload,
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`SetGroups: ${JSON.stringify(result)}`);
+    this.view?.renderTournament(this.getTournament());
+    return result;
+  }
+
+  setClassGroups(
+    classId: string,
+    payload:
+      | Array<{ id: string; label?: string; playerIds: string[] }>
+      | { targetGroupSize: number; playerIds: string[] },
+    dependsOn: string[] = [],
+    commandId?: string,
+  ): CommandResult {
+    const command: SetClassGroupsCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'SetClassGroups',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: Array.isArray(payload) ? { classId, groups: payload } : { classId, ...payload },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`SetClassGroups: ${JSON.stringify(result)}`);
+    this.view?.renderTournament(this.getTournament());
+    return result;
+  }
+
+  generateGroupRoundRobin(classId: string | undefined, dependsOn: string[] = [], commandId?: string): CommandResult {
+    const command: GenerateGroupRoundRobinCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'GenerateGroupRoundRobin',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: classId ? { classId } : {},
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`GenerateGroupRoundRobin: ${JSON.stringify(result)}`);
     this.view?.renderTournament(this.getTournament());
     return result;
   }

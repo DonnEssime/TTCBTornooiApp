@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { BracketMatch, ClassTournamentSlice, Match, Tournament } from 'ttc-tornooiapp';
+  import type { BracketMatch, ClassTournamentSlice, GroupDefinition, Match, Tournament } from 'ttc-tornooiapp';
   import {
     TournamentController,
     exportCommandsAsJsonLines,
@@ -32,6 +32,18 @@
     nav: SessionNav;
     /** Draft rows for “Competition classes” (applied via `SetTournamentClasses`). */
     classEditorRows: Array<{ id: string; name: string }>;
+    /** Target max players per group (sizes will be this or one smaller). */
+    groupTargetSize: number;
+    /** When true, player is excluded from the next global group build. */
+    groupPlayerExcluded: Record<string, boolean>;
+    /** Latest `SetGroups` command id (optional extra deps for follow-up commands). */
+    lastSetGroupsCommandId: string;
+    /** Per-class target group size. */
+    classGroupTargetSizeByClassId: Record<string, number>;
+    /** Per-class, per-player exclusion from group build. */
+    classGroupPlayerExcludedByClassId: Record<string, Record<string, boolean>>;
+    /** Latest `SetClassGroups` command id per class. */
+    lastSetClassGroupsCommandIdByClass: Record<string, string>;
   }
 
   type ScoreRow = { a: string; b: string };
@@ -47,6 +59,12 @@
       lastSeedingCommandId: '',
       nav: { kind: 'single', inner: 'players' },
       classEditorRows: [{ id: newCompetitionClassId(), name: '' }],
+      groupTargetSize: 4,
+      groupPlayerExcluded: {},
+      lastSetGroupsCommandId: '',
+      classGroupTargetSizeByClassId: {},
+      classGroupPlayerExcludedByClassId: {},
+      lastSetClassGroupsCommandIdByClass: {},
     },
   ]);
   let activeSessionId = $state('tournament-1');
@@ -101,6 +119,228 @@
       if (cmd.type === 'SetSeedings') last = cmd.id;
     }
     return last;
+  }
+
+  function lastCommandIdOfType(commands: Array<{ id: string; type: string }>, type: string): string {
+    let last = '';
+    for (const cmd of commands) {
+      if (cmd.type === type) last = cmd.id;
+    }
+    return last;
+  }
+
+  function lastSetClassGroupsCommandIdsFromLog(
+    commands: Array<{ id: string; type: string; payload?: unknown }>,
+  ): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const cmd of commands) {
+      if (cmd.type !== 'SetClassGroups') continue;
+      const p = cmd.payload as { classId?: string } | undefined;
+      if (p?.classId) out[p.classId] = cmd.id;
+    }
+    return out;
+  }
+
+  function groupDisplayLabel(g: GroupDefinition): string {
+    return g.label?.trim() || g.id;
+  }
+
+  /** Sort group definitions 1, 2, … numerically when ids are numeric. */
+  function sortGroupsForDisplay(groups: Record<string, GroupDefinition>): GroupDefinition[] {
+    return Object.values(groups).sort((a, b) => {
+      const na = Number(a.id);
+      const nb = Number(b.id);
+      if (Number.isFinite(na) && Number.isFinite(nb) && String(na) === a.id && String(nb) === b.id) {
+        return na - nb;
+      }
+      return a.id.localeCompare(b.id);
+    });
+  }
+
+  function groupLabelForMatch(t: Tournament, match: Match): string {
+    const g = match.classId
+      ? t.classTournaments[match.classId]?.groups?.[match.groupId ?? '']
+      : t.groups[match.groupId ?? ''];
+    return g ? groupDisplayLabel(g) : match.groupId ?? '';
+  }
+
+  function eligibleGlobalGroupPlayerIds(t: Tournament): string[] {
+    const s = activeSession();
+    if (s.playerOrder.length > 0) return [...s.playerOrder];
+    if (t.seedings.length > 0) return [...t.seedings];
+    return Object.keys(t.players).sort((a, b) => a.localeCompare(b));
+  }
+
+  function toggleGlobalGroupPlayerExcluded(pid: string, excluded: boolean): void {
+    const s = activeSession();
+    const next = { ...s.groupPlayerExcluded };
+    if (excluded) next[pid] = true;
+    else delete next[pid];
+    patchActiveSession({ groupPlayerExcluded: next });
+  }
+
+  function classGroupTargetSize(classId: string): number {
+    const v = activeSession().classGroupTargetSizeByClassId[classId];
+    return typeof v === 'number' && v >= 1 ? v : 4;
+  }
+
+  function setClassGroupTargetSize(classId: string, size: number): void {
+    const s = activeSession();
+    patchActiveSession({
+      classGroupTargetSizeByClassId: { ...s.classGroupTargetSizeByClassId, [classId]: Math.max(1, Math.floor(size)) },
+    });
+  }
+
+  function isClassPlayerExcluded(classId: string, pid: string): boolean {
+    return Boolean(activeSession().classGroupPlayerExcludedByClassId[classId]?.[pid]);
+  }
+
+  function toggleClassGroupPlayerExcluded(classId: string, pid: string, excluded: boolean): void {
+    const s = activeSession();
+    const prev = s.classGroupPlayerExcludedByClassId[classId] ?? {};
+    const next = { ...prev };
+    if (excluded) next[pid] = true;
+    else delete next[pid];
+    patchActiveSession({
+      classGroupPlayerExcludedByClassId: { ...s.classGroupPlayerExcludedByClassId, [classId]: next },
+    });
+  }
+
+  function createGlobalGroupsAndMatches(): void {
+    status = null;
+    const s = activeSession();
+    const c = s.controller;
+    const t = c.getTournament();
+    if (tournamentUsesClassTabs(t)) {
+      status = 'With multiple competition classes, use each class tab for groups.';
+      return;
+    }
+    const eligible = eligibleGlobalGroupPlayerIds(t);
+    const ordered = eligible.filter((pid) => !s.groupPlayerExcluded[pid]);
+    if (ordered.length === 0) {
+      status = 'Select at least one player (enable checkboxes) to place in groups.';
+      return;
+    }
+    const targetSize = Math.max(1, Math.floor(Number(s.groupTargetSize) || 4));
+    const deps: string[] = [...new Set(ordered)].map((id) => `cmd-${id}`);
+    if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
+    const cmdId = `cmd-setgroups-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
+    const r = c.setGroups({ targetGroupSize: targetSize, playerIds: ordered }, deps, cmdId);
+    if (!r.success) {
+      status = r.reason ?? 'Could not create groups';
+      pull();
+      return;
+    }
+    patchActiveSession({ lastSetGroupsCommandId: cmdId });
+    status = 'Created numbered groups and all round‑robin matches.';
+    pull();
+  }
+
+  function clearGlobalGroups(): void {
+    status = null;
+    const s = activeSession();
+    const c = s.controller;
+    const t = c.getTournament();
+    if (tournamentUsesClassTabs(t)) {
+      status = 'Use class tabs to clear class groups.';
+      return;
+    }
+    const deps: string[] = [];
+    if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
+    const cmdId = `cmd-setgroups-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
+    const r = c.setGroups([], deps, cmdId);
+    if (!r.success) {
+      status = r.reason ?? 'Could not clear groups';
+      pull();
+      return;
+    }
+    patchActiveSession({ lastSetGroupsCommandId: cmdId });
+    status = 'Cleared groups and group matches.';
+    pull();
+  }
+
+  function createClassGroupsAndMatches(classId: string): void {
+    status = null;
+    const s = activeSession();
+    const c = s.controller;
+    const t = c.getTournament();
+    if (!tournamentUsesClassTabs(t)) {
+      status = 'Class groups require two or more competition classes.';
+      return;
+    }
+    const slice = classSlice(t, classId);
+    const ordered = slice.seedings.filter((pid) => !isClassPlayerExcluded(classId, pid));
+    if (ordered.length === 0) {
+      status = 'Include at least one player for this class.';
+      return;
+    }
+    const targetSize = classGroupTargetSize(classId);
+    const deps: string[] = [...new Set(ordered)].map((id) => `cmd-${id}`);
+    if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
+    const cmdId = `cmd-setcg-${classId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
+    const r = c.setClassGroups(classId, { targetGroupSize: targetSize, playerIds: ordered }, deps, cmdId);
+    if (!r.success) {
+      status = r.reason ?? 'Could not create class groups';
+      pull();
+      return;
+    }
+    patchActiveSession({
+      lastSetClassGroupsCommandIdByClass: { ...s.lastSetClassGroupsCommandIdByClass, [classId]: cmdId },
+    });
+    status = 'Created numbered groups and round‑robin matches for this class.';
+    pull();
+  }
+
+  function clearClassGroups(classId: string): void {
+    status = null;
+    const s = activeSession();
+    const c = s.controller;
+    if (!tournamentUsesClassTabs(c.getTournament())) return;
+    const deps: string[] = [];
+    if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
+    const cmdId = `cmd-setcg-${classId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
+    const r = c.setClassGroups(classId, [], deps, cmdId);
+    if (!r.success) {
+      status = r.reason ?? 'Could not clear class groups';
+      pull();
+      return;
+    }
+    patchActiveSession({
+      lastSetClassGroupsCommandIdByClass: { ...s.lastSetClassGroupsCommandIdByClass, [classId]: cmdId },
+    });
+    status = 'Cleared groups for this class.';
+    pull();
+  }
+
+  function groupMatchesInScope(t: Tournament, classId: string | undefined): Match[] {
+    return Object.values(t.matches)
+      .filter((m) => {
+        if (!m.groupId) return false;
+        if (classId) return m.classId === classId;
+        return !m.classId;
+      })
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  function groupStandingsForGroup(
+    t: Tournament,
+    g: GroupDefinition,
+    classId: string | undefined,
+  ): Array<{ pid: string; w: number; l: number }> {
+    const pids = g.playerIds;
+    const wins: Record<string, number> = Object.fromEntries(pids.map((p) => [p, 0]));
+    const losses: Record<string, number> = Object.fromEntries(pids.map((p) => [p, 0]));
+    for (const m of Object.values(t.matches)) {
+      if (m.groupId !== g.id || m.status !== 'finished' || !m.winner) continue;
+      if (classId ? m.classId !== classId : Boolean(m.classId)) continue;
+      if (!pids.includes(m.playerA) || !pids.includes(m.playerB)) continue;
+      wins[m.winner] = (wins[m.winner] ?? 0) + 1;
+      const loser = m.winner === m.playerA ? m.playerB : m.playerA;
+      losses[loser] = (losses[loser] ?? 0) + 1;
+    }
+    return [...pids]
+      .map((pid) => ({ pid, w: wins[pid] ?? 0, l: losses[pid] ?? 0 }))
+      .sort((a, b) => b.w - a.w || a.l - b.l || a.pid.localeCompare(b.pid));
   }
 
   function titleFromImportFilename(filename: string): string {
@@ -253,9 +493,9 @@
     }
 
     const sAfter = activeSession();
+    const lastS = lastSetSeedingsCommandId(sAfter.controller.getCommandLog());
     if (t.seedings.length > 0) {
       const synced = [...t.seedings];
-      const lastS = lastSetSeedingsCommandId(sAfter.controller.getCommandLog());
       if (
         synced.join(',') !== sAfter.playerOrder.join(',') ||
         (lastS && lastS !== sAfter.lastSeedingCommandId)
@@ -265,6 +505,34 @@
           lastSeedingCommandId: lastS || sAfter.lastSeedingCommandId,
         });
       }
+    } else {
+      /** All seedings undone or cleared: keep session list in sync (avoid ghost ids with no players). */
+      if (sAfter.playerOrder.length > 0 || sAfter.lastSeedingCommandId) {
+        patchActiveSession({
+          playerOrder: [],
+          lastSeedingCommandId: '',
+        });
+      }
+    }
+
+    const log = sAfter.controller.getCommandLog();
+    const lastSG = lastCommandIdOfType(log, 'SetGroups');
+    const lastSCG = lastSetClassGroupsCommandIdsFromLog(log);
+    const prevScg = sAfter.lastSetClassGroupsCommandIdByClass;
+    let scgChanged = lastSG !== sAfter.lastSetGroupsCommandId;
+    if (!scgChanged) {
+      for (const k of new Set([...Object.keys(prevScg), ...Object.keys(lastSCG)])) {
+        if (prevScg[k] !== lastSCG[k]) {
+          scgChanged = true;
+          break;
+        }
+      }
+    }
+    if (scgChanged) {
+      patchActiveSession({
+        lastSetGroupsCommandId: lastSG,
+        lastSetClassGroupsCommandIdByClass: lastSCG,
+      });
     }
 
     const prev = scoreDrafts();
@@ -330,9 +598,15 @@
       controller: new TournamentController(),
       playerOrder: [],
       lastSeedingCommandId: '',
+      lastSetGroupsCommandId: '',
+      lastSetClassGroupsCommandIdByClass: {},
       nav: { kind: 'single', inner: 'players' },
       classEditorRows: [{ id: newCompetitionClassId(), name: '' }],
       tournamentName: 'Tournament',
+      groupTargetSize: 4,
+      groupPlayerExcluded: {},
+      classGroupTargetSizeByClassId: {},
+      classGroupPlayerExcludedByClassId: {},
     });
     setScoreDrafts({});
     status = 'Started a new empty tournament.';
@@ -531,12 +805,18 @@
       controller: next,
       playerOrder,
       lastSeedingCommandId: lastSetSeedingsCommandId(next.getCommandLog()),
+      lastSetGroupsCommandId: lastCommandIdOfType(next.getCommandLog(), 'SetGroups'),
+      lastSetClassGroupsCommandIdByClass: lastSetClassGroupsCommandIdsFromLog(next.getCommandLog()),
       nav: { kind: 'single', inner: 'players' },
       classEditorRows:
         t0.classDefinitions.length > 0
           ? t0.classDefinitions.map((d) => ({ id: d.id, name: d.name }))
           : [{ id: newCompetitionClassId(), name: '' }],
       tournamentName: titleFromImportFilename(file.name),
+      groupTargetSize: 4,
+      groupPlayerExcluded: {},
+      classGroupTargetSizeByClassId: {},
+      classGroupPlayerExcludedByClassId: {},
     });
     setScoreDrafts({});
     status = `Imported ${file.name} (${replay.results.length} commands).`;
@@ -1007,23 +1287,115 @@
           {:else if !useClassTabs && singleTrackInner === 'groups'}
             <section class="card">
               <h2 class="h2">Group phase</h2>
+              <p class="muted small">
+                Pick a target group size (each group will have that many players, or one fewer where needed). Groups are
+                numbered <strong>1, 2, …</strong> in seeding order. Creating groups also creates all round‑robin matches.
+              </p>
+              <div class="row group-editor-head">
+                <label class="grow">
+                  <span class="field-label">Target players per group</span>
+                  <input
+                    class="grow"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={activeSession().groupTargetSize}
+                    aria-label="Target group size"
+                    oninput={(e) => {
+                      const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));
+                      patchActiveSession({ groupTargetSize: v });
+                    }}
+                  />
+                </label>
+              </div>
+              <p class="field-label">Include in draw (seeding order)</p>
+              <div class="group-player-grid">
+                {#each eligibleGlobalGroupPlayerIds(tournament) as pid (pid)}
+                  <label class="chk tight">
+                    <input
+                      type="checkbox"
+                      checked={!activeSession().groupPlayerExcluded[pid]}
+                      onchange={(e) =>
+                        toggleGlobalGroupPlayerExcluded(pid, !(e.currentTarget as HTMLInputElement).checked)}
+                    />
+                    {playerLabel(pid)}
+                  </label>
+                {:else}
+                  <p class="muted small">Add players on the Players tab first.</p>
+                {/each}
+              </div>
+              <div class="row align-end">
+                <button type="button" class="btn danger-ghost" onclick={clearGlobalGroups}>Clear groups</button>
+                <button type="button" class="btn primary" onclick={createGlobalGroupsAndMatches}>
+                  Create groups & matches
+                </button>
+              </div>
+
+              <h3 class="h3">Groups</h3>
               {#if Object.keys(tournament.groups).length === 0}
-                <p class="muted">
-                  No groups are defined for this tournament yet. When group support is added, pairings and standings will
-                  appear here.
-                </p>
+                <p class="muted small">No groups yet. Use Create groups & matches.</p>
               {:else}
-                {#each Object.values(tournament.groups) as g (g.id)}
+                {#each sortGroupsForDisplay(tournament.groups) as g (g.id)}
                   <article class="sub-card">
-                    <h3 class="h3">{g.id}</h3>
-                    <ul class="plain-list">
-                      {#each g.playerIds as pid (pid)}
-                        <li>{playerLabel(pid)}</li>
-                      {/each}
-                    </ul>
+                    <h4 class="h4">{groupDisplayLabel(g)}</h4>
+                    <p class="muted small">
+                      {g.playerIds.map((p) => playerLabel(p)).join(' · ') || 'No players'}
+                    </p>
+                    <table class="grid compact">
+                      <thead>
+                        <tr><th>Player</th><th>W</th><th>L</th></tr>
+                      </thead>
+                      <tbody>
+                        {#each groupStandingsForGroup(tournament, g, undefined) as s (s.pid)}
+                          <tr>
+                            <td>{playerLabel(s.pid)}</td>
+                            <td>{s.w}</td>
+                            <td>{s.l}</td>
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
                   </article>
                 {/each}
               {/if}
+
+              <h3 class="h3">Group matches</h3>
+              {#each groupMatchesInScope(tournament, undefined) as match (match.id)}
+                <article class="match-card">
+                  <header>
+                    <strong>{playerLabel(match.playerA)}</strong> vs <strong>{playerLabel(match.playerB)}</strong>
+                    <span class="meta">{groupLabelForMatch(tournament, match)} · {match.status}</span>
+                  </header>
+                  {#if match.status === 'scheduled' && scoreDrafts()[match.id]}
+                    <table class="mini">
+                      <thead>
+                        <tr><th>#</th><th>{playerLabel(match.playerA)}</th><th>{playerLabel(match.playerB)}</th></tr>
+                      </thead>
+                      <tbody>
+                        {#each scoreDrafts()[match.id] as srow, gi (gi)}
+                          <tr>
+                            <td>{gi + 1}</td>
+                            <td><input type="number" bind:value={srow.a} /></td>
+                            <td><input type="number" bind:value={srow.b} /></td>
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
+                    <div class="row">
+                      <button type="button" class="btn" onclick={() => addGameRow(match.id)}>Add game row</button>
+                      <button type="button" class="btn primary" onclick={() => submitScores(match)}>Save scores</button>
+                    </div>
+                  {:else}
+                    <ul class="done-scores">
+                      {#each match.scores as g, i (i)}
+                        <li>Game {i + 1}: {g.playerA}–{g.playerB}</li>
+                      {/each}
+                    </ul>
+                  {/if}
+                </article>
+              {:else}
+                <p class="muted small">No group matches yet.</p>
+              {/each}
             </section>
           {:else if !useClassTabs && singleTrackInner === 'bracket-setup'}
             <section class="card">
@@ -1180,22 +1552,117 @@
             {#if cin === 'groups'}
               <section class="card">
                 <h2 class="h2">Group phase · {def?.name ?? cid}</h2>
+                <p class="muted small">
+                  Players listed here are in this class (from the Players tab). Target size controls group sizes (each
+                  group is that size or one smaller). Groups are numbered 1, 2, …; creating them also creates all
+                  round‑robin matches for this class.
+                </p>
+                <div class="row group-editor-head">
+                  <label class="grow">
+                    <span class="field-label">Target players per group</span>
+                    <input
+                      class="grow"
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={classGroupTargetSize(cid)}
+                      aria-label="Target group size for class"
+                      oninput={(e) =>
+                        setClassGroupTargetSize(
+                          cid,
+                          Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1)),
+                        )}
+                    />
+                  </label>
+                </div>
+                <p class="field-label">Include in draw (class seeding order)</p>
+                <div class="group-player-grid">
+                  {#each slice.seedings as pid (pid)}
+                    <label class="chk tight">
+                      <input
+                        type="checkbox"
+                        checked={!isClassPlayerExcluded(cid, pid)}
+                        onchange={(e) =>
+                          toggleClassGroupPlayerExcluded(cid, pid, !(e.currentTarget as HTMLInputElement).checked)}
+                      />
+                      {playerLabel(pid)}
+                    </label>
+                  {:else}
+                    <p class="muted small">No players in this class yet — enable the class checkbox for players first.</p>
+                  {/each}
+                </div>
+                <div class="row align-end">
+                  <button type="button" class="btn danger-ghost" onclick={() => clearClassGroups(cid)}>Clear groups</button>
+                  <button type="button" class="btn primary" onclick={() => createClassGroupsAndMatches(cid)}>
+                    Create groups & matches
+                  </button>
+                </div>
+
+                <h3 class="h3">Groups</h3>
                 {#if Object.keys(slice.groups).length === 0}
-                  <p class="muted">
-                    No groups for this class yet. Group definitions scoped to this track will appear here.
-                  </p>
+                  <p class="muted small">No groups for this class yet.</p>
                 {:else}
-                  {#each Object.values(slice.groups) as g (g.id)}
+                  {#each sortGroupsForDisplay(slice.groups) as g (g.id)}
                     <article class="sub-card">
-                      <h3 class="h3">{g.id}</h3>
-                      <ul class="plain-list">
-                        {#each g.playerIds as pid (pid)}
-                          <li>{playerLabel(pid)}</li>
-                        {/each}
-                      </ul>
+                      <h4 class="h4">{groupDisplayLabel(g)}</h4>
+                      <p class="muted small">
+                        {g.playerIds.map((p) => playerLabel(p)).join(' · ') || 'No players'}
+                      </p>
+                      <table class="grid compact">
+                        <thead>
+                          <tr><th>Player</th><th>W</th><th>L</th></tr>
+                        </thead>
+                        <tbody>
+                          {#each groupStandingsForGroup(tournament, g, cid) as s (s.pid)}
+                            <tr>
+                              <td>{playerLabel(s.pid)}</td>
+                              <td>{s.w}</td>
+                              <td>{s.l}</td>
+                            </tr>
+                          {/each}
+                        </tbody>
+                      </table>
                     </article>
                   {/each}
                 {/if}
+
+                <h3 class="h3">Group matches (this class)</h3>
+                {#each groupMatchesInScope(tournament, cid) as match (match.id)}
+                  <article class="match-card">
+                    <header>
+                      <strong>{playerLabel(match.playerA)}</strong> vs <strong>{playerLabel(match.playerB)}</strong>
+                      <span class="meta">{groupLabelForMatch(tournament, match)} · {match.status}</span>
+                    </header>
+                    {#if match.status === 'scheduled' && scoreDrafts()[match.id]}
+                      <table class="mini">
+                        <thead>
+                          <tr><th>#</th><th>{playerLabel(match.playerA)}</th><th>{playerLabel(match.playerB)}</th></tr>
+                        </thead>
+                        <tbody>
+                          {#each scoreDrafts()[match.id] as srow, gi (gi)}
+                            <tr>
+                              <td>{gi + 1}</td>
+                              <td><input type="number" bind:value={srow.a} /></td>
+                              <td><input type="number" bind:value={srow.b} /></td>
+                            </tr>
+                          {/each}
+                        </tbody>
+                      </table>
+                      <div class="row">
+                        <button type="button" class="btn" onclick={() => addGameRow(match.id)}>Add game row</button>
+                        <button type="button" class="btn primary" onclick={() => submitScores(match)}>Save scores</button>
+                      </div>
+                    {:else}
+                      <ul class="done-scores">
+                        {#each match.scores as g, i (i)}
+                          <li>Game {i + 1}: {g.playerA}–{g.playerB}</li>
+                        {/each}
+                      </ul>
+                    {/if}
+                  </article>
+                {:else}
+                  <p class="muted small">No group matches for this class yet.</p>
+                {/each}
               </section>
             {:else if cin === 'bracket-setup'}
               <section class="card">
@@ -1622,6 +2089,42 @@
     font-size: 0.95rem;
     font-weight: 600;
     color: #334155;
+  }
+
+  .h4 {
+    margin: 0 0 0.35rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #334155;
+  }
+
+  .field-label {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #64748b;
+    margin-bottom: 0.2rem;
+  }
+
+  .group-editor-head {
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.75rem;
+  }
+
+  .group-player-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.75rem;
+    margin-top: 0.35rem;
+  }
+
+  .grid.compact th,
+  .grid.compact td {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.85rem;
   }
 
   .muted {

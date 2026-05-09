@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { CommandRunner, CreatePlayerCommand, CreateMatchCommand, type UndoCommand } from '../src/command';
+import { buildNumberedGroupsFromPlayerOrder, partitionPlayerCountIntoGroupSizes } from '../src/model';
 
 function appendUndo(runner: CommandRunner, targetId: string, undoId: string): ReturnType<CommandRunner['execute']> {
   const u: UndoCommand = {
@@ -102,9 +103,13 @@ describe('CommandRunner dependency-aware undo', () => {
     runner.execute({ id: 'p1', type: 'CreatePlayer', dependsOn: [], payload: { playerId: 'p1', name: 'Alice', handicap: 0 }, timestamp: '2024-01-01T00:00:00.000Z' });
     runner.execute({ id: 'p2', type: 'CreatePlayer', dependsOn: [], payload: { playerId: 'p2', name: 'Bob', handicap: 0 }, timestamp: '2024-01-01T00:00:01.000Z' });
     runner.execute({ id: 'p3', type: 'CreatePlayer', dependsOn: [], payload: { playerId: 'p3', name: 'Charlie', handicap: 0 }, timestamp: '2024-01-01T00:00:02.000Z' });
-
-    const tournament = runner.getTournament();
-    tournament.groups['g1'] = { id: 'g1', playerIds: ['p1', 'p2', 'p3'] };
+    runner.execute({
+      id: 'sg-g1',
+      type: 'SetGroups',
+      dependsOn: ['p1', 'p2', 'p3'],
+      payload: { groups: [{ id: 'g1', playerIds: ['p1', 'p2', 'p3'] }] },
+      timestamp: '2024-01-01T00:00:02.500Z',
+    });
 
     runner.execute({
       id: 'f2',
@@ -124,9 +129,13 @@ describe('CommandRunner dependency-aware undo', () => {
     runner.execute({ id: 'p1', type: 'CreatePlayer', dependsOn: [], payload: { playerId: 'p1', name: 'Alice', handicap: 0 }, timestamp: '2024-01-01T00:00:00.000Z' });
     runner.execute({ id: 'p2', type: 'CreatePlayer', dependsOn: [], payload: { playerId: 'p2', name: 'Bob', handicap: 0 }, timestamp: '2024-01-01T00:00:01.000Z' });
     runner.execute({ id: 'p3', type: 'CreatePlayer', dependsOn: [], payload: { playerId: 'p3', name: 'Charlie', handicap: 0 }, timestamp: '2024-01-01T00:00:02.000Z' });
-
-    const tournament = runner.getTournament();
-    tournament.groups['g1'] = { id: 'g1', playerIds: ['p1', 'p2', 'p3'] };
+    runner.execute({
+      id: 'sg-g1',
+      type: 'SetGroups',
+      dependsOn: ['p1', 'p2', 'p3'],
+      payload: { groups: [{ id: 'g1', playerIds: ['p1', 'p2', 'p3'] }] },
+      timestamp: '2024-01-01T00:00:02.500Z',
+    });
 
     runner.execute({
       id: 'f2',
@@ -298,5 +307,242 @@ describe('CommandRunner dependency-aware undo', () => {
     expect(defs[0].id).toMatch(/^cid-/);
     expect(defs[1].id).toMatch(/^cid-/);
     expect(defs[0].id).not.toBe(defs[1].id);
+  });
+
+  it('SetGroups defines global groups and rejects when multiple classes are active', () => {
+    const runner = new CommandRunner();
+    runner.execute({
+      id: 'tc2',
+      type: 'SetTournamentClasses',
+      dependsOn: [],
+      payload: {
+        classes: [
+          { id: 'a', name: 'A' },
+          { id: 'b', name: 'B' },
+        ],
+      },
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    runner.execute({
+      id: 'p1',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p1', name: 'X', handicap: 0 },
+      timestamp: '2026-01-01T00:00:01.000Z',
+    });
+    const rBlock = runner.execute({
+      id: 'sg0',
+      type: 'SetGroups',
+      dependsOn: ['p1'],
+      payload: { groups: [{ id: 'g1', playerIds: ['p1'] }] },
+      timestamp: '2026-01-01T00:00:02.000Z',
+    });
+    expect(rBlock.success).toBe(false);
+    expect(rBlock.reason).toMatch(/SetClassGroups|multiple competition classes/i);
+
+    const runner2 = new CommandRunner();
+    runner2.execute({
+      id: 'p1',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p1', name: 'A', handicap: 0 },
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    runner2.execute({
+      id: 'p2',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p2', name: 'B', handicap: 0 },
+      timestamp: '2026-01-01T00:00:01.000Z',
+    });
+    expect(
+      runner2.execute({
+        id: 'sg1',
+        type: 'SetGroups',
+        dependsOn: ['p1', 'p2'],
+        payload: {
+          groups: [
+            { id: 'g1', label: 'Pool A', playerIds: ['p1'] },
+            { id: 'g2', playerIds: ['p2'] },
+          ],
+        },
+        timestamp: '2026-01-01T00:00:02.000Z',
+      }).success,
+    ).toBe(true);
+    const t = runner2.getTournament();
+    expect(t.groups['g1']?.label).toBe('Pool A');
+    expect(t.groups['g2']?.playerIds).toEqual(['p2']);
+
+    expect(
+      runner2.execute({
+        id: 'sg2',
+        type: 'SetGroups',
+        dependsOn: ['p1', 'p2'],
+        payload: {
+          groups: [
+            { id: 'g1', playerIds: ['p1'] },
+            { id: 'g2', playerIds: ['p1', 'p2'] },
+          ],
+        },
+        timestamp: '2026-01-01T00:00:03.000Z',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('SetClassGroups and GenerateGroupRoundRobin work per class', () => {
+    const runner = new CommandRunner();
+    runner.execute({
+      id: 'tc',
+      type: 'SetTournamentClasses',
+      dependsOn: [],
+      payload: {
+        classes: [
+          { id: 'jun', name: 'Junior' },
+          { id: 'sen', name: 'Senior' },
+        ],
+      },
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    runner.execute({
+      id: 'p1',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p1', name: 'A', handicap: 0 },
+      timestamp: '2026-01-01T00:00:01.000Z',
+    });
+    runner.execute({
+      id: 'p2',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p2', name: 'B', handicap: 0 },
+      timestamp: '2026-01-01T00:00:02.000Z',
+    });
+    runner.execute({
+      id: 'seed',
+      type: 'SetSeedings',
+      dependsOn: ['p1', 'p2'],
+      payload: { playerIds: ['p1', 'p2'] },
+      timestamp: '2026-01-01T00:00:03.000Z',
+    });
+    runner.execute({
+      id: 'f1',
+      type: 'SetPlayerClassFlags',
+      dependsOn: ['p1'],
+      payload: { playerId: 'p1', flags: { jun: true, sen: false } },
+      timestamp: '2026-01-01T00:00:04.000Z',
+    });
+    runner.execute({
+      id: 'f2',
+      type: 'SetPlayerClassFlags',
+      dependsOn: ['p2'],
+      payload: { playerId: 'p2', flags: { jun: true, sen: false } },
+      timestamp: '2026-01-01T00:00:05.000Z',
+    });
+    expect(
+      runner.execute({
+        id: 'scg',
+        type: 'SetClassGroups',
+        dependsOn: ['p1', 'p2', 'seed', 'f1', 'f2'],
+        payload: { classId: 'jun', groups: [{ id: 'jg', playerIds: ['p1'] }] },
+        timestamp: '2026-01-01T00:00:06.000Z',
+      }).success,
+    ).toBe(true);
+
+    expect(
+      runner.execute({
+        id: 'ggrr-bad',
+        type: 'GenerateGroupRoundRobin',
+        dependsOn: [],
+        payload: {},
+        timestamp: '2026-01-01T00:00:08.000Z',
+      }).success,
+    ).toBe(false);
+
+    expect(
+      runner.execute({
+        id: 'ggrr-jun',
+        type: 'GenerateGroupRoundRobin',
+        dependsOn: ['scg'],
+        payload: { classId: 'jun' },
+        timestamp: '2026-01-01T00:00:09.000Z',
+      }).success,
+    ).toBe(true);
+    const t = runner.getTournament();
+    expect(Object.keys(t.matches).some((k) => k.startsWith('gm-jun-'))).toBe(false);
+
+    runner.execute({
+      id: 'scg3',
+      type: 'SetClassGroups',
+      dependsOn: ['p1', 'p2', 'seed', 'f1', 'f2'],
+      payload: { classId: 'jun', groups: [{ id: 'jg', playerIds: ['p1', 'p2'] }] },
+      timestamp: '2026-01-01T00:00:10.000Z',
+    });
+    expect(
+      runner.execute({
+        id: 'ggrr-jun2',
+        type: 'GenerateGroupRoundRobin',
+        dependsOn: ['scg3'],
+        payload: { classId: 'jun' },
+        timestamp: '2026-01-01T00:00:11.000Z',
+      }).success,
+    ).toBe(true);
+    const mids = Object.keys(runner.getTournament().matches).filter((k) => k.startsWith('gm-jun-jg-'));
+    expect(mids.length).toBe(1);
+  });
+
+  it('balances group counts for a target size (S or S−1)', () => {
+    expect(partitionPlayerCountIntoGroupSizes(10, 3)).toEqual([3, 3, 2, 2]);
+    expect(partitionPlayerCountIntoGroupSizes(7, 3)).toEqual([3, 2, 2]);
+    expect(partitionPlayerCountIntoGroupSizes(4, 3)).toEqual([2, 2]);
+    expect(partitionPlayerCountIntoGroupSizes(4, 10)).toEqual([4]);
+    expect(buildNumberedGroupsFromPlayerOrder(['a', 'b', 'c', 'd'], 3)).toEqual([
+      { id: '1', label: '1', playerIds: ['a', 'b'] },
+      { id: '2', label: '2', playerIds: ['c', 'd'] },
+    ]);
+  });
+
+  it('SetGroups with targetGroupSize creates numbered groups and round-robin matches in one command', () => {
+    const runner = new CommandRunner();
+    runner.execute({
+      id: 'p1',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p1', name: 'A', handicap: 0 },
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    runner.execute({
+      id: 'p2',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p2', name: 'B', handicap: 0 },
+      timestamp: '2026-01-01T00:00:01.000Z',
+    });
+    runner.execute({
+      id: 'p3',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p3', name: 'C', handicap: 0 },
+      timestamp: '2026-01-01T00:00:02.000Z',
+    });
+    runner.execute({
+      id: 'p4',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p4', name: 'D', handicap: 0 },
+      timestamp: '2026-01-01T00:00:03.000Z',
+    });
+    expect(
+      runner.execute({
+        id: 'sgz',
+        type: 'SetGroups',
+        dependsOn: ['p1', 'p2', 'p3', 'p4'],
+        payload: { targetGroupSize: 2, playerIds: ['p1', 'p2', 'p3', 'p4'] },
+        timestamp: '2026-01-01T00:00:04.000Z',
+      }).success,
+    ).toBe(true);
+    const t = runner.getTournament();
+    expect(Object.keys(t.groups).sort()).toEqual(['1', '2']);
+    const gm = Object.keys(t.matches).filter((k) => k.startsWith('gm-'));
+    expect(gm.length).toBe(2);
   });
 });
