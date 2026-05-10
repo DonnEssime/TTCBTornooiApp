@@ -67,6 +67,10 @@ export class TournamentController {
     return sortHistory(this.runner.getHistory());
   }
 
+  findLatestActiveCreateMatchCommandId(matchId: string): string | undefined {
+    return this.runner.findLatestActiveCreateMatchCommandId(matchId);
+  }
+
   private makeTimestamp(): string {
     return new Date().toISOString();
   }
@@ -278,13 +282,26 @@ export class TournamentController {
     dependsOn: string[] = [],
     commandId?: string,
     shuffleKey?: string,
+    extras?: { cullByGroupPlacement?: boolean; classId?: string },
   ): CommandResult {
-    const payload: { fillByes: boolean; cullToPowerOfTwo: boolean; shuffleKey?: string } = {
+    const payload: {
+      fillByes: boolean;
+      cullToPowerOfTwo: boolean;
+      shuffleKey?: string;
+      cullByGroupPlacement?: boolean;
+      classId?: string;
+    } = {
       fillByes,
       cullToPowerOfTwo,
     };
     if (shuffleKey !== undefined) {
       payload.shuffleKey = shuffleKey;
+    }
+    if (extras?.cullByGroupPlacement) {
+      payload.cullByGroupPlacement = true;
+    }
+    if (extras?.classId !== undefined) {
+      payload.classId = extras.classId;
     }
     const command: GenerateBracketCommand = {
       id: commandId ?? this.newCommandId(),
@@ -434,13 +451,45 @@ export class TournamentController {
     return result;
   }
 
-  /** Append Undo for the latest active (non-Undone) mutation, if allowed. */
+  /** Append Undo for the latest active (non-Undone) mutation, if allowed. Bracket round‑1 CreateMatch commands that depend on the same GenerateBracket are all undone first, then that GenerateBracket, in one user action. */
   undoLast(commandId?: string): CommandResult {
     const hist = sortHistory(this.runner.getHistory());
     for (let i = hist.length - 1; i >= 0; i--) {
       const c = hist[i];
       if (c.type === 'Undo') continue;
       if (!this.runner.canUndo(c.id)) continue;
+
+      if (c.type === 'CreateMatch') {
+        const genId = c.dependsOn.find((d) => typeof d === 'string' && d.startsWith('cmd-gen'));
+        if (genId) {
+          const genCmd = hist.find((x) => x.id === genId);
+          if (genCmd?.type === 'GenerateBracket') {
+            let r: CommandResult = { success: true };
+            let firstUndo = true;
+            while (true) {
+              const h = sortHistory(this.runner.getHistory());
+              let removedOne = false;
+              for (let j = h.length - 1; j >= 0; j--) {
+                const x = h[j];
+                if (x.type === 'Undo') continue;
+                if (!this.runner.canUndo(x.id)) continue;
+                if (x.type !== 'CreateMatch' || !x.dependsOn.includes(genId)) break;
+                r = this.undo(x.id, firstUndo ? commandId : undefined);
+                firstUndo = false;
+                if (!r.success) return r;
+                removedOne = true;
+                break;
+              }
+              if (!removedOne) break;
+            }
+            if (this.runner.canUndo(genId)) {
+              r = this.undo(genId, firstUndo ? commandId : undefined);
+            }
+            return r;
+          }
+        }
+      }
+
       return this.undo(c.id, commandId);
     }
     return { success: false, reason: 'Nothing to undo' };

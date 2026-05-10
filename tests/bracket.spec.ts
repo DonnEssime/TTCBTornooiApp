@@ -1,7 +1,45 @@
 import { describe, it, expect } from 'vitest';
-import { createTournament, forfeitPlayer, forfeitTeam, generateBracket, advanceBracketRound, areTopSeedsSeparated, settleBracketWinners, scheduleRound } from '../src/model';
+import {
+  createTournament,
+  forfeitPlayer,
+  forfeitTeam,
+  generateBracket,
+  advanceBracketRound,
+  areTopSeedsSeparated,
+  bracketRoundHasFinishedPlayerMatch,
+  compareBracketMatchIdString,
+  settleBracketWinners,
+  scheduleRound,
+} from '../src/model';
 
 describe('Bracket generation', () => {
+  it('orders m{n} bracket ids numerically (not lexicographically)', () => {
+    const ids = ['m10', 'm2', 'm9', 'm1'];
+    const sorted = [...ids].sort(compareBracketMatchIdString);
+    expect(sorted).toEqual(['m1', 'm2', 'm9', 'm10']);
+  });
+
+  it('advanceBracketRound pairs winners using numeric m-order, not array order', () => {
+    const t = createTournament();
+    for (let i = 1; i <= 8; i++) {
+      const id = `p${i}`;
+      t.players[id] = { id, name: `P${i}`, handicap: 0 };
+    }
+    const r1 = generateBracket(
+      ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'],
+      { fillByes: false, cullToPowerOfTwo: false },
+    );
+    for (const m of r1) {
+      m.winner = m.seedA!;
+    }
+    t.bracketMatches = [...r1].sort((a, b) => b.id.localeCompare(a.id));
+    advanceBracketRound(t);
+    const m1 = r1.find((x) => x.id === 'm1');
+    const m2 = r1.find((x) => x.id === 'm2');
+    const r2 = t.bracketMatches.filter((x) => x.round === 2);
+    expect(r2.some((x) => x.seedA === m1!.winner && x.seedB === m2!.winner)).toBe(true);
+  });
+
   it('shuffles bracket participants deterministically when shuffleKey is set', () => {
     const seedings = ['p1', 'p2', 'p3', 'p4'];
     const a = generateBracket(seedings, { fillByes: false, cullToPowerOfTwo: false, shuffleKey: 'Spring Cup 2026' });
@@ -49,6 +87,37 @@ describe('Bracket generation', () => {
       ['p1', 'p4'],
       ['p2', 'p3'],
     ]);
+  });
+
+  it('culls to previous power of two using group finishing order when requested', () => {
+    const tournament = createTournament();
+    for (let i = 1; i <= 7; i++) {
+      const id = `p${i}`;
+      tournament.players[id] = { id, name: `P${i}`, handicap: 0 };
+    }
+    tournament.groups = {
+      ga: { id: 'ga', playerIds: ['p1', 'p2', 'p3', 'p4'] },
+      gb: { id: 'gb', playerIds: ['p5', 'p6', 'p7'] },
+    };
+    const seedings = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'];
+    const bracket = generateBracket(seedings, tournament, {
+      fillByes: false,
+      cullToPowerOfTwo: true,
+      cullByGroupPlacement: true,
+      shuffleKey: 'Cup',
+    });
+    expect(bracket).toHaveLength(2);
+    const ids = new Set(
+      bracket.flatMap((m) => [m.seedA, m.seedB]).filter((x): x is string => Boolean(x)),
+    );
+    expect(ids.size).toBe(4);
+    expect(ids.has('p1')).toBe(true);
+    expect(ids.has('p2')).toBe(true);
+    expect(ids.has('p5')).toBe(true);
+    expect(ids.has('p6')).toBe(true);
+    expect(ids.has('p3')).toBe(false);
+    expect(ids.has('p4')).toBe(false);
+    expect(ids.has('p7')).toBe(false);
   });
 
   it('advances bracket round after all winners are present', () => {
@@ -126,5 +195,48 @@ describe('Bracket generation', () => {
 
     expect(tournament.teamMatches['tm1'].status).toBe('forfeit');
     expect(tournament.teamMatches['tm1'].winner).toBe('t2');
+  });
+
+  it('bracketRoundHasFinishedPlayerMatch ignores group rows that reuse the same pairing as round 1', () => {
+    const tournament = {
+      players: {
+        p1: { id: 'p1', name: 'A', handicap: 0 },
+        p2: { id: 'p2', name: 'B', handicap: 0 },
+      },
+      teams: {},
+      matches: {
+        'gm-g1-p1-p2': {
+          id: 'gm-g1-p1-p2',
+          playerA: 'p1',
+          playerB: 'p2',
+          scores: [{ playerA: 11, playerB: 9 }],
+          status: 'scheduled',
+          groupId: 'g1',
+        },
+        'match-m1': {
+          id: 'match-m1',
+          playerA: 'p1',
+          playerB: 'p2',
+          scores: [],
+          status: 'scheduled',
+        },
+      },
+      teamMatches: {},
+      bracketMatches: [{ id: 'm1', seedA: 'p1', seedB: 'p2', round: 1 }],
+      tableAssignments: [],
+      seedings: ['p1', 'p2'],
+      groups: {},
+      forfeits: { players: {}, teams: {} },
+      forfeitResults: { playerWins: {} },
+      lockedBracketRounds: [],
+      classDefinitions: [],
+      playerClassFlags: {},
+      classTournaments: {},
+    } as any;
+
+    expect(bracketRoundHasFinishedPlayerMatch(tournament, 1)).toBe(false);
+
+    tournament.matches['match-m1'].scores = [{ playerA: 11, playerB: 5 }];
+    expect(bracketRoundHasFinishedPlayerMatch(tournament, 1)).toBe(true);
   });
 });

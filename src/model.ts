@@ -404,6 +404,26 @@ export interface BracketMatch {
   round: number;
 }
 
+/**
+ * Lexicographic sort places `m10` before `m2`. Bracket columns and `advanceBracketRound` pairing
+ * must use numeric order on standard `m{n}` ids from {@link generateBracket}.
+ */
+export function compareBracketMatchIdString(aId: string, bId: string): number {
+  const ma = /^m(\d+)$/.exec(aId);
+  const mb = /^m(\d+)$/.exec(bId);
+  if (ma && mb) {
+    const na = Number(ma[1]);
+    const nb = Number(mb[1]);
+    if (na !== nb) return na - nb;
+    return 0;
+  }
+  return aId.localeCompare(bId);
+}
+
+export function compareBracketMatchId(a: BracketMatch, b: BracketMatch): number {
+  return compareBracketMatchIdString(a.id, b.id);
+}
+
 export function nextPowerOfTwo(n: number): number {
   if (n < 1) return 1;
   let p = 1;
@@ -465,10 +485,111 @@ function seedPositions(size: number): number[] {
   return result;
 }
 
+/** Standings row for one group (W/L, then player id), best first — same rules as the web group table. */
+export function groupStandingsRowsForBracket(
+  tournament: Tournament,
+  g: GroupDefinition,
+  classId: string | undefined,
+): Array<{ pid: PlayerId; w: number; l: number }> {
+  const pids = g.playerIds;
+  const wins: Record<string, number> = Object.fromEntries(pids.map((p) => [p, 0]));
+  const losses: Record<string, number> = Object.fromEntries(pids.map((p) => [p, 0]));
+  for (const m of Object.values(tournament.matches)) {
+    if (m.groupId !== g.id || m.status !== 'finished' || !m.winner) continue;
+    if (classId ? m.classId !== classId : Boolean(m.classId)) continue;
+    if (!pids.includes(m.playerA) || !pids.includes(m.playerB)) continue;
+    wins[m.winner] = (wins[m.winner] ?? 0) + 1;
+    const loser = m.winner === m.playerA ? m.playerB : m.playerA;
+    losses[loser] = (losses[loser] ?? 0) + 1;
+  }
+  return [...pids]
+    .map((pid) => ({ pid, w: wins[pid] ?? 0, l: losses[pid] ?? 0 }))
+    .sort((a, b) => b.w - a.w || a.l - b.l || a.pid.localeCompare(b.pid));
+}
+
+/**
+ * Drops players until `previousPowerOfTwo(seedings.length)` remain.
+ * Elimination order: all true 4th-place finishers (within their group) in random order, then all 3rd-place, etc.,
+ * using {@link shuffleDeterministic} per tier so the same `shuffleKey` yields the same cut.
+ * Players in smaller groups have no e.g. "4th" row until larger groups have shed that tier.
+ */
+export function cullSeedingsByGroupPlacement(
+  seedings: PlayerId[],
+  tournament: Tournament,
+  classId: string | undefined,
+  shuffleKey: string,
+): PlayerId[] {
+  const n = seedings.length;
+  const target = previousPowerOfTwo(n);
+  if (n <= 1 || n === target) {
+    return [...seedings];
+  }
+  const toRemove = n - target;
+  const groupsRecord = classId
+    ? tournament.classTournaments[classId]?.groups ?? {}
+    : tournament.groups;
+
+  if (Object.keys(groupsRecord).length === 0) {
+    throw new Error('Group placement elimination requires defined groups');
+  }
+
+  const placement = new Map<PlayerId, { place: number; groupSize: number }>();
+  for (const g of Object.values(groupsRecord)) {
+    const ordered = groupStandingsRowsForBracket(tournament, g, classId);
+    const m = ordered.length;
+    for (let idx = 0; idx < ordered.length; idx++) {
+      placement.set(ordered[idx]!.pid, { place: idx + 1, groupSize: m });
+    }
+  }
+
+  const keyBase = shuffleKey.trim() || 'Tournament';
+
+  for (const pid of seedings) {
+    if (!placement.has(pid)) {
+      throw new Error(`Player ${pid} is not listed in any group (required for placement elimination)`);
+    }
+  }
+
+  const remaining = new Set(seedings);
+  let removed = 0;
+  const maxPlace = Math.max(...Object.values(groupsRecord).map((g) => g.playerIds.length));
+
+  for (let placeNum = maxPlace; placeNum >= 2 && removed < toRemove; placeNum--) {
+    const tier = [...remaining].filter((pid) => placement.get(pid)!.place === placeNum);
+    const shuffled = shuffleDeterministic(tier, `${keyBase}:elim-tier:${placeNum}`);
+    for (const pid of shuffled) {
+      if (removed >= toRemove) break;
+      remaining.delete(pid);
+      removed++;
+    }
+  }
+
+  if (remaining.size !== target) {
+    if (remaining.size > target) {
+      throw new Error(
+        'Cannot reach a power-of-two field using only non-leaders from group standings (not enough lower-ranked players).',
+      );
+    }
+    throw new Error('Group placement elimination removed too many players');
+  }
+
+  return seedings.filter((pid) => remaining.has(pid));
+}
+
+export type GenerateBracketOptions = {
+  fillByes?: boolean;
+  cullToPowerOfTwo?: boolean;
+  shuffleKey?: string;
+  /** When true (with `cullToPowerOfTwo` and `fillByes: false`), cull using group finishing order instead of seed order. */
+  cullByGroupPlacement?: boolean;
+  /** Scope for group standings when `cullByGroupPlacement` is set. */
+  classId?: string;
+};
+
 export function generateBracket(
   seedings: string[],
-  tournamentOrOptions?: Tournament | { fillByes?: boolean; cullToPowerOfTwo?: boolean; shuffleKey?: string },
-  options: { fillByes?: boolean; cullToPowerOfTwo?: boolean; shuffleKey?: string } = {
+  tournamentOrOptions?: Tournament | GenerateBracketOptions,
+  options: GenerateBracketOptions = {
     fillByes: true,
     cullToPowerOfTwo: false,
   },
@@ -476,7 +597,7 @@ export function generateBracket(
   if (!seedings || seedings.length === 0) return [];
 
   let tournament: Tournament | undefined;
-  let opts: { fillByes?: boolean; cullToPowerOfTwo?: boolean; shuffleKey?: string } = options;
+  let opts: GenerateBracketOptions = options;
 
   if (tournamentOrOptions) {
     if (
@@ -488,12 +609,23 @@ export function generateBracket(
     ) {
       tournament = tournamentOrOptions as Tournament;
     } else {
-      opts = tournamentOrOptions as { fillByes?: boolean; cullToPowerOfTwo?: boolean; shuffleKey?: string };
+      opts = tournamentOrOptions as GenerateBracketOptions;
     }
   }
 
   const fillByes = opts.fillByes ?? true;
   const cullToPower = opts.cullToPowerOfTwo ?? false;
+  const cullByPlacement = opts.cullByGroupPlacement === true;
+
+  if (cullByPlacement && fillByes) {
+    throw new Error('cullByGroupPlacement cannot be combined with fillByes');
+  }
+  if (cullByPlacement && !cullToPower) {
+    throw new Error('cullByGroupPlacement requires cullToPowerOfTwo');
+  }
+  if (cullByPlacement && !tournament) {
+    throw new Error('cullByGroupPlacement requires tournament state for group standings');
+  }
 
   let participants = [...seedings];
 
@@ -511,7 +643,12 @@ export function generateBracket(
   if (cullToPower) {
     const maxForCull = previousPowerOfTwo(participants.length);
     if (maxForCull < participants.length) {
-      participants = participants.slice(0, maxForCull);
+      if (cullByPlacement && tournament) {
+        const tierKey = opts.shuffleKey !== undefined ? String(opts.shuffleKey).trim() || 'Tournament' : 'Tournament';
+        participants = cullSeedingsByGroupPlacement(participants, tournament, opts.classId, tierKey);
+      } else {
+        participants = participants.slice(0, maxForCull);
+      }
     }
   }
 
@@ -557,7 +694,7 @@ export function generateBracket(
 
 export function advanceBracketRound(tournament: Tournament): Tournament {
   const currentRound = Math.max(0, ...tournament.bracketMatches.map((m) => m.round));
-  const currentMatches = tournament.bracketMatches.filter((m) => m.round === currentRound);
+  const currentMatches = tournament.bracketMatches.filter((m) => m.round === currentRound).sort(compareBracketMatchId);
   if (currentMatches.length <= 1) {
     return tournament;
   }
@@ -590,7 +727,7 @@ export function advanceBracketRound(tournament: Tournament): Tournament {
 }
 
 export function getFirstRoundMatchPosition(bracketMatches: BracketMatch[], playerId: string): number | undefined {
-  const firstRound = bracketMatches.filter((m) => m.round === 1);
+  const firstRound = bracketMatches.filter((m) => m.round === 1).sort(compareBracketMatchId);
   const total = firstRound.length * 2;
 
   for (let idx = 0; idx < firstRound.length; idx++) {
@@ -615,7 +752,11 @@ function findMatchByPlayers(tournament: Tournament, playerA: string, playerB: st
   return bracketish ?? candidates[0];
 }
 
-/** Bracket round for a player pairing, if it appears in the current bracket structure. */
+/**
+ * Bracket round for a player pairing, if it appears in the current bracket structure.
+ * Group-phase matches can reuse the same pairing; callers that have a `Match` should ignore
+ * rows with `groupId` set when treating scores as bracket play (see `matchesForBracketRound` in the app).
+ */
 export function findBracketRoundForPlayerPairing(tournament: Tournament, playerA: PlayerId, playerB: PlayerId): number | undefined {
   for (const bm of tournament.bracketMatches) {
     if (!bm.seedA || !bm.seedB) continue;
@@ -629,6 +770,7 @@ export function findBracketRoundForPlayerPairing(tournament: Tournament, playerA
 /** True if any player match mapped to this bracket round has scores entered or is finished. */
 export function bracketRoundHasFinishedPlayerMatch(tournament: Tournament, round: number): boolean {
   for (const m of Object.values(tournament.matches)) {
+    if (m.groupId) continue;
     const r = findBracketRoundForPlayerPairing(tournament, m.playerA, m.playerB);
     if (r === round && (m.status === 'finished' || m.scores.length > 0)) {
       return true;
@@ -673,7 +815,7 @@ export function isBracketRoundComplete(tournament: Tournament, round: number): b
 }
 
 export function scheduleRound(tournament: Tournament, tableIds: string[], round: number): Tournament {
-  const matches = tournament.bracketMatches.filter((m) => m.round === round);
+  const matches = tournament.bracketMatches.filter((m) => m.round === round).sort(compareBracketMatchId);
   tournament.tableAssignments = tournament.tableAssignments.filter((a) => a.round !== round);
   let tableIndex = 0;
   for (const match of matches) {

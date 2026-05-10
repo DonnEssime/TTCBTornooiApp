@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { CommandRunner, CreatePlayerCommand, CreateMatchCommand, type UndoCommand } from '../src/command';
+import { TournamentController } from '../src/controller';
 import { buildNumberedGroupsFromPlayerOrder, partitionPlayerCountIntoGroupSizes } from '../src/model';
 
 function appendUndo(runner: CommandRunner, targetId: string, undoId: string): ReturnType<CommandRunner['execute']> {
@@ -669,5 +670,23 @@ describe('EnterScore', () => {
     expect(partial.success).toBe(false);
     expect(partial.reason ?? '').toContain('Invalid scores');
     expect(runner.getTournament().matches.m1.status).toBe('scheduled');
+  });
+});
+
+describe('Bracket undoLast coalescing', () => {
+  it('undoLast on a round-1 CreateMatch that depends on GenerateBracket undoes the whole bracket batch', () => {
+    const c = new TournamentController();
+    expect(c.createPlayer('p1', 'A', 0, 'cmd-p1')).toEqual({ success: true });
+    expect(c.createPlayer('p2', 'B', 0, 'cmd-p2')).toEqual({ success: true });
+    expect(c.setSeedings(['p1', 'p2'], ['cmd-p1', 'cmd-p2'], 'cmd-seed-br')).toEqual({ success: true });
+    expect(c.generateBracket(true, false, ['cmd-seed-br'], 'cmd-gen-br')).toEqual({ success: true });
+    expect(c.createMatch('match-m1', 'p1', 'p2', ['cmd-gen-br', 'cmd-p1', 'cmd-p2'], 'cmd-gen-br-pair-m1')).toEqual({
+      success: true,
+    });
+    expect(c.getTournament().bracketMatches.length).toBeGreaterThan(0);
+    expect(c.getTournament().matches['match-m1']).toBeDefined();
+    expect(c.undoLast()).toEqual({ success: true });
+    expect(c.getTournament().bracketMatches.length).toBe(0);
+    expect(c.getTournament().matches['match-m1']).toBeUndefined();
   });
 });

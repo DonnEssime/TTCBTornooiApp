@@ -136,7 +136,13 @@ export interface GenerateGroupRoundRobinCommand extends CommandBase {
 
 export interface GenerateBracketCommand extends CommandBase {
   type: 'GenerateBracket';
-  payload: { fillByes: boolean; cullToPowerOfTwo: boolean; shuffleKey?: string };
+  payload: {
+    fillByes: boolean;
+    cullToPowerOfTwo: boolean;
+    shuffleKey?: string;
+    cullByGroupPlacement?: boolean;
+    classId?: string;
+  };
 }
 
 export interface AssignTablesCommand extends CommandBase {
@@ -389,6 +395,22 @@ export class CommandRunner {
     return sortLog(this.orderedLog);
   }
 
+  /** Latest non-suppressed CreateMatch command id for this player match id. */
+  findLatestActiveCreateMatchCommandId(matchId: string): string | undefined {
+    const sorted = sortLog(this.orderedLog);
+    const byId = new Map(sorted.map((c) => [c.id, c]));
+    const { suppressed } = this.computeSuppressedWithVictims(sorted, byId);
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      const c = sorted[i]!;
+      if (c.type === 'Undo') continue;
+      if (suppressed.has(c.id)) continue;
+      if (c.type === 'CreateMatch' && c.payload.matchId === matchId) {
+        return c.id;
+      }
+    }
+    return undefined;
+  }
+
   private computeSuppressedWithVictims(
     sorted: Command[],
     byId: Map<string, Command>,
@@ -545,7 +567,10 @@ export class CommandRunner {
         if (!match) {
           return { success: false, reason: 'Match not found' };
         }
-        const round = findBracketRoundForPlayerPairing(tournament, match.playerA, match.playerB);
+        const round =
+          match.groupId === undefined
+            ? findBracketRoundForPlayerPairing(tournament, match.playerA, match.playerB)
+            : undefined;
         if (round !== undefined && tournament.lockedBracketRounds.includes(round)) {
           return { success: false, reason: `Bracket round ${round} is locked` };
         }
@@ -921,12 +946,14 @@ export class CommandRunner {
         if (Object.keys(tournament.teamMatches).length > 0) {
           return { success: false, reason: 'Cannot generate bracket while a team vs team match exists' };
         }
-        const { fillByes, cullToPowerOfTwo, shuffleKey } = command.payload;
+        const { fillByes, cullToPowerOfTwo, shuffleKey, cullByGroupPlacement, classId } = command.payload;
         try {
           const bm = generateBracket(tournament.seedings, tournament, {
             fillByes: fillByes ?? true,
             cullToPowerOfTwo: cullToPowerOfTwo ?? false,
             ...(shuffleKey !== undefined ? { shuffleKey } : {}),
+            ...(cullByGroupPlacement ? { cullByGroupPlacement: true } : {}),
+            ...(classId !== undefined ? { classId } : {}),
           });
           applyBracketToTournament(tournament, bm);
         } catch (e) {
