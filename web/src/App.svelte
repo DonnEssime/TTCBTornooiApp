@@ -25,8 +25,8 @@
     return `cid-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
   }
 
-  /** Sub-views for the active tournament (bracket rounds are dynamic). */
-  type InnerTab = 'players' | 'groups' | `bracket:${number}` | 'results';
+  /** Sub-views for the active tournament (single Bracket tab holds the full knockout phase). */
+  type InnerTab = 'players' | 'groups' | 'bracket' | 'results';
   type ClassInnerTab = Exclude<InnerTab, 'players'>;
 
   type SessionNav =
@@ -573,27 +573,20 @@
     return t.players[id]?.name ?? id;
   }
 
-  function normalizeInnerTab(t: Tournament, current: InnerTab): InnerTab {
-    const rounds = uniqueSortedRounds(t.bracketMatches);
-    const cur = (current as string) === 'bracket-setup' ? 'groups' : current;
-    return normalizeBracketSubTab(rounds, cur) as InnerTab;
+  /** Map legacy `bracket-setup` / `bracket:7` session nav onto current tab ids. */
+  function coerceLegacyInnerTab(value: InnerTab | ClassInnerTab | string): InnerTab | ClassInnerTab {
+    const s = String(value);
+    if (s === 'bracket-setup') return 'groups';
+    if (s.startsWith('bracket:')) return 'bracket';
+    return value as InnerTab;
   }
 
-  function normalizeBracketSubTab(rounds: number[], current: InnerTab | ClassInnerTab): InnerTab | ClassInnerTab {
-    const cur = (current as string) === 'bracket-setup' ? 'groups' : current;
-    if (rounds.length === 0) {
-      if (typeof cur === 'string' && cur.startsWith('bracket:')) {
-        return 'groups';
-      }
-      return cur;
-    }
-    if (typeof cur === 'string' && cur.startsWith('bracket:')) {
-      const n = Number(cur.slice('bracket:'.length));
-      if (!rounds.includes(n)) {
-        return `bracket:${rounds[0]}`;
-      }
-    }
-    return cur;
+  function normalizeInnerTab(_t: Tournament, current: InnerTab): InnerTab {
+    return coerceLegacyInnerTab(current) as InnerTab;
+  }
+
+  function normalizeBracketSubTab(_rounds: number[], current: InnerTab | ClassInnerTab): InnerTab | ClassInnerTab {
+    return coerceLegacyInnerTab(current);
   }
 
   function normalizeSessionNav(t: Tournament, nav: SessionNav): SessionNav {
@@ -980,9 +973,8 @@
         return;
       }
     }
-    const rounds = uniqueSortedRounds(c.getTournament().bracketMatches);
-    if (rounds.length > 0) {
-      patchActiveSession({ nav: { kind: 'single', inner: `bracket:${rounds[0]}` } });
+    if (c.getTournament().bracketMatches.length > 0) {
+      patchActiveSession({ nav: { kind: 'single', inner: 'bracket' } });
     }
     status = 'Bracket generated and round‑1 matches created.';
     pull();
@@ -1223,14 +1215,14 @@
   });
 
   const singleTrackRestTabs = $derived.by((): Array<{ id: InnerTab; label: string }> => {
-    const base: Array<{ id: InnerTab; label: string }> = [{ id: 'groups', label: 'Group phase' }];
+    const tabs: Array<{ id: InnerTab; label: string }> = [
+      { id: 'groups', label: 'Group phase' },
+      { id: 'bracket', label: 'Bracket' },
+    ];
     if (tournament.bracketMatches.length > 0) {
-      for (const r of bracketRounds) {
-        base.push({ id: `bracket:${r}`, label: `Bracket · round ${r}` });
-      }
-      base.push({ id: 'results', label: 'Final overview' });
+      tabs.push({ id: 'results', label: 'Final overview' });
     }
-    return base;
+    return tabs;
   });
 
   const classSubTabsList = $derived.by((): Array<{ id: ClassInnerTab; label: string }> => {
@@ -1240,14 +1232,14 @@
     }
     const cid = s.nav.screen.classId;
     const rounds = uniqueSortedRounds(classSlice(tournament, cid).bracketMatches);
-    const base: Array<{ id: ClassInnerTab; label: string }> = [{ id: 'groups', label: 'Group phase' }];
+    const tabs: Array<{ id: ClassInnerTab; label: string }> = [
+      { id: 'groups', label: 'Group phase' },
+      { id: 'bracket', label: 'Bracket' },
+    ];
     if (rounds.length > 0) {
-      for (const r of rounds) {
-        base.push({ id: `bracket:${r}`, label: `Bracket · round ${r}` });
-      }
-      base.push({ id: 'results', label: 'Final overview' });
+      tabs.push({ id: 'results', label: 'Final overview' });
     }
-    return base;
+    return tabs;
   });
 
   const showPlayersPanel = $derived.by(() => {
@@ -1647,49 +1639,50 @@
               <h2 class="h2">Group phase</h2>
               {#if tournament.bracketMatches.length > 0}
                 <p class="group-lock-banner">
-                  Knockout bracket is active — group lineup and target size are locked here. You can still enter scores for
-                  unfinished round‑robin matches below.
+                  Knockout bracket is active — group lineup is locked here. You can still enter scores for unfinished
+                  round‑robin matches below.
                 </p>
               {/if}
-              <p class="muted small">
-                Pick a target group size (each group will have that many players, or one fewer where needed). Groups are
-                named <strong>group 1</strong>, <strong>group 2</strong>, … in seeding order. Creating groups also creates all round‑robin matches.
-              </p>
-              <div class="row group-editor-head">
-                <label class="grow">
-                  <span class="field-label">Target players per group</span>
-                  <input
-                    class="grow"
-                    type="number"
-                    min="1"
-                    step="1"
+              {#if Object.keys(tournament.groups).length === 0}
+                <p class="muted small">
+                  Pick a target group size (each group will have that many players, or one fewer where needed). Groups are
+                  named <strong>group 1</strong>, <strong>group 2</strong>, … in seeding order. Creating groups also creates all
+                  round‑robin matches.
+                </p>
+                <div class="row group-editor-head">
+                  <label class="grow">
+                    <span class="field-label">Target players per group</span>
+                    <input
+                      class="grow"
+                      type="number"
+                      min="1"
+                      step="1"
+                      disabled={tournament.bracketMatches.length > 0}
+                      value={activeSess.groupTargetSize}
+                      aria-label="Target group size"
+                      oninput={(e) => {
+                        const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));
+                        patchActiveSession({ groupTargetSize: v });
+                      }}
+                    />
+                  </label>
+                </div>
+                <p class="muted small">
+                  {#if eligibleGlobalGroupPlayerIds(tournament).length === 0}
+                    Add players on the Players tab first.
+                  {:else}
+                    All {eligibleGlobalGroupPlayerIds(tournament).length} seeded players are included, in seeding order.
+                  {/if}
+                </p>
+                <div class="row align-end">
+                  <button
+                    type="button"
+                    class="btn danger-ghost"
                     disabled={tournament.bracketMatches.length > 0}
-                    value={activeSess.groupTargetSize}
-                    aria-label="Target group size"
-                    oninput={(e) => {
-                      const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));
-                      patchActiveSession({ groupTargetSize: v });
-                    }}
-                  />
-                </label>
-              </div>
-              <p class="muted small">
-                {#if eligibleGlobalGroupPlayerIds(tournament).length === 0}
-                  Add players on the Players tab first.
-                {:else}
-                  All {eligibleGlobalGroupPlayerIds(tournament).length} seeded players are included, in seeding order.
-                {/if}
-              </p>
-              <div class="row align-end">
-                <button
-                  type="button"
-                  class="btn danger-ghost"
-                  disabled={tournament.bracketMatches.length > 0}
-                  onclick={clearGlobalGroups}
-                >
-                  Clear groups
-                </button>
-                {#if Object.keys(tournament.groups).length === 0}
+                    onclick={clearGlobalGroups}
+                  >
+                    Clear groups
+                  </button>
                   <button
                     type="button"
                     class="btn primary"
@@ -1698,8 +1691,19 @@
                   >
                     Create groups & matches
                   </button>
-                {/if}
-              </div>
+                </div>
+              {:else}
+                <div class="row align-end">
+                  <button
+                    type="button"
+                    class="btn danger-ghost"
+                    disabled={tournament.bracketMatches.length > 0}
+                    onclick={clearGlobalGroups}
+                  >
+                    Clear groups
+                  </button>
+                </div>
+              {/if}
 
               <h3 class="h3">Groups</h3>
               {#if Object.keys(tournament.groups).length === 0}
@@ -1752,31 +1756,14 @@
                 <p class="muted small">No group matches yet.</p>
               {/each}
 
-              <h3 class="h3">Knockout bracket (read‑only)</h3>
+            </section>
+          {:else if !useClassTabs && singleTrackInner === 'bracket'}
+            <section class="card">
+              <h2 class="h2">Bracket</h2>
               <p class="muted small">
-                Power‑of‑two columns: known player names when set, <span class="mono">--empty--</span> for bye slots, “—” for
-                later rounds not yet decided. Matches the draw you get from the button (same shuffle key as the tournament
-                name).
+                Full knockout phase: preview the draw from current seedings, then create it after groups exist. Round locks
+                and scores apply once the bracket is generated.
               </p>
-              <div class="bracket-flow" role="img" aria-label="Knockout bracket preview">
-                {#each previewBracketColumns(tournament, tournament.seedings, activeSess.tournamentName, fillByes, tournament.bracketMatches) as col, ci (ci)}
-                  <div class="bracket-col">
-                    <div class="bracket-col-head muted small">Round {ci + 1}</div>
-                    {#each col as m (m.id)}
-                      <div class="bracket-match-box">
-                        <div class="bracket-slot">{bracketSlotTitle(m, 'a', tournament)}</div>
-                        <div class="bracket-vs muted small">vs</div>
-                        <div class="bracket-slot">{bracketSlotTitle(m, 'b', tournament)}</div>
-                        {#if m.winner}
-                          <div class="bracket-win muted small">Winner: {playerLabel(m.winner)}</div>
-                        {/if}
-                      </div>
-                    {/each}
-                  </div>
-                {:else}
-                  <p class="muted small">Add players to preview the knockout tree.</p>
-                {/each}
-              </div>
               <div class="row align-end bracket-create-row">
                 <label class="chk">
                   <input type="checkbox" bind:checked={fillByes} disabled={tournament.bracketMatches.length > 0} />
@@ -1795,60 +1782,92 @@
                     : 'Create knockout bracket & round‑1 matches'}
                 </button>
               </div>
-            </section>
-          {:else if !useClassTabs && singleTrackInner?.startsWith('bracket:')}
-            {@const round = Number(singleTrackInner!.slice('bracket:'.length))}
-            <section class="card">
-              <h2 class="h2">Bracket · round {round}</h2>
-              <p class="muted small">Pairings and scores for this bracket round. Round lock blocks entering scores for mapped matches.</p>
-              <div class="row">
-                <button type="button" class="btn primary" onclick={() => setRoundLock(round, true)}>Lock round</button>
-                <button type="button" class="btn" onclick={() => setRoundLock(round, false)}>Unlock round</button>
-                {#if tournament.lockedBracketRounds.includes(round)}
-                  <span class="pill warn">Locked</span>
-                {/if}
-              </div>
-              <table class="grid">
-                <thead>
-                  <tr>
-                    <th>Slot</th>
-                    <th>Pairing</th>
-                    <th>Winner</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each bracketMatchesForRound(tournament.bracketMatches, round) as m (m.id)}
-                    <tr>
-                      <td><code>{m.id}</code></td>
-                      <td>{playerLabel(m.seedA)} vs {playerLabel(m.seedB)}</td>
-                      <td>{m.winner ? playerLabel(m.winner) : '—'}</td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
+              {#if Object.keys(tournament.groups).length === 0 && tournament.bracketMatches.length === 0}
+                <p class="muted small">Finish the group phase first — the create button enables after groups exist.</p>
+              {/if}
 
-              <h3 class="h3">Matches & scores (this round)</h3>
-              {#each matchesForBracketRound(tournament, round) as match (match.id)}
-                <article class="match-card">
-                  <header>
-                    <strong>{playerLabel(match.playerA)}</strong> vs <strong>{playerLabel(match.playerB)}</strong>
-                    <span class="meta">{match.status}</span>
-                  </header>
-                  {#if match.status === 'scheduled'}
+              <h3 class="h3">Knockout bracket</h3>
+              <p class="muted small">
+                Read‑only power‑of‑two columns: names when known, <span class="mono">--empty--</span> for bye slots, “—” for
+                later rounds not yet decided. Uses the same shuffle key as the tournament name.
+              </p>
+              <div class="bracket-flow" role="img" aria-label="Knockout bracket">
+                {#each previewBracketColumns(tournament, tournament.seedings, activeSess.tournamentName, fillByes, tournament.bracketMatches) as col, ci (ci)}
+                  <div class="bracket-col">
+                    <div class="bracket-col-head muted small">Round {ci + 1}</div>
+                    {#each col as m (m.id)}
+                      <div class="bracket-match-box">
+                        <div class="bracket-slot">{bracketSlotTitle(m, 'a', tournament)}</div>
+                        <div class="bracket-vs muted small">vs</div>
+                        <div class="bracket-slot">{bracketSlotTitle(m, 'b', tournament)}</div>
+                        {#if m.winner}
+                          <div class="bracket-win muted small">Winner: {playerLabel(m.winner)}</div>
+                        {/if}
+                      </div>
+                    {/each}
+                  </div>
+                {:else}
+                  <p class="muted small">Add players on the Players tab to preview the tree.</p>
+                {/each}
+              </div>
+
+              {#if tournament.bracketMatches.length > 0}
+                <h3 class="h3">Scores by round</h3>
+                {#each bracketRounds as round (round)}
+                  <div class="bracket-round-block">
+                    <h4 class="h4">Round {round}</h4>
                     <div class="row">
-                      <button type="button" class="btn primary" onclick={() => openScoreModal(match)}>Enter games…</button>
+                      <button type="button" class="btn primary" onclick={() => setRoundLock(round, true)}>Lock round</button>
+                      <button type="button" class="btn" onclick={() => setRoundLock(round, false)}>Unlock round</button>
+                      {#if tournament.lockedBracketRounds.includes(round)}
+                        <span class="pill warn">Locked</span>
+                      {/if}
                     </div>
-                  {:else}
-                    <ul class="done-scores">
-                      {#each match.scores as g, i (i)}
-                        <li>Game {i + 1}: {g.playerA}–{g.playerB}</li>
-                      {/each}
-                    </ul>
-                  {/if}
-                </article>
+                    <table class="grid">
+                      <thead>
+                        <tr>
+                          <th>Slot</th>
+                          <th>Pairing</th>
+                          <th>Winner</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {#each bracketMatchesForRound(tournament.bracketMatches, round) as m (m.id)}
+                          <tr>
+                            <td><code>{m.id}</code></td>
+                            <td>{playerLabel(m.seedA)} vs {playerLabel(m.seedB)}</td>
+                            <td>{m.winner ? playerLabel(m.winner) : '—'}</td>
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
+                    <p class="muted small bracket-round-matches-head">Matches this round</p>
+                    {#each matchesForBracketRound(tournament, round) as match (match.id)}
+                      <article class="match-card">
+                        <header>
+                          <strong>{playerLabel(match.playerA)}</strong> vs <strong>{playerLabel(match.playerB)}</strong>
+                          <span class="meta">{match.status}</span>
+                        </header>
+                        {#if match.status === 'scheduled'}
+                          <div class="row">
+                            <button type="button" class="btn primary" onclick={() => openScoreModal(match)}>Enter games…</button>
+                          </div>
+                        {:else}
+                          <ul class="done-scores">
+                            {#each match.scores as g, i (i)}
+                              <li>Game {i + 1}: {g.playerA}–{g.playerB}</li>
+                            {/each}
+                          </ul>
+                        {/if}
+                      </article>
+                    {:else}
+                      <p class="muted small">No player matches mapped to this bracket round yet.</p>
+                    {/each}
+                  </div>
+                {/each}
               {:else}
-                <p class="muted">No player matches mapped to this bracket round yet.</p>
-              {/each}
+                <p class="muted small">Tables and score entry for each round appear here after you create the knockout bracket.</p>
+              {/if}
             </section>
           {:else if !useClassTabs && singleTrackInner === 'results'}
             <section class="card">
@@ -1905,47 +1924,47 @@
                     unfinished round‑robin matches below.
                   </p>
                 {/if}
-                <p class="muted small">
-                  Players listed here are in this class (from the Players tab). Target size controls group sizes (each
-                  group is that size or one smaller). Groups are named group 1, group 2, …; creating them also creates all
-                  round‑robin matches for this class.
-                </p>
-                <div class="row group-editor-head">
-                  <label class="grow">
-                    <span class="field-label">Target players per group</span>
-                    <input
-                      class="grow"
-                      type="number"
-                      min="1"
-                      step="1"
+                {#if Object.keys(slice.groups).length === 0}
+                  <p class="muted small">
+                    Players listed here are in this class (from the Players tab). Target size controls group sizes (each
+                    group is that size or one smaller). Groups are named group 1, group 2, …; creating them also creates all
+                    round‑robin matches for this class.
+                  </p>
+                  <div class="row group-editor-head">
+                    <label class="grow">
+                      <span class="field-label">Target players per group</span>
+                      <input
+                        class="grow"
+                        type="number"
+                        min="1"
+                        step="1"
+                        disabled={slice.bracketMatches.length > 0}
+                        value={classGroupTargetSize(cid)}
+                        aria-label="Target group size for class"
+                        oninput={(e) =>
+                          setClassGroupTargetSize(
+                            cid,
+                            Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1)),
+                          )}
+                      />
+                    </label>
+                  </div>
+                  <p class="muted small">
+                    {#if slice.seedings.length === 0}
+                      No players in this class yet — enable the class checkbox for players on the Players tab.
+                    {:else}
+                      All {slice.seedings.length} players in this class are included, in class seeding order.
+                    {/if}
+                  </p>
+                  <div class="row align-end">
+                    <button
+                      type="button"
+                      class="btn danger-ghost"
                       disabled={slice.bracketMatches.length > 0}
-                      value={classGroupTargetSize(cid)}
-                      aria-label="Target group size for class"
-                      oninput={(e) =>
-                        setClassGroupTargetSize(
-                          cid,
-                          Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1)),
-                        )}
-                    />
-                  </label>
-                </div>
-                <p class="muted small">
-                  {#if slice.seedings.length === 0}
-                    No players in this class yet — enable the class checkbox for players on the Players tab.
-                  {:else}
-                    All {slice.seedings.length} players in this class are included, in class seeding order.
-                  {/if}
-                </p>
-                <div class="row align-end">
-                  <button
-                    type="button"
-                    class="btn danger-ghost"
-                    disabled={slice.bracketMatches.length > 0}
-                    onclick={() => clearClassGroups(cid)}
-                  >
-                    Clear groups
-                  </button>
-                  {#if Object.keys(slice.groups).length === 0}
+                      onclick={() => clearClassGroups(cid)}
+                    >
+                      Clear groups
+                    </button>
                     <button
                       type="button"
                       class="btn primary"
@@ -1954,8 +1973,19 @@
                     >
                       Create groups & matches
                     </button>
-                  {/if}
-                </div>
+                  </div>
+                {:else}
+                  <div class="row align-end">
+                    <button
+                      type="button"
+                      class="btn danger-ghost"
+                      disabled={slice.bracketMatches.length > 0}
+                      onclick={() => clearClassGroups(cid)}
+                    >
+                      Clear groups
+                    </button>
+                  </div>
+                {/if}
 
                 <h3 class="h3">Groups</h3>
                 {#if Object.keys(slice.groups).length === 0}
@@ -2008,12 +2038,28 @@
                   <p class="muted small">No group matches for this class yet.</p>
                 {/each}
 
-                <h3 class="h3">Knockout bracket (read‑only)</h3>
+              </section>
+            {:else if cin === 'bracket'}
+              <section class="card">
+                <h2 class="h2">Bracket · {def?.name ?? cid}</h2>
                 <p class="muted small">
-                  Preview for this class seeding. Per‑class knockout generation from the app is not wired yet; the tree
-                  still reflects the draw you would get from the same shuffle key as the tournament name.
+                  Per-class knockout generation from the app is not wired yet. Preview uses class seedings and the same
+                  shuffle key as the tournament name.
                 </p>
-                <div class="bracket-flow" role="img" aria-label="Class knockout preview">
+                <div class="row align-end bracket-create-row">
+                  <label class="chk muted">
+                    <input type="checkbox" disabled checked={fillByes} />
+                    Fill byes (soon)
+                  </label>
+                  <button type="button" class="btn primary" disabled>Create knockout for this class</button>
+                </div>
+
+                <h3 class="h3">Knockout bracket</h3>
+                <p class="muted small">
+                  Read‑only power‑of‑two columns: names when known, <span class="mono">--empty--</span> for bye slots, “—” for
+                  later rounds not yet decided.
+                </p>
+                <div class="bracket-flow" role="img" aria-label="Class knockout bracket">
                   {#each previewBracketColumns(tournament, slice.seedings, activeSess.tournamentName, fillByes, slice.bracketMatches) as col, ci (ci)}
                     <div class="bracket-col">
                       <div class="bracket-col-head muted small">Round {ci + 1}</div>
@@ -2032,68 +2078,60 @@
                     <p class="muted small">No class entrants — enable this class for players on the Players tab.</p>
                   {/each}
                 </div>
-                <div class="row align-end bracket-create-row">
-                  <label class="chk muted">
-                    <input type="checkbox" disabled checked={fillByes} />
-                    Fill byes (per‑class generate coming soon)
-                  </label>
-                  <button type="button" class="btn primary" disabled>Create knockout for this class</button>
-                </div>
-              </section>
-            {:else if cin.startsWith('bracket:')}
-              {@const round = Number(cin.slice('bracket:'.length))}
-              <section class="card">
-                <h2 class="h2">Bracket · {def?.name ?? cid} · round {round}</h2>
-                <p class="muted small">
-                  Bracket rounds for this class will mirror the main flow once per-class brackets are generated.
-                </p>
-                {#if slice.bracketMatches.length === 0}
-                  <p class="muted">No bracket for this class yet.</p>
-                {:else}
-                  <div class="row">
-                    <button type="button" class="btn primary" disabled>Lock round</button>
-                    <button type="button" class="btn" disabled>Unlock round</button>
-                  </div>
-                  <table class="grid">
-                    <thead>
-                      <tr>
-                        <th>Slot</th>
-                        <th>Pairing</th>
-                        <th>Winner</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {#each bracketMatchesForRound(slice.bracketMatches, round) as m (m.id)}
-                        <tr>
-                          <td><code>{m.id}</code></td>
-                          <td>{playerLabel(m.seedA)} vs {playerLabel(m.seedB)}</td>
-                          <td>{m.winner ? playerLabel(m.winner) : '—'}</td>
-                        </tr>
-                      {/each}
-                    </tbody>
-                  </table>
-                  <h3 class="h3">Matches & scores (this round)</h3>
-                  {#each matchesForClassBracketRound(tournament, cid, round) as match (match.id)}
-                    <article class="match-card">
-                      <header>
-                        <strong>{playerLabel(match.playerA)}</strong> vs <strong>{playerLabel(match.playerB)}</strong>
-                        <span class="meta">{match.status}</span>
-                      </header>
-                      {#if match.status === 'scheduled'}
-                        <div class="row">
-                          <button type="button" class="btn primary" onclick={() => openScoreModal(match)}>Enter games…</button>
-                        </div>
-                      {:else}
-                        <ul class="done-scores">
-                          {#each match.scores as g, i (i)}
-                            <li>Game {i + 1}: {g.playerA}–{g.playerB}</li>
+
+                {#if slice.bracketMatches.length > 0}
+                  <h3 class="h3">Scores by round</h3>
+                  {#each uniqueSortedRounds(slice.bracketMatches) as round (round)}
+                    <div class="bracket-round-block">
+                      <h4 class="h4">Round {round}</h4>
+                      <div class="row">
+                        <button type="button" class="btn primary" disabled>Lock round</button>
+                        <button type="button" class="btn" disabled>Unlock round</button>
+                      </div>
+                      <table class="grid">
+                        <thead>
+                          <tr>
+                            <th>Slot</th>
+                            <th>Pairing</th>
+                            <th>Winner</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {#each bracketMatchesForRound(slice.bracketMatches, round) as m (m.id)}
+                            <tr>
+                              <td><code>{m.id}</code></td>
+                              <td>{playerLabel(m.seedA)} vs {playerLabel(m.seedB)}</td>
+                              <td>{m.winner ? playerLabel(m.winner) : '—'}</td>
+                            </tr>
                           {/each}
-                        </ul>
-                      {/if}
-                    </article>
-                  {:else}
-                    <p class="muted">No player matches for this class bracket round yet.</p>
+                        </tbody>
+                      </table>
+                      <p class="muted small bracket-round-matches-head">Matches this round</p>
+                      {#each matchesForClassBracketRound(tournament, cid, round) as match (match.id)}
+                        <article class="match-card">
+                          <header>
+                            <strong>{playerLabel(match.playerA)}</strong> vs <strong>{playerLabel(match.playerB)}</strong>
+                            <span class="meta">{match.status}</span>
+                          </header>
+                          {#if match.status === 'scheduled'}
+                            <div class="row">
+                              <button type="button" class="btn primary" onclick={() => openScoreModal(match)}>Enter games…</button>
+                            </div>
+                          {:else}
+                            <ul class="done-scores">
+                              {#each match.scores as g, i (i)}
+                                <li>Game {i + 1}: {g.playerA}–{g.playerB}</li>
+                              {/each}
+                            </ul>
+                          {/if}
+                        </article>
+                      {:else}
+                        <p class="muted small">No player matches for this class bracket round yet.</p>
+                      {/each}
+                    </div>
                   {/each}
+                {:else}
+                  <p class="muted small">Round tables will appear here when a class knockout bracket exists.</p>
                 {/if}
               </section>
             {:else if cin === 'results'}
@@ -2494,6 +2532,21 @@
 
   .bracket-create-row {
     margin-top: 0.35rem;
+  }
+
+  .bracket-round-block {
+    margin: 1rem 0 1.25rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  .bracket-round-block:last-of-type {
+    border-bottom: none;
+  }
+
+  .bracket-round-matches-head {
+    margin: 0.65rem 0 0.35rem;
+    font-weight: 650;
   }
 
   .mono {
