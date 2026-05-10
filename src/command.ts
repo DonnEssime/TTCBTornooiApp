@@ -4,20 +4,25 @@ import {
   applyBracketToTournament,
   bracketRoundHasFinishedPlayerMatch,
   buildNumberedGroupsFromPlayerOrder,
+  canMutateBracketPlayerMatch,
   createTournament,
-  findBracketRoundForPlayerPairing,
+  ensureBracketPhasePlayerMatchesIn,
+  findBracketRoundForPlayerPairingIn,
   forfeitPlayer,
   forfeitTeam,
   generateBracket,
   type GroupDefinition,
-  isBracketRoundComplete,
+  type BracketMatch,
+  type Match,
+  isBracketRoundCompleteIn,
   isMatchScoreLegal,
   playerMatchWinner,
+  propagateBracketSeedsFromChildWinners,
   recomputeClassTournamentSlices,
   roundRobinPairs,
   scheduleRound,
-  settleBracketWinners,
-  ensureBracketPhasePlayerMatches,
+  settleBracketWinnersIn,
+  syncBracketMatchPlayerRows,
   teamMatchWinner,
   tournamentUsesClassTabs,
   isPlayerDisplayNameTaken,
@@ -29,6 +34,7 @@ export type CommandType =
   | 'CreateMatch'
   | 'CreateTeamMatch'
   | 'EnterScore'
+  | 'ClearMatchScores'
   | 'EnterTeamScore'
   | 'PlayerForfeit'
   | 'TeamForfeit'
@@ -75,6 +81,11 @@ export interface CreateTeamMatchCommand extends CommandBase {
 export interface EnterScoreCommand extends CommandBase {
   type: 'EnterScore';
   payload: { matchId: string; scores: Array<{ playerA: number; playerB: number }> };
+}
+
+export interface ClearMatchScoresCommand extends CommandBase {
+  type: 'ClearMatchScores';
+  payload: { matchId: string };
 }
 
 export interface EnterTeamScoreCommand extends CommandBase {
@@ -172,6 +183,7 @@ export type Command =
   | CreateMatchCommand
   | CreateTeamMatchCommand
   | EnterScoreCommand
+  | ClearMatchScoresCommand
   | EnterTeamScoreCommand
   | PlayerForfeitCommand
   | TeamForfeitCommand
@@ -254,6 +266,24 @@ function newTournamentClassId(): string {
     return `cid-${u.replace(/-/g, '').slice(0, 12)}`;
   }
   return `cid-${Math.random().toString(36).slice(2, 14)}`;
+}
+
+function bracketScopeForPlayerMatch(
+  tournament: Tournament,
+  match: Match,
+): { bracketMatches: BracketMatch[]; lockedBracketRounds: number[] } {
+  const cid = match.classId;
+  const slice = cid ? tournament.classTournaments[cid] : undefined;
+  if (slice?.bracketMatches?.length) {
+    return {
+      bracketMatches: slice.bracketMatches,
+      lockedBracketRounds: slice.lockedBracketRounds ?? [],
+    };
+  }
+  return {
+    bracketMatches: tournament.bracketMatches,
+    lockedBracketRounds: tournament.lockedBracketRounds ?? [],
+  };
 }
 
 export class CommandRunner {
@@ -568,12 +598,20 @@ export class CommandRunner {
         if (!match) {
           return { success: false, reason: 'Match not found' };
         }
+        const scope = bracketScopeForPlayerMatch(tournament, match);
         const round =
           match.groupId === undefined
-            ? findBracketRoundForPlayerPairing(tournament, match.playerA, match.playerB)
+            ? findBracketRoundForPlayerPairingIn(scope.bracketMatches, match.playerA, match.playerB)
             : undefined;
-        if (round !== undefined && tournament.lockedBracketRounds.includes(round)) {
+        if (round !== undefined && scope.lockedBracketRounds.includes(round)) {
           return { success: false, reason: `Bracket round ${round} is locked` };
+        }
+        if (!canMutateBracketPlayerMatch(tournament, match, scope.bracketMatches, scope.lockedBracketRounds)) {
+          return {
+            success: false,
+            reason:
+              'This bracket match cannot be changed: a later knockout match already has scores, or the round is locked.',
+          };
         }
         if (!isMatchScoreLegal(scores)) {
           return {
@@ -585,6 +623,34 @@ export class CommandRunner {
         match.scores = scores;
         match.status = 'finished';
         match.winner = playerMatchWinner(match);
+        this.reconcileBracketAfterScore(tournament);
+        return { success: true };
+      }
+      case 'ClearMatchScores': {
+        const { matchId } = command.payload;
+        const match = tournament.matches[matchId];
+        if (!match) {
+          return { success: false, reason: 'Match not found' };
+        }
+        if (match.groupId) {
+          return { success: false, reason: 'Cannot clear a group-phase match this way' };
+        }
+        const scope = bracketScopeForPlayerMatch(tournament, match);
+        const round =
+          findBracketRoundForPlayerPairingIn(scope.bracketMatches, match.playerA, match.playerB);
+        if (round !== undefined && scope.lockedBracketRounds.includes(round)) {
+          return { success: false, reason: `Bracket round ${round} is locked` };
+        }
+        if (!canMutateBracketPlayerMatch(tournament, match, scope.bracketMatches, scope.lockedBracketRounds)) {
+          return {
+            success: false,
+            reason:
+              'This bracket match cannot be cleared: a later knockout match already has scores, or the round is locked.',
+          };
+        }
+        match.scores = [];
+        match.status = 'scheduled';
+        delete match.winner;
         this.reconcileBracketAfterScore(tournament);
         return { success: true };
       }
@@ -999,14 +1065,32 @@ export class CommandRunner {
   }
 
   private reconcileBracketAfterScore(tournament: Tournament): void {
-    if (tournament.bracketMatches.length === 0) {
+    if (tournament.bracketMatches.length > 0) {
+      this.reconcileBracketScope(tournament, tournament.bracketMatches, true);
+    }
+    for (const slice of Object.values(tournament.classTournaments)) {
+      if (slice.bracketMatches.length > 0) {
+        this.reconcileBracketScope(tournament, slice.bracketMatches, false);
+      }
+    }
+  }
+
+  private reconcileBracketScope(tournament: Tournament, bracketMatches: BracketMatch[], allowAdvance: boolean): void {
+    if (bracketMatches.length === 0) {
       return;
     }
-    settleBracketWinners(tournament);
-    const currentRound = Math.max(0, ...tournament.bracketMatches.map((m) => m.round));
-    if (isBracketRoundComplete(tournament, currentRound)) {
-      advanceBracketRound(tournament);
+    // Winners must be recomputed from player rows *before* feeding them into the next round; otherwise
+    // a cleared match still leaves stale `bm.winner` on children and `propagate` copies wrong seeds upward.
+    settleBracketWinnersIn(tournament, bracketMatches);
+    propagateBracketSeedsFromChildWinners(bracketMatches);
+    settleBracketWinnersIn(tournament, bracketMatches);
+    syncBracketMatchPlayerRows(tournament, bracketMatches);
+    if (allowAdvance) {
+      const currentRound = Math.max(0, ...bracketMatches.map((m) => m.round));
+      if (isBracketRoundCompleteIn(bracketMatches, currentRound)) {
+        advanceBracketRound(tournament);
+      }
     }
-    ensureBracketPhasePlayerMatches(tournament);
+    ensureBracketPhasePlayerMatchesIn(tournament, bracketMatches);
   }
 }

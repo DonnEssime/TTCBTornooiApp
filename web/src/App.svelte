@@ -15,7 +15,8 @@
     tournamentControllerFromCommandLog,
     compareBracketMatchId,
     compareBracketMatchIdString,
-    findBracketRoundForPlayerPairing,
+    bracketPlayerMatchId,
+    canMutateBracketPlayerMatch,
     formatBracketSlotPlayerLabel,
     matchPlayersResolvedForBracketPhaseList,
     singleEliminationPlacementRows,
@@ -33,7 +34,7 @@
   const DEBUG_UI = true;
 
   /** Draft count for [DEBUG] Fill players (parsed on click). */
-  let debugFillPlayerCount = $state('6');
+  let debugFillPlayerCount = $state('9');
 
   function newCompetitionClassId(): string {
     return `cid-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
@@ -229,6 +230,104 @@
         ? match.scores.map((s) => ({ a: String(s.playerA), b: String(s.playerB) }))
         : defaultRows(MIN_GAME_ROWS);
     setScoreDrafts({ ...scoreDrafts(), [match.id]: normalizeScoreRows(existing) });
+  }
+
+  /** Bracket stream: open view/edit for a real pairing (both players known). */
+  function openBracketPairingModal(bm: BracketMatch): void {
+    if (bm.id.startsWith('__ph-')) return;
+    const s = getActiveSession();
+    if (!s) return;
+    const canon = bracketMatchBySlotId(tournament, bm.id);
+    const seedA = bm.seedA ?? canon?.seedA;
+    const seedB = bm.seedB ?? canon?.seedB;
+    if (!seedA || !seedB) return;
+    const mid = bracketPlayerMatchId(bm.id);
+    let match = tournament.matches[mid];
+    if (!match) {
+      const c = s.controller;
+      const deps: string[] = [`cmd-${seedA}`, `cmd-${seedB}`];
+      if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
+      if (s.lastSetGroupsCommandId) deps.push(s.lastSetGroupsCommandId);
+      const cmdId = `cmd-bracket-slot-${bm.id}-${Date.now()}`;
+      const r = c.createMatch(mid, seedA, seedB, deps, cmdId);
+      if (!r.success) {
+        status = r.reason ?? 'Could not create bracket match row';
+        return;
+      }
+      pull();
+      match = tournament.matches[mid];
+    }
+    if (!match || match.groupId) return;
+    scoreModalHint = null;
+    scoreModalMatchId = mid;
+    const existing: ScoreRow[] =
+      match.scores.length > 0
+        ? match.scores.map((sc) => ({ a: String(sc.playerA), b: String(sc.playerB) }))
+        : defaultRows(MIN_GAME_ROWS);
+    setScoreDrafts({ ...scoreDrafts(), [mid]: normalizeScoreRows(existing) });
+  }
+
+  function bracketLocksForMatch(match: Match | undefined): { br: BracketMatch[]; locks: number[] } {
+    if (!match) return { br: [], locks: [] };
+    const cid = match.classId;
+    if (cid && tournament.classTournaments[cid]?.bracketMatches?.length) {
+      const s = tournament.classTournaments[cid];
+      return { br: s.bracketMatches, locks: s.lockedBracketRounds ?? [] };
+    }
+    return { br: tournament.bracketMatches, locks: tournament.lockedBracketRounds ?? [] };
+  }
+
+  function bracketMatchBySlotId(t: Tournament, bmId: string): BracketMatch | undefined {
+    const fromMain = t.bracketMatches.find((x) => x.id === bmId);
+    if (fromMain) return fromMain;
+    for (const sl of Object.values(t.classTournaments)) {
+      const hit = sl.bracketMatches.find((x) => x.id === bmId);
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+
+  function scoreModalTargetMatch(): Match | undefined {
+    const mid = scoreModalMatchId;
+    return mid ? tournament.matches[mid] : undefined;
+  }
+
+  function scoreModalCanEditGames(): boolean {
+    const m = scoreModalTargetMatch();
+    if (!m || m.groupId) return true;
+    if (m.status === 'scheduled') return true;
+    const { br, locks } = bracketLocksForMatch(m);
+    return canMutateBracketPlayerMatch(tournament, m, br, locks);
+  }
+
+  function scoreModalCanClearResult(): boolean {
+    const m = scoreModalTargetMatch();
+    if (!m || m.groupId) return false;
+    if (m.status !== 'finished' && m.scores.length === 0) return false;
+    const { br, locks } = bracketLocksForMatch(m);
+    return canMutateBracketPlayerMatch(tournament, m, br, locks);
+  }
+
+  function clearScoreModalBracketResult(): void {
+    const sm = scoreModalTargetMatch();
+    if (!sm || !scoreModalCanClearResult()) return;
+    const s = getActiveSession();
+    if (!s) return;
+    const c = s.controller;
+    const bmId = sm.id.startsWith('match-') ? sm.id.slice('match-'.length) : sm.id;
+    const bm = bracketMatchBySlotId(tournament, bmId);
+    const createCmdId = bm ? c.findLatestActiveCreateMatchCommandId(sm.id) : undefined;
+    const deps = createCmdId ? [createCmdId] : [];
+    const r = c.clearMatchScores(sm.id, deps, `cmd-clear-${sm.id}-${Date.now()}`);
+    if (!r.success) {
+      scoreModalHint = r.reason ?? 'clearMatchScores failed';
+      status = r.reason ?? 'clearMatchScores failed';
+      pull();
+      return;
+    }
+    status = `Cleared result for ${sm.id}.`;
+    closeScoreModal();
+    pull();
   }
 
   function closeScoreModal(): void {
@@ -515,21 +614,45 @@
     return false;
   }
 
-  function scheduledBracketPlayerMatchesForSimulate(t: Tournament): Match[] {
-    const out: Match[] = [];
+  /** After undo/clear, bracket slots may lack a `match-*` row; create scheduled rows so debug scoring can run. */
+  function debugEnsureBracketMatchRows(c: TournamentController, s: TournamentSession): void {
+    if (Object.keys(c.getTournament().teamMatches).length > 0) return;
+    let t = c.getTournament();
     for (const bm of t.bracketMatches) {
-      if (!bm.seedA || !bm.seedB || bm.winner) continue;
-      const mid = `match-${bm.id}`;
-      const m = t.matches[mid];
-      if (
-        m &&
-        m.status === 'scheduled' &&
-        matchPlayersResolvedForBracketPhaseList(t, m, undefined)
-      ) {
-        out.push(m);
+      if (!bm.seedA || !bm.seedB) continue;
+      if (!t.players[bm.seedA] || !t.players[bm.seedB]) continue;
+      const mid = bracketPlayerMatchId(bm.id);
+      if (t.matches[mid]) continue;
+      const deps: string[] = [`cmd-${bm.seedA}`, `cmd-${bm.seedB}`];
+      if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
+      if (s.lastSetGroupsCommandId) deps.push(s.lastSetGroupsCommandId);
+      const cmdId = `cmd-dbg-ensure-${bm.id}-${Date.now()}`;
+      const r = c.createMatch(mid, bm.seedA, bm.seedB, deps, cmdId);
+      if (!r.success && r.reason !== 'Match already exists') {
+        status = r.reason ?? `Could not create ${mid}`;
       }
+      t = c.getTournament();
     }
-    return out.sort((a, b) => {
+  }
+
+  /** Knockout slots that still need scores (ignores stale `bm.winner` when the player row is still open). */
+  function bracketSimulateEligibleEntries(t: Tournament): Array<{ m: Match; round: number }> {
+    const entries: Array<{ m: Match; round: number }> = [];
+    for (const bm of t.bracketMatches) {
+      if (!bm.seedA || !bm.seedB) continue;
+      const mid = bracketPlayerMatchId(bm.id);
+      const m = t.matches[mid];
+      if (!m || m.groupId) continue;
+      if (m.status !== 'scheduled') continue;
+      if (m.scores.length > 0) continue;
+      if (!matchPlayersResolvedForBracketPhaseList(t, m, undefined)) continue;
+      entries.push({ m, round: bm.round });
+    }
+    return entries;
+  }
+
+  function sortBracketSimulateMatches(matches: Match[]): Match[] {
+    return [...matches].sort((a, b) => {
       const ma = /^match-(m\d+)$/.exec(a.id);
       const mb = /^match-(m\d+)$/.exec(b.id);
       if (ma && mb) return compareBracketMatchIdString(ma[1]!, mb[1]!);
@@ -542,33 +665,41 @@
     const s = getActiveSession();
     if (!s) return;
     const c = s.controller;
-    const t = c.getTournament();
+    let t = c.getTournament();
     if (anyUnfinishedGroupPhaseMatch(t)) {
       status = 'Finish all group‑phase matches before simulating bracket scores.';
       pull();
       return;
     }
-    const list = scheduledBracketPlayerMatchesForSimulate(t);
-    if (list.length === 0) {
+    debugEnsureBracketMatchRows(c, s);
+    t = c.getTournament();
+    const seedEntries = bracketSimulateEligibleEntries(t);
+    if (seedEntries.length === 0) {
       status = 'No scheduled knockout matches to simulate (byes and finished slots are skipped).';
       pull();
       return;
     }
+    const targetRound = Math.min(...seedEntries.map((e) => e.round));
+
     const rng = Math.random;
     let done = 0;
-    for (const m of list) {
+    const maxIters = 200;
+    for (let iter = 0; iter < maxIters; iter++) {
+      t = c.getTournament();
+      debugEnsureBracketMatchRows(c, s);
+      t = c.getTournament();
+      const roundEntries = bracketSimulateEligibleEntries(t).filter((e) => e.round === targetRound);
+      if (roundEntries.length === 0) break;
+      const m = sortBracketSimulateMatches(roundEntries.map((e) => e.m))[0]!;
+
       const scores = debugRandomLegalBo5Scores(rng);
       if (!isMatchScoreLegal(scores)) {
         status = 'Internal: generated illegal scores.';
         pull();
         return;
       }
-      const bm = t.bracketMatches.find(
-        (x) =>
-          x.seedA &&
-          x.seedB &&
-          ((x.seedA === m.playerA && x.seedB === m.playerB) || (x.seedA === m.playerB && x.seedB === m.playerA)),
-      );
+      const bid = m.id.startsWith('match-') ? m.id.slice('match-'.length) : '';
+      const bm = bid ? t.bracketMatches.find((x) => x.id === bid) : undefined;
       const createCmdId = bm ? c.findLatestActiveCreateMatchCommandId(m.id) : undefined;
       const deps = createCmdId ? [createCmdId] : [];
       const cmdId = `cmd-dbg-brkt-${m.id}-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
@@ -579,8 +710,16 @@
         return;
       }
       done++;
+      pull();
     }
-    status = `Debug: simulated ${done} bracket match(es).`;
+
+    if (done === 0) {
+      status = 'No scheduled knockout matches to simulate (byes and finished slots are skipped).';
+      pull();
+      return;
+    }
+
+    status = `Debug: simulated ${done} bracket match(es) (round ${targetRound}).`;
     pull();
   }
 
@@ -792,18 +931,6 @@
   function uniqueSortedRounds(matches: BracketMatch[]): number[] {
     const set = new Set(matches.map((m) => m.round));
     return [...set].sort((a, b) => a - b);
-  }
-
-  function matchesForBracketRound(t: Tournament, round: number): Match[] {
-    return Object.values(t.matches).filter((m) => {
-      if (m.groupId) return false;
-      if (!matchPlayersResolvedForBracketPhaseList(t, m, undefined)) return false;
-      return findBracketRoundForPlayerPairing(t, m.playerA, m.playerB) === round;
-    });
-  }
-
-  function bracketMatchesForRound(matches: BracketMatch[], round: number): BracketMatch[] {
-    return matches.filter((m) => m.round === round).sort(compareBracketMatchId);
   }
 
   function syntheticBracketRound(round: number, count: number): BracketMatch[] {
@@ -1209,21 +1336,6 @@
     pull();
   }
 
-  function matchesForClassBracketRound(t: Tournament, classId: string, round: number): Match[] {
-    const slice = classSlice(t, classId);
-    return Object.values(t.matches).filter((m) => {
-      if (m.groupId) return false;
-      if (!matchPlayersResolvedForBracketPhaseList(t, m, classId)) return false;
-      for (const bm of slice.bracketMatches) {
-        if (bm.round !== round || !bm.seedA || !bm.seedB) continue;
-        const same =
-          (bm.seedA === m.playerA && bm.seedB === m.playerB) || (bm.seedA === m.playerB && bm.seedB === m.playerA);
-        if (same) return true;
-      }
-      return false;
-    });
-  }
-
   function generateBracketAndRoundOneMatches(mode: 'fillByes' | 'eliminatePlayers'): void {
     status = null;
     const s = getActiveSession();
@@ -1423,12 +1535,26 @@
         'Complete each game in order (11+ with a two-point margin; above 11 the gap must be exactly two). The match must end with one player on three game wins (best of five).';
       return;
     }
-    const bm = tournament.bracketMatches.find(
-      (x) =>
+    const pairingPred = (x: BracketMatch) =>
+      Boolean(
         x.seedA &&
-        x.seedB &&
-        ((x.seedA === match.playerA && x.seedB === match.playerB) || (x.seedA === match.playerB && x.seedB === match.playerA)),
-    );
+          x.seedB &&
+          ((x.seedA === match.playerA && x.seedB === match.playerB) ||
+            (x.seedA === match.playerB && x.seedB === match.playerA)),
+      );
+    let bm: BracketMatch | undefined;
+    if (match.id.startsWith('match-')) {
+      bm = bracketMatchBySlotId(tournament, match.id.slice('match-'.length));
+    }
+    if (!bm) {
+      bm = tournament.bracketMatches.find(pairingPred);
+    }
+    if (!bm) {
+      for (const sl of Object.values(tournament.classTournaments)) {
+        bm = sl.bracketMatches.find(pairingPred);
+        if (bm) break;
+      }
+    }
     const s = getActiveSession();
     if (!s) return;
     const c = s.controller;
@@ -1459,6 +1585,10 @@
       case 'EnterScore': {
         const m = t.matches[cmd.payload.matchId];
         return m ? `Entered scores · ${pn(m.playerA)} vs ${pn(m.playerB)}` : 'Entered match scores.';
+      }
+      case 'ClearMatchScores': {
+        const m = t.matches[cmd.payload.matchId];
+        return m ? `Cleared scores · ${pn(m.playerA)} vs ${pn(m.playerB)}` : 'Cleared match scores.';
       }
       case 'EnterTeamScore': {
         const tm = t.teamMatches[cmd.payload.matchId];
@@ -1509,13 +1639,6 @@
         return 'Undo.';
     }
   }
-
-  const bracketRounds = $derived(uniqueSortedRounds(tournament.bracketMatches));
-  const lastBracketRound = $derived(bracketRounds.length ? bracketRounds[bracketRounds.length - 1] : 0);
-
-  const finishedPlayerMatches = $derived(
-    Object.values(tournament.matches).filter((m) => m.status === 'finished' && m.winner),
-  );
 
   const useClassTabs = $derived(tournamentUsesClassTabs(tournament));
 
@@ -1806,14 +1929,6 @@
                   }
                 }}
               />
-              <button
-                type="button"
-                class="btn subtle"
-                onclick={applySuggestedTournamentTitle}
-                title="Set name from current roster (e.g. player names or count)"
-              >
-                Use suggested
-              </button>
             </div>
           </div>
         </div>
@@ -2167,6 +2282,7 @@
                   )}
                   {tournament}
                   slotTitle={bracketSlotTitle}
+                  onPairingClick={openBracketPairingModal}
                   ariaLabel="Knockout bracket"
                 />
                 {#if DEBUG_UI}
@@ -2184,92 +2300,20 @@
                     </button>
                   </div>
                 {/if}
+                <p class="muted small">
+                  Click a pairing in the bracket to view scores or enter games. You can change or clear a result only
+                  while the winner’s next bracket match has not been played yet.
+                </p>
               {:else}
                 <p class="muted small">The bracket appears here after you create it with one of the buttons above.</p>
-              {/if}
-
-              {#if tournament.bracketMatches.length > 0}
-                <h3 class="h3">Scores by round</h3>
-                {#each bracketRounds as round (round)}
-                  <div class="bracket-round-block">
-                    <h4 class="h4">Round {round}</h4>
-                    <table class="grid">
-                      <thead>
-                        <tr>
-                          <th>Slot</th>
-                          <th>Pairing</th>
-                          <th>Winner</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {#each bracketMatchesForRound(tournament.bracketMatches, round) as m (m.id)}
-                          <tr>
-                            <td><code>{m.id}</code></td>
-                            <td>
-                              {m.seedA ? formatBracketSlotPlayerLabel(tournament, m.seedA, undefined) : '—'} vs {m.seedB
-                                ? formatBracketSlotPlayerLabel(tournament, m.seedB, undefined)
-                                : '—'}
-                            </td>
-                            <td>{m.winner ? playerLabel(m.winner) : '—'}</td>
-                          </tr>
-                        {/each}
-                      </tbody>
-                    </table>
-                    <p class="muted small bracket-round-matches-head">Matches this round</p>
-                    <p class="muted small">
-                      A pairing appears here only when both players are known (their groups are fully finished).
-                    </p>
-                    {#each matchesForBracketRound(tournament, round) as match (match.id)}
-                      <article class="match-card">
-                        <header>
-                          <strong>{playerLabel(match.playerA)}</strong> vs <strong>{playerLabel(match.playerB)}</strong>
-                          <span class="meta">{match.status}</span>
-                        </header>
-                        {#if match.status === 'scheduled'}
-                          <div class="row">
-                            <button type="button" class="btn primary" onclick={() => openScoreModal(match)}>Enter games…</button>
-                          </div>
-                        {:else}
-                          <ul class="done-scores">
-                            {#each match.scores as g, i (i)}
-                              <li>Game {i + 1}: {g.playerA}–{g.playerB}</li>
-                            {/each}
-                          </ul>
-                        {/if}
-                      </article>
-                    {:else}
-                      <p class="muted small">No pairings ready yet — finish both players’ groups to enter scores here.</p>
-                    {/each}
-                  </div>
-                {/each}
-              {:else}
-                <p class="muted small">Tables and score entry for each round appear here after you create the knockout bracket.</p>
               {/if}
             </section>
           {:else if !useClassTabs && singleTrackInner === 'results'}
             <section class="card">
               <h2 class="h2">Final overview</h2>
-              <p class="muted small">High-level snapshot from the current reconstructed state.</p>
-
-              {#if tournament.bracketMatches.length > 0 && lastBracketRound > 0}
-                {@const finals = bracketMatchesForRound(tournament.bracketMatches, lastBracketRound)}
+              {#if tournament.bracketMatches.length > 0}
                 {@const placementRows = singleEliminationPlacementRows(tournament.bracketMatches)}
-                <h3 class="h3">Latest bracket round ({lastBracketRound})</h3>
-                <ul class="plain-list">
-                  {#each finals as m (m.id)}
-                    <li>
-                      <strong>{m.seedA ? formatBracketSlotPlayerLabel(tournament, m.seedA, undefined) : '—'}</strong> vs
-                      <strong>{m.seedB ? formatBracketSlotPlayerLabel(tournament, m.seedB, undefined) : '—'}</strong>
-                      — winner: {m.winner ? playerLabel(m.winner) : '—'}
-                    </li>
-                  {/each}
-                </ul>
                 {#if placementRows}
-                  <h3 class="h3">Knockout placement</h3>
-                  <p class="muted small">
-                    Places 1–2 from the final; each earlier round’s losers are ordered by how far the player who beat them
-                    went (e.g. place 3 = semi loser to the champion, places 5–8 = quarter losers to places 1–4).
-                  </p>
                   <ol class="plain-list placement-ol">
                     {#each placementRows as row (row.playerId)}
                       <li>
@@ -2278,33 +2322,11 @@
                       </li>
                     {/each}
                   </ol>
-                {:else if tournament.bracketMatches.length > 0}
-                  <h3 class="h3">Knockout placement</h3>
-                  <p class="muted small">Complete the final match to list full knockout finishing order.</p>
+                {:else}
+                  <p class="muted small">Complete the final match to list finishing order.</p>
                 {/if}
-              {/if}
-
-              <h3 class="h3">Finished player matches</h3>
-              {#if finishedPlayerMatches.length === 0}
-                <p class="muted">No finished player matches yet.</p>
               {:else}
-                {#each finishedPlayerMatches as m (m.id)}
-                  <p class="result-line">
-                    <strong>{playerLabel(m.winner)}</strong>
-                    <span class="muted">def.</span>
-                    <strong
-                      >{m.winner === m.playerA ? playerLabel(m.playerB) : playerLabel(m.playerA)}</strong
-                    >
-                    <span class="muted">· {m.scores.length} games</span>
-                  </p>
-                {/each}
-              {/if}
-
-              {#if Object.keys(tournament.teamMatches).length > 0}
-                <h3 class="h3">Team match</h3>
-                {#each Object.values(tournament.teamMatches) as tm (tm.id)}
-                  <p>{tm.status} — teams {tm.teamA} vs {tm.teamB}</p>
-                {/each}
+                <p class="muted small">Generate a knockout bracket to show finishing order here.</p>
               {/if}
             </section>
           {:else if useClassTabs && multiClassScreen}
@@ -2487,6 +2509,7 @@
                     {tournament}
                     slotTitle={bracketSlotTitle}
                     bracketClassId={cid}
+                    onPairingClick={openBracketPairingModal}
                     ariaLabel="Class knockout bracket"
                     emptyMessage="No class entrants — enable this class for players on the Players tab."
                   />
@@ -2505,96 +2528,20 @@
                       </button>
                     </div>
                   {/if}
+                  <p class="muted small">
+                    Click a pairing in the bracket to view scores or enter games. You can change or clear a result only
+                    while the winner’s next bracket match has not been played yet.
+                  </p>
                 {:else}
                   <p class="muted small">The bracket appears here after a knockout bracket exists for this class.</p>
                 {/if}
-
-                {#if slice.bracketMatches.length > 0}
-                  <h3 class="h3">Scores by round</h3>
-                  {#each uniqueSortedRounds(slice.bracketMatches) as round (round)}
-                    <div class="bracket-round-block">
-                      <h4 class="h4">Round {round}</h4>
-                      <table class="grid">
-                        <thead>
-                          <tr>
-                            <th>Slot</th>
-                            <th>Pairing</th>
-                            <th>Winner</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {#each bracketMatchesForRound(slice.bracketMatches, round) as m (m.id)}
-                            <tr>
-                              <td><code>{m.id}</code></td>
-                              <td>
-                                {m.seedA ? formatBracketSlotPlayerLabel(tournament, m.seedA, cid) : '—'} vs {m.seedB
-                                  ? formatBracketSlotPlayerLabel(tournament, m.seedB, cid)
-                                  : '—'}
-                              </td>
-                              <td>{m.winner ? playerLabel(m.winner) : '—'}</td>
-                            </tr>
-                          {/each}
-                        </tbody>
-                      </table>
-                      <p class="muted small bracket-round-matches-head">Matches this round</p>
-                      <p class="muted small">
-                        A pairing appears here only when both players are known (their groups are fully finished).
-                      </p>
-                      {#each matchesForClassBracketRound(tournament, cid, round) as match (match.id)}
-                        <article class="match-card">
-                          <header>
-                            <strong>{playerLabel(match.playerA)}</strong> vs <strong>{playerLabel(match.playerB)}</strong>
-                            <span class="meta">{match.status}</span>
-                          </header>
-                          {#if match.status === 'scheduled'}
-                            <div class="row">
-                              <button type="button" class="btn primary" onclick={() => openScoreModal(match)}>Enter games…</button>
-                            </div>
-                          {:else}
-                            <ul class="done-scores">
-                              {#each match.scores as g, i (i)}
-                                <li>Game {i + 1}: {g.playerA}–{g.playerB}</li>
-                              {/each}
-                            </ul>
-                          {/if}
-                        </article>
-                      {:else}
-                        <p class="muted small">No pairings ready yet — finish both players’ groups to enter scores here.</p>
-                      {/each}
-                    </div>
-                  {/each}
-                {:else}
-                  <p class="muted small">Round tables will appear here when a class knockout bracket exists.</p>
-                {/if}
               </section>
             {:else if cin === 'results'}
-              {@const classRounds = uniqueSortedRounds(slice.bracketMatches)}
-              {@const lastClassRound = classRounds.length ? classRounds[classRounds.length - 1] : 0}
-              {@const classPid = new Set(slice.seedings)}
-              {@const classFinished = finishedPlayerMatches.filter(
-                (m) => classPid.has(m.playerA) && classPid.has(m.playerB),
-              )}
               <section class="card">
                 <h2 class="h2">Final overview · {def?.name ?? cid}</h2>
-                <p class="muted small">Snapshot for this class track.</p>
-                {#if slice.bracketMatches.length > 0 && lastClassRound > 0}
-                  {@const finals = bracketMatchesForRound(slice.bracketMatches, lastClassRound)}
+                {#if slice.bracketMatches.length > 0}
                   {@const classPlacementRows = singleEliminationPlacementRows(slice.bracketMatches)}
-                  <h3 class="h3">Latest bracket round ({lastClassRound})</h3>
-                  <ul class="plain-list">
-                    {#each finals as m (m.id)}
-                      <li>
-                        <strong>{m.seedA ? formatBracketSlotPlayerLabel(tournament, m.seedA, cid) : '—'}</strong> vs
-                        <strong>{m.seedB ? formatBracketSlotPlayerLabel(tournament, m.seedB, cid) : '—'}</strong>
-                        — winner: {m.winner ? playerLabel(m.winner) : '—'}
-                      </li>
-                    {/each}
-                  </ul>
                   {#if classPlacementRows}
-                    <h3 class="h3">Knockout placement</h3>
-                    <p class="muted small">
-                      Places 1–2 from the final; earlier exits ordered by how far the opponent who beat you went.
-                    </p>
                     <ol class="plain-list placement-ol">
                       {#each classPlacementRows as row (row.playerId)}
                         <li>
@@ -2604,24 +2551,10 @@
                       {/each}
                     </ol>
                   {:else}
-                    <h3 class="h3">Knockout placement</h3>
-                    <p class="muted small">Complete the final match to list full knockout finishing order.</p>
+                    <p class="muted small">Complete the final match to list finishing order.</p>
                   {/if}
-                {/if}
-                <h3 class="h3">Finished matches (players in this class)</h3>
-                {#if classFinished.length === 0}
-                  <p class="muted">No finished head-to-head matches between two class entrants yet.</p>
                 {:else}
-                  {#each classFinished as m (m.id)}
-                    <p class="result-line">
-                      <strong>{playerLabel(m.winner)}</strong>
-                      <span class="muted">def.</span>
-                      <strong
-                        >{m.winner === m.playerA ? playerLabel(m.playerB) : playerLabel(m.playerA)}</strong
-                      >
-                      <span class="muted">· {m.scores.length} games</span>
-                    </p>
-                  {/each}
+                  <p class="muted small">No knockout bracket for this class yet.</p>
                 {/if}
               </section>
             {/if}
@@ -2687,6 +2620,11 @@
             past 11, the winning margin must be exactly two. Extra rows appear automatically when the match is not decided
             after three or four valid games (up to five games).
           </p>
+          {#if sm.status === 'finished' && !sm.groupId && !scoreModalCanEditGames()}
+            <p class="muted small modal-lead">
+              This result cannot be edited: the winner’s next bracket match already has scores (or this round is locked).
+            </p>
+          {/if}
           <table class="mini score-modal-table">
             <thead>
               <tr>
@@ -2703,7 +2641,7 @@
                     <input
                       type="number"
                       min="0"
-                      disabled={!rowIndexEnabled(modalRows, gi)}
+                      disabled={!rowIndexEnabled(modalRows, gi) || !scoreModalCanEditGames()}
                       value={srow.a === '' ? '' : srow.a}
                       oninput={(e) =>
                         setScoreModalCell(sm.id, gi, 'a', (e.currentTarget as HTMLInputElement).value)}
@@ -2713,7 +2651,7 @@
                     <input
                       type="number"
                       min="0"
-                      disabled={!rowIndexEnabled(modalRows, gi)}
+                      disabled={!rowIndexEnabled(modalRows, gi) || !scoreModalCanEditGames()}
                       value={srow.b === '' ? '' : srow.b}
                       oninput={(e) =>
                         setScoreModalCell(sm.id, gi, 'b', (e.currentTarget as HTMLInputElement).value)}
@@ -2731,7 +2669,19 @@
           {/if}
           <div class="row modal-actions">
             <button type="button" class="btn" onclick={() => cancelScoreModal()}>Cancel</button>
-            <button type="button" class="btn primary" onclick={() => submitScores(sm)}>Save match</button>
+            {#if scoreModalCanClearResult()}
+              <button type="button" class="btn danger-ghost" onclick={() => clearScoreModalBracketResult()}>
+                Clear result
+              </button>
+            {/if}
+            <button
+              type="button"
+              class="btn primary"
+              disabled={!scoreModalCanEditGames()}
+              onclick={() => submitScores(sm)}
+            >
+              Save match
+            </button>
           </div>
         </div>
       </div>

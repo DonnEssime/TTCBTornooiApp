@@ -7,6 +7,7 @@ import {
   CreateMatchCommand,
   CreateTeamMatchCommand,
   EnterScoreCommand,
+  ClearMatchScoresCommand,
   EnterTeamScoreCommand,
   GenerateBracketCommand,
   SetRoundLockCommand,
@@ -145,6 +146,23 @@ export class TournamentController {
     };
     const result = this.runner.execute(command);
     this.view?.renderMessage(`EnterScore: ${JSON.stringify(result)}`);
+    this.view?.renderTournament(this.getTournament());
+    if (result.success && this.getTournament().bracketMatches.length > 0) {
+      this.view?.renderBracket(this.getTournament());
+    }
+    return result;
+  }
+
+  clearMatchScores(matchId: string, dependsOn: string[] = [], commandId?: string): CommandResult {
+    const command: ClearMatchScoresCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'ClearMatchScores',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: { matchId },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`ClearMatchScores: ${JSON.stringify(result)}`);
     this.view?.renderTournament(this.getTournament());
     if (result.success && this.getTournament().bracketMatches.length > 0) {
       this.view?.renderBracket(this.getTournament());

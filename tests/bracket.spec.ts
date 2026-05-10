@@ -14,7 +14,10 @@ import {
   bracketMatchLoser,
   matchPlayersResolvedForBracketPhaseList,
   settleBracketWinners,
+  settleBracketWinnersIn,
+  propagateBracketSeedsFromChildWinners,
   scheduleRound,
+  canMutateBracketPlayerMatch,
 } from '../src/model';
 
 describe('Bracket generation', () => {
@@ -245,6 +248,43 @@ describe('Bracket generation', () => {
     expect(bracketRoundHasFinishedPlayerMatch(tournament, 1)).toBe(true);
   });
 
+  it('settle then propagate clears stale parent seeds after a child bracket slot loses its winner', () => {
+    const t = createTournament();
+    t.players = {
+      p1: { id: 'p1', name: 'A', handicap: 0 },
+      p2: { id: 'p2', name: 'B', handicap: 0 },
+      p3: { id: 'p3', name: 'C', handicap: 0 },
+      p4: { id: 'p4', name: 'D', handicap: 0 },
+    };
+    t.bracketMatches = [
+      { id: 'm1', seedA: 'p1', seedB: 'p2', round: 1, winner: 'p1' },
+      { id: 'm2', seedA: 'p3', seedB: 'p4', round: 1, winner: 'p3' },
+      { id: 'm3', seedA: 'p1', seedB: 'p3', round: 2 },
+    ];
+    t.matches['match-m1'] = {
+      id: 'match-m1',
+      playerA: 'p1',
+      playerB: 'p2',
+      scores: [],
+      status: 'scheduled',
+    };
+    settleBracketWinnersIn(t, t.bracketMatches);
+    propagateBracketSeedsFromChildWinners(t.bracketMatches);
+    settleBracketWinnersIn(t, t.bracketMatches);
+    const m3 = t.bracketMatches.find((x) => x.id === 'm3');
+    expect(m3?.seedA).toBeUndefined();
+    expect(m3?.seedB).toBe('p3');
+    expect(m3?.winner).toBeUndefined();
+  });
+
+  it('settleBracketWinnersIn does not treat a one-sided round-2 slot as a bye walkover', () => {
+    const t = createTournament();
+    t.players = { p3: { id: 'p3', name: 'C', handicap: 0 } };
+    t.bracketMatches = [{ id: 'm3', seedB: 'p3', round: 2 }];
+    settleBracketWinnersIn(t, t.bracketMatches);
+    expect(t.bracketMatches[0].winner).toBeUndefined();
+  });
+
   it('ensureBracketPhasePlayerMatches adds scheduled rows for later rounds without winners', () => {
     const t = createTournament();
     t.players = {
@@ -266,6 +306,98 @@ describe('Bracket generation', () => {
       status: 'scheduled',
     });
     expect(t.matches['match-m1']).toBeUndefined();
+  });
+
+  it('canMutateBracketPlayerMatch is false when the winner’s next bracket match already has scores', () => {
+    const t = createTournament();
+    t.players = {
+      p1: { id: 'p1', name: 'A', handicap: 0 },
+      p2: { id: 'p2', name: 'B', handicap: 0 },
+      p3: { id: 'p3', name: 'C', handicap: 0 },
+      p4: { id: 'p4', name: 'D', handicap: 0 },
+    };
+    t.bracketMatches = [
+      { id: 'm1', seedA: 'p1', seedB: 'p2', round: 1, winner: 'p1' },
+      { id: 'm2', seedA: 'p3', seedB: 'p4', round: 1, winner: 'p3' },
+      { id: 'm3', seedA: 'p1', seedB: 'p3', round: 2 },
+    ];
+    t.matches['match-m1'] = {
+      id: 'match-m1',
+      playerA: 'p1',
+      playerB: 'p2',
+      scores: [
+        { playerA: 11, playerB: 0 },
+        { playerA: 11, playerB: 0 },
+        { playerA: 11, playerB: 0 },
+      ],
+      status: 'finished',
+      winner: 'p1',
+    };
+    t.matches['match-m3'] = {
+      id: 'match-m3',
+      playerA: 'p1',
+      playerB: 'p3',
+      scores: [{ playerA: 11, playerB: 9 }],
+      status: 'scheduled',
+    };
+    const br = t.bracketMatches;
+    const locks = t.lockedBracketRounds;
+    expect(canMutateBracketPlayerMatch(t, t.matches['match-m1']!, br, locks)).toBe(false);
+  });
+
+  it('canMutateBracketPlayerMatch is true when the next-round match exists but has no scores yet', () => {
+    const t = createTournament();
+    t.players = {
+      p1: { id: 'p1', name: 'A', handicap: 0 },
+      p2: { id: 'p2', name: 'B', handicap: 0 },
+      p3: { id: 'p3', name: 'C', handicap: 0 },
+      p4: { id: 'p4', name: 'D', handicap: 0 },
+    };
+    t.bracketMatches = [
+      { id: 'm1', seedA: 'p1', seedB: 'p2', round: 1, winner: 'p1' },
+      { id: 'm2', seedA: 'p3', seedB: 'p4', round: 1, winner: 'p3' },
+      { id: 'm3', seedA: 'p1', seedB: 'p3', round: 2 },
+    ];
+    t.matches['match-m1'] = {
+      id: 'match-m1',
+      playerA: 'p1',
+      playerB: 'p2',
+      scores: [
+        { playerA: 11, playerB: 0 },
+        { playerA: 11, playerB: 0 },
+        { playerA: 11, playerB: 0 },
+      ],
+      status: 'finished',
+      winner: 'p1',
+    };
+    t.matches['match-m3'] = {
+      id: 'match-m3',
+      playerA: 'p1',
+      playerB: 'p3',
+      scores: [],
+      status: 'scheduled',
+    };
+    const br = t.bracketMatches;
+    const locks = t.lockedBracketRounds;
+    expect(canMutateBracketPlayerMatch(t, t.matches['match-m1']!, br, locks)).toBe(true);
+  });
+
+  it('settleBracketWinnersIn clears a bracket winner when the player match is no longer finished', () => {
+    const t = createTournament();
+    t.players = {
+      p1: { id: 'p1', name: 'A', handicap: 0 },
+      p2: { id: 'p2', name: 'B', handicap: 0 },
+    };
+    t.bracketMatches = [{ id: 'm1', seedA: 'p1', seedB: 'p2', round: 1, winner: 'p1' }];
+    t.matches['match-m1'] = {
+      id: 'match-m1',
+      playerA: 'p1',
+      playerB: 'p2',
+      scores: [],
+      status: 'scheduled',
+    };
+    settleBracketWinnersIn(t, t.bracketMatches);
+    expect(t.bracketMatches[0].winner).toBeUndefined();
   });
 });
 
