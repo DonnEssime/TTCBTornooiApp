@@ -671,6 +671,122 @@ describe('EnterScore', () => {
     expect(partial.reason ?? '').toContain('Invalid scores');
     expect(runner.getTournament().matches.m1.status).toBe('scheduled');
   });
+
+  it('locks editing or clearing a finished group match after any knockout player match has recorded play', () => {
+    const runner = new CommandRunner();
+    const ts = '2026-01-01T00:00:00.000Z';
+    for (const id of ['p1', 'p2', 'p3', 'p4'] as const) {
+      runner.execute({
+        id,
+        type: 'CreatePlayer',
+        dependsOn: [],
+        payload: { playerId: id, name: id, handicap: 0 },
+        timestamp: ts,
+      });
+    }
+    runner.execute({
+      id: 'seed',
+      type: 'SetSeedings',
+      dependsOn: ['p1', 'p2', 'p3', 'p4'],
+      payload: { playerIds: ['p1', 'p2', 'p3', 'p4'] },
+      timestamp: ts,
+    });
+    expect(
+      runner.execute({
+        id: 'sg',
+        type: 'SetGroups',
+        dependsOn: ['seed'],
+        payload: { targetGroupSize: 2, playerIds: ['p1', 'p2', 'p3', 'p4'] },
+        timestamp: ts,
+      }).success,
+    ).toBe(true);
+    const g1 = Object.keys(runner.getTournament().matches).find((k) => k.startsWith('gm-1-'));
+    const g2 = Object.keys(runner.getTournament().matches).find((k) => k.startsWith('gm-2-'));
+    expect(g1 && g2).toBeTruthy();
+    const bo5 = [
+      { playerA: 11, playerB: 9 },
+      { playerA: 11, playerB: 6 },
+      { playerA: 11, playerB: 5 },
+    ];
+    expect(
+      runner.execute({
+        id: 'e1',
+        type: 'EnterScore',
+        dependsOn: ['sg'],
+        payload: { matchId: g1!, scores: bo5 },
+        timestamp: ts,
+      }).success,
+    ).toBe(true);
+    expect(
+      runner.execute({
+        id: 'gen',
+        type: 'GenerateBracket',
+        dependsOn: ['sg', 'seed'],
+        payload: { fillByes: true, cullToPowerOfTwo: false },
+        timestamp: ts,
+      }).success,
+    ).toBe(true);
+    const t1 = runner.getTournament();
+    const bm = t1.bracketMatches.find((m) => m.round === 1 && m.seedA && m.seedB);
+    expect(bm?.seedA && bm?.seedB).toBeTruthy();
+    const mid = `match-${bm!.id}`;
+    expect(
+      runner.execute({
+        id: 'cm',
+        type: 'CreateMatch',
+        dependsOn: ['gen', 'p1', 'p2', 'p3', 'p4'],
+        payload: { matchId: mid, playerA: bm!.seedA!, playerB: bm!.seedB! },
+        timestamp: ts,
+      }).success,
+    ).toBe(true);
+    expect(
+      runner.execute({
+        id: 'ek',
+        type: 'EnterScore',
+        dependsOn: ['cm'],
+        payload: { matchId: mid, scores: bo5 },
+        timestamp: ts,
+      }).success,
+    ).toBe(true);
+
+    const rescore = runner.execute({
+      id: 'e1b',
+      type: 'EnterScore',
+      dependsOn: ['e1'],
+      payload: {
+        matchId: g1!,
+        scores: [
+          { playerA: 9, playerB: 11 },
+          { playerA: 11, playerB: 7 },
+          { playerA: 11, playerB: 8 },
+          { playerA: 11, playerB: 6 },
+        ],
+      },
+      timestamp: ts,
+    });
+    expect(rescore.success).toBe(false);
+    expect(rescore.reason ?? '').toMatch(/group result cannot be changed/i);
+
+    expect(
+      runner.execute({
+        id: 'e2',
+        type: 'EnterScore',
+        dependsOn: ['sg'],
+        payload: { matchId: g2!, scores: bo5 },
+        timestamp: ts,
+      }).success,
+    ).toBe(true);
+
+    const clear = runner.execute({
+      id: 'clr',
+      type: 'ClearMatchScores',
+      dependsOn: ['e1'],
+      payload: { matchId: g1! },
+      timestamp: ts,
+    });
+    expect(clear.success).toBe(false);
+    expect(clear.reason ?? '').toMatch(/group result cannot be cleared/i);
+  });
 });
 
 describe('Bracket undoLast coalescing', () => {

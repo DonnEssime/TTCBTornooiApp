@@ -22,10 +22,13 @@ import {
   roundRobinPairs,
   scheduleRound,
   settleBracketWinnersIn,
+  shuffleDeterministic,
   syncBracketMatchPlayerRows,
   teamMatchWinner,
   tournamentUsesClassTabs,
   isPlayerDisplayNameTaken,
+  bracketScopeForPlayerMatch,
+  canMutateExistingGroupPhaseMatchScores,
 } from './model';
 
 export type CommandType =
@@ -266,24 +269,6 @@ function newTournamentClassId(): string {
     return `cid-${u.replace(/-/g, '').slice(0, 12)}`;
   }
   return `cid-${Math.random().toString(36).slice(2, 14)}`;
-}
-
-function bracketScopeForPlayerMatch(
-  tournament: Tournament,
-  match: Match,
-): { bracketMatches: BracketMatch[]; lockedBracketRounds: number[] } {
-  const cid = match.classId;
-  const slice = cid ? tournament.classTournaments[cid] : undefined;
-  if (slice?.bracketMatches?.length) {
-    return {
-      bracketMatches: slice.bracketMatches,
-      lockedBracketRounds: slice.lockedBracketRounds ?? [],
-    };
-  }
-  return {
-    bracketMatches: tournament.bracketMatches,
-    lockedBracketRounds: tournament.lockedBracketRounds ?? [],
-  };
 }
 
 export class CommandRunner {
@@ -613,6 +598,17 @@ export class CommandRunner {
               'This bracket match cannot be changed: a later knockout match already has scores, or the round is locked.',
           };
         }
+        if (match.groupId) {
+          const changingExistingGroupResult =
+            match.scores.length > 0 || match.status !== 'scheduled';
+          if (changingExistingGroupResult && !canMutateExistingGroupPhaseMatchScores(tournament, match)) {
+            return {
+              success: false,
+              reason:
+                'This group result cannot be changed: a knockout match in this track already has recorded play.',
+            };
+          }
+        }
         if (!isMatchScoreLegal(scores)) {
           return {
             success: false,
@@ -633,7 +629,21 @@ export class CommandRunner {
           return { success: false, reason: 'Match not found' };
         }
         if (match.groupId) {
-          return { success: false, reason: 'Cannot clear a group-phase match this way' };
+          if (match.scores.length === 0 && match.status === 'scheduled') {
+            return { success: false, reason: 'No scores to clear' };
+          }
+          if (!canMutateExistingGroupPhaseMatchScores(tournament, match)) {
+            return {
+              success: false,
+              reason:
+                'This group result cannot be cleared: a knockout match in this track already has recorded play.',
+            };
+          }
+          match.scores = [];
+          match.status = 'scheduled';
+          delete match.winner;
+          this.reconcileBracketAfterScore(tournament);
+          return { success: true };
         }
         const scope = bracketScopeForPlayerMatch(tournament, match);
         const round =
@@ -818,8 +828,10 @@ export class CommandRunner {
             reason: 'SetGroups: pass either groups or targetGroupSize with playerIds, not both',
           };
         }
+        let shuffleGroupMemberOrder = false;
         let groups: Array<{ id: string; label?: string; playerIds: string[] }>;
         if (hasSize) {
+          shuffleGroupMemberOrder = true;
           const ts = Number((payload as { targetGroupSize: number }).targetGroupSize);
           const tInt = Math.floor(ts);
           if (!Number.isFinite(ts) || tInt < 1) {
@@ -880,7 +892,13 @@ export class CommandRunner {
             }
             pidSeen.add(pid);
           }
-          rec[id] = { id, ...(label ? { label } : {}), playerIds };
+          rec[id] = {
+            id,
+            ...(label ? { label } : {}),
+            playerIds: shuffleGroupMemberOrder
+              ? shuffleDeterministic(playerIds, `${command.id}:group-order:${id}`)
+              : [...playerIds],
+          };
         }
         tournament.groups = rec;
         addGroupRoundRobinMatches(tournament, rec, undefined);
@@ -911,8 +929,10 @@ export class CommandRunner {
             reason: 'SetClassGroups: pass either groups or targetGroupSize with playerIds, not both',
           };
         }
+        let shuffleGroupMemberOrder = false;
         let groups: Array<{ id: string; label?: string; playerIds: string[] }>;
         if (hasSize) {
+          shuffleGroupMemberOrder = true;
           const ts = Number((payload as { targetGroupSize: number }).targetGroupSize);
           const tInt = Math.floor(ts);
           if (!Number.isFinite(ts) || tInt < 1) {
@@ -973,7 +993,13 @@ export class CommandRunner {
             }
             pidSeen.add(pid);
           }
-          rec[id] = { id, ...(label ? { label } : {}), playerIds };
+          rec[id] = {
+            id,
+            ...(label ? { label } : {}),
+            playerIds: shuffleGroupMemberOrder
+              ? shuffleDeterministic(playerIds, `${command.id}:class:${cid}:group-order:${id}`)
+              : [...playerIds],
+          };
         }
         slice.groups = rec;
         addGroupRoundRobinMatches(tournament, rec, cid);

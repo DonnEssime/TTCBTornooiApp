@@ -17,6 +17,7 @@
     compareBracketMatchIdString,
     bracketPlayerMatchId,
     canMutateBracketPlayerMatch,
+    canMutateExistingGroupPhaseMatchScores,
     formatBracketSlotPlayerLabel,
     matchPlayersResolvedForBracketPhaseList,
     singleEliminationPlacementRows,
@@ -25,7 +26,9 @@
     tournamentUsesClassTabs,
     isGameScoreLegal,
     isMatchScoreLegal,
+    isPlayerDisplayNameTaken,
     matchWinner,
+    shuffleDeterministic,
   } from 'ttc-tornooiapp';
   import BracketStreamView from './BracketStreamView.svelte';
   import { bracketTreeFromColumns, type BracketBNode } from './bracketStream/buildTree';
@@ -222,6 +225,16 @@
   }
 
   function openScoreModal(match: Match): void {
+    if (match.groupId) {
+      scoreModalHint = null;
+      scoreModalMatchId = match.id;
+      const existing: ScoreRow[] =
+        match.scores.length > 0
+          ? match.scores.map((s) => ({ a: String(s.playerA), b: String(s.playerB) }))
+          : defaultRows(MIN_GAME_ROWS);
+      setScoreDrafts({ ...scoreDrafts(), [match.id]: normalizeScoreRows(existing) });
+      return;
+    }
     if (match.status !== 'scheduled') return;
     scoreModalHint = null;
     scoreModalMatchId = match.id;
@@ -294,7 +307,11 @@
 
   function scoreModalCanEditGames(): boolean {
     const m = scoreModalTargetMatch();
-    if (!m || m.groupId) return true;
+    if (!m) return false;
+    if (m.groupId) {
+      if (m.status === 'scheduled' && m.scores.length === 0) return true;
+      return canMutateExistingGroupPhaseMatchScores(tournament, m);
+    }
     if (m.status === 'scheduled') return true;
     const { br, locks } = bracketLocksForMatch(m);
     return canMutateBracketPlayerMatch(tournament, m, br, locks);
@@ -302,7 +319,11 @@
 
   function scoreModalCanClearResult(): boolean {
     const m = scoreModalTargetMatch();
-    if (!m || m.groupId) return false;
+    if (!m) return false;
+    if (m.groupId) {
+      const has = m.status === 'finished' || m.scores.length > 0;
+      return has && canMutateExistingGroupPhaseMatchScores(tournament, m);
+    }
     if (m.status !== 'finished' && m.scores.length === 0) return false;
     const { br, locks } = bracketLocksForMatch(m);
     return canMutateBracketPlayerMatch(tournament, m, br, locks);
@@ -314,6 +335,19 @@
     const s = getActiveSession();
     if (!s) return;
     const c = s.controller;
+    if (sm.groupId) {
+      const r = c.clearMatchScores(sm.id, [], `cmd-clear-${sm.id}-${Date.now()}`);
+      if (!r.success) {
+        scoreModalHint = r.reason ?? 'clearMatchScores failed';
+        status = r.reason ?? 'clearMatchScores failed';
+        pull();
+        return;
+      }
+      status = `Cleared group result for ${playerLabel(sm.playerA)} vs ${playerLabel(sm.playerB)}.`;
+      closeScoreModal();
+      pull();
+      return;
+    }
     const bmId = sm.id.startsWith('match-') ? sm.id.slice('match-'.length) : sm.id;
     const bm = bracketMatchBySlotId(tournament, bmId);
     const createCmdId = bm ? c.findLatestActiveCreateMatchCommandId(sm.id) : undefined;
@@ -397,13 +431,6 @@
       }
       return a.id.localeCompare(b.id);
     });
-  }
-
-  function groupLabelForMatch(t: Tournament, match: Match): string {
-    const g = match.classId
-      ? t.classTournaments[match.classId]?.groups?.[match.groupId ?? '']
-      : t.groups[match.groupId ?? ''];
-    return g ? groupDisplayLabel(g) : match.groupId ?? '';
   }
 
   function eligibleGlobalGroupPlayerIds(t: Tournament): string[] {
@@ -600,10 +627,15 @@
     noun: ['Fox', 'River', 'Paddle', 'Ace', 'Spin', 'Loop', 'Drive', 'Block', 'Serve', 'Rally'],
   };
 
-  function debugRandomPlayerName(rng: () => number): string {
-    const a = DEBUG_NAME_PARTS.adj[debugRandomInt(rng, 0, DEBUG_NAME_PARTS.adj.length - 1)]!;
-    const n = DEBUG_NAME_PARTS.noun[debugRandomInt(rng, 0, DEBUG_NAME_PARTS.noun.length - 1)]!;
-    return `${a} ${n} ${debugRandomInt(rng, 1, 99)}`;
+  /** All "Adjective Noun" debug display names (no numeric suffix). */
+  function debugAllAdjNounNames(): string[] {
+    const out: string[] = [];
+    for (const a of DEBUG_NAME_PARTS.adj) {
+      for (const n of DEBUG_NAME_PARTS.noun) {
+        out.push(`${a} ${n}`);
+      }
+    }
+    return out;
   }
 
   function anyUnfinishedGroupPhaseMatch(t: Tournament): boolean {
@@ -738,13 +770,21 @@
       status = 'Debug fill is disabled while a team vs team match exists.';
       return;
     }
+    const basePool = debugAllAdjNounNames().filter((nm) => !isPlayerDisplayNameTaken(t0, nm));
+    if (basePool.length < n) {
+      status = `Only ${basePool.length} unused debug name(s) are available; reduce the count or rename/remove players.`;
+      return;
+    }
+    const shuffleKey =
+      globalThis.crypto?.randomUUID?.() ?? `dbg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const pool = shuffleDeterministic([...basePool], shuffleKey);
     const rng = Math.random;
     const addedIds: string[] = [];
     for (let i = 0; i < n; i++) {
       const id = newId();
       const cmdId = `cmd-${id}`;
       const hc = s.handicapEnabled ? Math.max(0, Math.floor(Number(newHc) || 0)) : 0;
-      const r = c.createPlayer(id, debugRandomPlayerName(rng), hc, cmdId);
+      const r = c.createPlayer(id, pool[i]!, hc, cmdId);
       if (!r.success) {
         status = r.reason ?? `Stopped after ${addedIds.length} player(s).`;
         pull();
@@ -837,6 +877,24 @@
       .sort((a, b) => b.w - a.w || a.l - b.l || a.pid.localeCompare(b.pid));
   }
 
+  /** W/L per player for the matrix footer columns (order-independent). */
+  function groupStandingsWlByPid(
+    t: Tournament,
+    g: GroupDefinition,
+    classId: string | undefined,
+  ): Record<string, { w: number; l: number }> {
+    const m: Record<string, { w: number; l: number }> = {};
+    for (const row of groupStandingsForGroup(t, g, classId)) {
+      m[row.pid] = { w: row.w, l: row.l };
+    }
+    return m;
+  }
+
+  /** Row/column order for the group matrix (permutation fixed when groups are created). */
+  function groupMatrixPlayerOrder(g: GroupDefinition): string[] {
+    return [...g.playerIds];
+  }
+
   function findGroupMatchBetween(
     t: Tournament,
     g: GroupDefinition,
@@ -855,15 +913,15 @@
     return undefined;
   }
 
-  /** Diagonal: dot operator (⋅, LaTeX \cdot). Otherwise games row player won vs column player, or '' if not played / no decided games yet. */
-  function groupMatrixCell(
+  /** Games won by `rowPid` vs `colPid` from decided games only; empty string if none yet (show placeholder in UI). */
+  function groupMatrixGamesWonDigit(
     t: Tournament,
     g: GroupDefinition,
     classId: string | undefined,
     rowPid: string,
     colPid: string,
   ): string {
-    if (rowPid === colPid) return '\u22C5';
+    if (rowPid === colPid) return '';
     const m = findGroupMatchBetween(t, g, classId, rowPid, colPid);
     if (!m || m.scores.length === 0) return '';
     let won = 0;
@@ -877,6 +935,21 @@
     }
     if (!anyDecided) return '';
     return String(won);
+  }
+
+  function groupMatrixCellViewOnly(t: Tournament, m: Match): boolean {
+    return (
+      (m.scores.length > 0 || m.status !== 'scheduled') && !canMutateExistingGroupPhaseMatchScores(t, m)
+    );
+  }
+
+  function groupMatrixCellAriaLabel(t: Tournament, m: Match): string {
+    const a = playerLabel(m.playerA);
+    const b = playerLabel(m.playerB);
+    if (m.scores.length === 0 && m.status === 'scheduled') {
+      return groupMatrixCellViewOnly(t, m) ? `${a} vs ${b}, locked` : `${a} vs ${b}, enter scores`;
+    }
+    return groupMatrixCellViewOnly(t, m) ? `${a} vs ${b}, view scores` : `${a} vs ${b}, edit scores`;
   }
 
   function titleFromImportFilename(filename: string): string {
@@ -2087,8 +2160,8 @@
               <h2 class="h2">Group phase</h2>
               {#if tournament.bracketMatches.length > 0}
                 <p class="group-lock-banner">
-                  Knockout bracket is active — group lineup is locked here. You can still enter scores for unfinished
-                  round‑robin matches below.
+                  Knockout bracket is active — group lineup is locked here. You can still finish unfinished
+                  round‑robin matches from the matrix above.
                 </p>
               {/if}
               {#if Object.keys(tournament.groups).length === 0}
@@ -2161,24 +2234,27 @@
                 {/if}
 
               <h3 class="h3">Groups</h3>
+              <p class="muted small group-matrix-hint">
+                Click a head-to-head cell to enter or edit games. Row and column order is fixed when groups are created;
+                W and L still follow current standings. Results stay editable until a knockout match in this track has
+                recorded play.
+              </p>
               {#if Object.keys(tournament.groups).length === 0}
                 <p class="muted small">No groups yet. Use Create groups & matches.</p>
               {:else}
                 {#each sortGroupsForDisplay(tournament.groups) as g (g.id)}
-                  {@const matrixOrder = groupStandingsForGroup(tournament, g, undefined)}
+                  {@const matrixPids = groupMatrixPlayerOrder(g)}
+                  {@const standingsWl = groupStandingsWlByPid(tournament, g, undefined)}
                   <article class="sub-card">
                     <h4 class="h4">{groupDisplayLabel(g)}</h4>
-                    <p class="muted small">
-                      {g.playerIds.map((p) => playerLabel(p)).join(' · ') || 'No players'}
-                    </p>
                     <div class="group-matrix-wrap">
                       <table class="grid compact group-matrix-table">
                         <thead>
                           <tr>
                             <th>Player</th>
-                            {#each matrixOrder as col (col.pid)}
-                              <th class="h2h-th" title={playerLabel(col.pid)}>
-                                <span class="h2h-th-inner">{playerLabel(col.pid)}</span>
+                            {#each matrixPids as colPid (colPid)}
+                              <th class="h2h-th" title={playerLabel(colPid)}>
+                                <span class="h2h-th-inner">{playerLabel(colPid)}</span>
                               </th>
                             {/each}
                             <th>W</th>
@@ -2186,14 +2262,38 @@
                           </tr>
                         </thead>
                         <tbody>
-                          {#each matrixOrder as s (s.pid)}
+                          {#each matrixPids as rowPid (rowPid)}
                             <tr>
-                              <td>{playerLabel(s.pid)}</td>
-                              {#each matrixOrder as col (col.pid)}
-                                <td class="h2h-cell">{groupMatrixCell(tournament, g, undefined, s.pid, col.pid)}</td>
+                              <td>{playerLabel(rowPid)}</td>
+                              {#each matrixPids as colPid (colPid)}
+                                <td class="h2h-cell">
+                                  {#if rowPid === colPid}
+                                    <span class="matrix-diag" aria-hidden="true">·</span>
+                                  {:else}
+                                    {@const gm = findGroupMatchBetween(tournament, g, undefined, rowPid, colPid)}
+                                    {#if gm}
+                                      {@const wins = groupMatrixGamesWonDigit(tournament, g, undefined, rowPid, colPid)}
+                                      <button
+                                        type="button"
+                                        class="group-matrix-cell-btn"
+                                        class:group-matrix-cell-readonly={groupMatrixCellViewOnly(tournament, gm)}
+                                        aria-label={groupMatrixCellAriaLabel(tournament, gm)}
+                                        onclick={() => openScoreModal(gm)}
+                                      >
+                                        {#if wins === ''}
+                                          <span class="group-matrix-placeholder">—</span>
+                                        {:else}
+                                          <span class="group-matrix-wins-digit">{wins}</span>
+                                        {/if}
+                                      </button>
+                                    {:else}
+                                      <span class="muted" title="No match">—</span>
+                                    {/if}
+                                  {/if}
+                                </td>
                               {/each}
-                              <td>{s.w}</td>
-                              <td>{s.l}</td>
+                              <td>{standingsWl[rowPid]?.w ?? 0}</td>
+                              <td>{standingsWl[rowPid]?.l ?? 0}</td>
                             </tr>
                           {/each}
                         </tbody>
@@ -2202,29 +2302,6 @@
                   </article>
                 {/each}
               {/if}
-
-              <h3 class="h3">Group matches</h3>
-              {#each groupMatchesInScope(tournament, undefined) as match (match.id)}
-                <article class="match-card">
-                  <header>
-                    <strong>{playerLabel(match.playerA)}</strong> vs <strong>{playerLabel(match.playerB)}</strong>
-                    <span class="meta">{groupLabelForMatch(tournament, match)} · {match.status}</span>
-                  </header>
-                  {#if match.status === 'scheduled'}
-                    <div class="row">
-                      <button type="button" class="btn primary" onclick={() => openScoreModal(match)}>Enter games…</button>
-                    </div>
-                  {:else}
-                    <ul class="done-scores">
-                      {#each match.scores as g, i (i)}
-                        <li>Game {i + 1}: {g.playerA}–{g.playerB}</li>
-                      {/each}
-                    </ul>
-                  {/if}
-                </article>
-              {:else}
-                <p class="muted small">No group matches yet.</p>
-              {/each}
 
             </section>
           {:else if !useClassTabs && singleTrackInner === 'bracket'}
@@ -2339,8 +2416,8 @@
                 <h2 class="h2">Group phase · {def?.name ?? cid}</h2>
                 {#if slice.bracketMatches.length > 0}
                   <p class="group-lock-banner">
-                    Knockout bracket is active for this class — group lineup is locked here. You can still enter scores for
-                    unfinished round‑robin matches below.
+                    Knockout bracket is active for this class — group lineup is locked here. You can still finish
+                    unfinished round‑robin matches from the matrix above.
                   </p>
                 {/if}
                 {#if Object.keys(slice.groups).length === 0}
@@ -2414,24 +2491,27 @@
                 {/if}
 
                 <h3 class="h3">Groups</h3>
+                <p class="muted small group-matrix-hint">
+                  Click a head-to-head cell to enter or edit games. Row and column order is fixed when groups are created;
+                  W and L still follow current standings. Results stay editable until a knockout match in this track has
+                  recorded play.
+                </p>
                 {#if Object.keys(slice.groups).length === 0}
                   <p class="muted small">No groups for this class yet.</p>
                 {:else}
                   {#each sortGroupsForDisplay(slice.groups) as g (g.id)}
-                    {@const matrixOrder = groupStandingsForGroup(tournament, g, cid)}
+                    {@const matrixPids = groupMatrixPlayerOrder(g)}
+                    {@const standingsWl = groupStandingsWlByPid(tournament, g, cid)}
                     <article class="sub-card">
                       <h4 class="h4">{groupDisplayLabel(g)}</h4>
-                      <p class="muted small">
-                        {g.playerIds.map((p) => playerLabel(p)).join(' · ') || 'No players'}
-                      </p>
                       <div class="group-matrix-wrap">
                         <table class="grid compact group-matrix-table">
                           <thead>
                             <tr>
                               <th>Player</th>
-                              {#each matrixOrder as col (col.pid)}
-                                <th class="h2h-th" title={playerLabel(col.pid)}>
-                                  <span class="h2h-th-inner">{playerLabel(col.pid)}</span>
+                              {#each matrixPids as colPid (colPid)}
+                                <th class="h2h-th" title={playerLabel(colPid)}>
+                                  <span class="h2h-th-inner">{playerLabel(colPid)}</span>
                                 </th>
                               {/each}
                               <th>W</th>
@@ -2439,14 +2519,38 @@
                             </tr>
                           </thead>
                           <tbody>
-                            {#each matrixOrder as s (s.pid)}
+                            {#each matrixPids as rowPid (rowPid)}
                               <tr>
-                                <td>{playerLabel(s.pid)}</td>
-                                {#each matrixOrder as col (col.pid)}
-                                  <td class="h2h-cell">{groupMatrixCell(tournament, g, cid, s.pid, col.pid)}</td>
+                                <td>{playerLabel(rowPid)}</td>
+                                {#each matrixPids as colPid (colPid)}
+                                  <td class="h2h-cell">
+                                    {#if rowPid === colPid}
+                                      <span class="matrix-diag" aria-hidden="true">·</span>
+                                    {:else}
+                                      {@const gm = findGroupMatchBetween(tournament, g, cid, rowPid, colPid)}
+                                      {#if gm}
+                                        {@const wins = groupMatrixGamesWonDigit(tournament, g, cid, rowPid, colPid)}
+                                        <button
+                                          type="button"
+                                          class="group-matrix-cell-btn"
+                                          class:group-matrix-cell-readonly={groupMatrixCellViewOnly(tournament, gm)}
+                                          aria-label={groupMatrixCellAriaLabel(tournament, gm)}
+                                          onclick={() => openScoreModal(gm)}
+                                        >
+                                          {#if wins === ''}
+                                            <span class="group-matrix-placeholder">—</span>
+                                          {:else}
+                                            <span class="group-matrix-wins-digit">{wins}</span>
+                                          {/if}
+                                        </button>
+                                      {:else}
+                                        <span class="muted" title="No match">—</span>
+                                      {/if}
+                                    {/if}
+                                  </td>
                                 {/each}
-                                <td>{s.w}</td>
-                                <td>{s.l}</td>
+                                <td>{standingsWl[rowPid]?.w ?? 0}</td>
+                                <td>{standingsWl[rowPid]?.l ?? 0}</td>
                               </tr>
                             {/each}
                           </tbody>
@@ -2455,29 +2559,6 @@
                     </article>
                   {/each}
                 {/if}
-
-                <h3 class="h3">Group matches (this class)</h3>
-                {#each groupMatchesInScope(tournament, cid) as match (match.id)}
-                  <article class="match-card">
-                    <header>
-                      <strong>{playerLabel(match.playerA)}</strong> vs <strong>{playerLabel(match.playerB)}</strong>
-                      <span class="meta">{groupLabelForMatch(tournament, match)} · {match.status}</span>
-                    </header>
-                    {#if match.status === 'scheduled'}
-                      <div class="row">
-                        <button type="button" class="btn primary" onclick={() => openScoreModal(match)}>Enter games…</button>
-                      </div>
-                    {:else}
-                      <ul class="done-scores">
-                        {#each match.scores as g, i (i)}
-                          <li>Game {i + 1}: {g.playerA}–{g.playerB}</li>
-                        {/each}
-                      </ul>
-                    {/if}
-                  </article>
-                {:else}
-                  <p class="muted small">No group matches for this class yet.</p>
-                {/each}
 
               </section>
             {:else if cin === 'bracket'}
@@ -2620,9 +2701,13 @@
             past 11, the winning margin must be exactly two. Extra rows appear automatically when the match is not decided
             after three or four valid games (up to five games).
           </p>
-          {#if sm.status === 'finished' && !sm.groupId && !scoreModalCanEditGames()}
+          {#if !scoreModalCanEditGames() && (sm.status === 'finished' || sm.scores.length > 0)}
             <p class="muted small modal-lead">
-              This result cannot be edited: the winner’s next bracket match already has scores (or this round is locked).
+              {#if sm.groupId}
+                This group result cannot be edited: a knockout match in this track already has recorded play.
+              {:else}
+                This result cannot be edited: the winner’s next bracket match already has scores (or this round is locked).
+              {/if}
             </p>
           {/if}
           <table class="mini score-modal-table">
@@ -3230,10 +3315,72 @@
     word-break: break-word;
   }
 
+  .group-matrix-hint {
+    margin: 0.15rem 0 0.5rem;
+  }
+
   .group-matrix-table .h2h-cell {
     text-align: center;
     min-width: 1.75rem;
     font-variant-numeric: tabular-nums;
+    padding: 0.15rem 0.2rem;
+    vertical-align: middle;
+  }
+
+  .matrix-diag {
+    display: inline-block;
+    min-width: 1.25rem;
+    color: #94a3b8;
+    font-size: 1.1rem;
+    line-height: 1;
+  }
+
+  .group-matrix-cell-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.1rem;
+    width: 100%;
+    min-height: 2.4rem;
+    margin: 0;
+    padding: 0.2rem 0.15rem;
+    border: 1px dashed #cbd5e1;
+    border-radius: 6px;
+    background: #fff;
+    color: #0f172a;
+    font: inherit;
+    font-size: 0.72rem;
+    line-height: 1.2;
+    cursor: pointer;
+    transition:
+      background 0.12s ease,
+      border-color 0.12s ease;
+  }
+
+  .group-matrix-cell-btn:hover {
+    background: #f8fafc;
+    border-color: #94a3b8;
+  }
+
+  .group-matrix-cell-btn.group-matrix-cell-readonly {
+    cursor: default;
+    border-style: solid;
+    border-color: #e2e8f0;
+    background: #f1f5f9;
+    color: #475569;
+  }
+
+  .group-matrix-placeholder {
+    color: #94a3b8;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+  }
+
+  .group-matrix-wins-digit {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.9rem;
   }
 
   .muted {

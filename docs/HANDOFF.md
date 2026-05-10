@@ -1,162 +1,89 @@
 # Handoff — `ttc-tornooiapp`
 
-Short orientation for the next person (or agent) picking up this repo. For deeper product and architecture notes, see `docs/DESIGN.md`.
-
-**Maintainer environment:** Development uses **WSL** (Linux shell and paths such as `/mnt/c/...`), not Windows PowerShell. If your IDE or session metadata shows PowerShell, treat **WSL** as authoritative for how this repo is run and where it lives on disk.
+Orientation for the **next developer or agent**: where things live, how to run them, and what the codebase has been **doing lately**. Product goals, non-goals, and storage vision live in **`docs/DESIGN.md`**; this file is a **practical map** and a **short memory** of recent work.
 
 ---
 
 ## What this is
 
-**Table tennis–first tournament helper**: a static **Svelte + Vite** web UI (`web/`) on top of a **TypeScript domain package** at the repo root (`src/`). The goal is local, organizer-controlled tournaments: players, groups, round-robin and brackets, scoring with TT-style legality checks, handicaps, and **undo/redo** over a single appendable **command log**.
-
-The “task for the tool” in recent work has been: **ship a usable organizer flow in the browser** that respects the command model, stays offline-friendly, and defers big scope (multi-sport, team tournaments, full scheduling polish) until the core loop is solid.
+A **table tennis–first** tournament helper: **Svelte 5 + Vite** UI under **`web/`** on top of a **TypeScript domain package** at the repo root (`src/`, published build in `dist/` when you run `npm run build`). State is meant to be **command-driven**, **replayable**, and **undo/redo**-friendly—see **`src/controller.ts`** and **`src/command.ts`**.
 
 ---
 
-## Repo layout (where to look)
+## Repo layout
 
-| Area | Role |
+| Path | Role |
 |------|------|
-| `src/model.ts` | Pure tournament state + rules: groups, RR, bracket structure, **score legality** (including deuce / post-11 **exact two-point margin**), handicaps, deterministic bracket shuffle when a seed string is provided. |
-| `src/command.ts` | **Command types**, payloads, `applyCommand` / inverse helpers, validation that belongs at the command boundary (e.g. **duplicate display names** on create/rename). |
-| `src/controller.ts` | Orchestration: dispatch commands, maintain log position for undo/redo, wire into `generateBracket` options like `shuffleKey`. |
-| `web/src/App.svelte` | Main UI: **settings-first** entry, **create-tournament wizard**, session tabs, players, groups, bracket actions, import/export, status + **fixed footer** (last action + undo/redo). |
-| `tests/*.spec.ts` | **Vitest** specs for model, commands, bracket behavior, scores. |
+| `src/model.ts` | Tournament shape, pure helpers: groups, RR, brackets, **TT score legality** (including deuce / post-11 **exact two-point margin**), handicaps, bracket shuffle keyed by a string, bracket settlement and sync helpers. |
+| `src/command.ts` | Command types, `applyCommand`, validation, inverse/undo wiring. Bracket side-effects often go through **`reconcileBracketScope`**-style paths (settle / propagate ordering matters after clear or undo). |
+| `src/controller.ts` | Public API for the UI: dispatch commands, undo/redo cursor, bracket generation (`shuffleKey`, etc.). |
+| `src/view.ts` | View-model / presentation helpers consumed by the app or tests where relevant. |
+| `src/storage.ts` | Persistence helpers (see DESIGN for intent). |
+| `web/src/App.svelte` | Main shell: settings, wizard, sessions, players, groups, bracket phase, import/export, status, footer with undo/redo. Large file—search before duplicating patterns. |
+| `web/src/BracketStreamView.svelte` | Centered “stream” knockout layout; coordinates with **`BracketSubtree.svelte`** for interaction. |
+| `tests/*.spec.ts` | **Vitest**—model, commands, scores, **`tests/bracket.spec.ts`** for bracket behavior. |
 
 ---
 
-## How to run things (WSL)
+## How to run
 
-Assume the repo lives on the Windows drive, e.g.:
-
-```bash
-cd /mnt/c/Users/donne/code/ttc-tornooiapp
-```
-
-### One-time / when dependencies change
-
-```bash
-npm install
-```
-
-Installs the root workspace and `web/` (the web app depends on the local `ttc-tornooiapp` package via `file:..`).
-
-### Tests
+**Requirements:** Node.js and npm (workspace at root includes `web/`).
 
 From the **repository root**:
 
 ```bash
-npm test
+npm install          # root + web (web depends on local package file:..)
+npm test             # Vitest, once
+npm run test:watch   # watch mode
+npm run dev:web      # Vite dev server (--host 0.0.0.0); use the URL Vite prints (often port 5173)
+npm run check -w web # svelte-check + TS (run after UI/type changes)
+npm run build -w web # production bundle under web/dist/
 ```
 
-Runs **Vitest** once and exits. For watch mode during development:
-
-```bash
-npm run test:watch
-```
-
-### Web dev server (“test server”)
-
-From the **repository root**:
-
-```bash
-npm run dev:web
-```
-
-This is `npm run dev -w web`: **Vite** with `--host 0.0.0.0` so you can open the printed URL from another device on the LAN. Default is often port **5173**; use whatever URL Vite prints.
-
-### Optional: Svelte / TS check (web only)
-
-```bash
-npm run check -w web
-```
-
-Useful before a commit when UI or types changed under `web/`.
-
-### Optional: production-style web build
-
-```bash
-npm run build -w web
-npm run preview -w web
-```
-
-### WSL tips
-
-- Use a **recent Node LTS** (the repo uses modern TypeScript and Vitest). If `npm install` fails inside WSL, install Node via **nvm**, **fnm**, or your distro package, then retry from the repo root.
-- The repo on **`/mnt/c/...`** is convenient for editing on Windows and running in WSL; I/O on `/mnt/c` can be slower than a clone inside the Linux home filesystem (`~/code/...`). For heavy `npm test` loops, a Linux-native clone is sometimes faster.
-- **Line endings**: if git shows mass `CRLF`/`LF` flips, normalize with your usual `.gitattributes` / core.autocrlf policy so diffs stay readable.
+Paths like `/mnt/c/...` (WSL) or `C:\...\` (Windows) are both fine—the commands are the same once `cd` is correct.
 
 ---
 
-## Data flow (very short)
+## Architecture you should not fight
 
-The UI keeps **per-tournament (or per-session) state** in memory and mirrors the **command log** mental model: export/import paths (JSON / JSONL-style bundles, depending on what `App.svelte` exposes) are how you move a tournament between machines or back up work. The **design target** in `DESIGN.md` is still **organizer-controlled local files** and offline-capable flows; the exact file API in the browser evolves with the UI.
+1. **Meaningful mutations** should become **commands** with stable **`commandId`** and correct **`dependsOn`** so replay and undo stay coherent.
+2. **Heavy rules** live in **`model.ts`**; **`command.ts`** validates at the boundary and applies; **`controller.ts`** is the façade the UI calls.
+3. When the UI shows **knockout** rows, some flows **create a `Match` on demand** (e.g. opening a pairing) so the log always has something to attach scores to—do not assume every bracket slot row exists before first open.
 
-When adding features, ask: **“Does this need a new command type?”** If yes, the change almost always touches **`command.ts`**, **`controller.ts`**, tests, and then the Svelte layer.
-
-### Copy-paste: typical WSL session
-
-```bash
-cd /mnt/c/Users/donne/code/ttc-tornooiapp   # or your path
-npm install
-npm test
-npm run dev:web
-# second terminal, optional:
-npm run check -w web
-```
-
-### Root package build (library `dist/`, not required for Vite dev)
-
-The workspace root can emit **`dist/`** for the core package via **`npm run build`** (`tsup`). Day-to-day UI work usually does **not** need this, because Vite resolves the local package from source; run it when validating packaging or publishing.
+If you add a user-visible persistent action, expect to touch **command + controller + tests + App (or child component)**.
 
 ---
 
-## What we have been **focusing** on (high level)
+## Knockout bracket (recent focus)
 
-- **Command-oriented state**: every meaningful mutation goes through a typed **command** with `id`, `dependsOn`, and replayable application. **Undo** is modeled as commands (and/or inverse application), not ad-hoc state snapshots.
-- **Organizer UX**: open on **Settings**; **wizard** to create a tournament (name, format choice with **non–group-bracket paths stubbed/disabled**, handicap toggle, **classes only at creation** — no rich in-session class editor after create).
-- **Honest rules in the model**: e.g. when either side is **above 11**, the winning margin must be **exactly 2** (not “≥2” for high scores).
-- **Bracket seeding fairness without server RNG**: **deterministic shuffle** for bracket generation, keyed by an optional **`shuffleKey`** (UI passes something stable like the tournament tab name) so the same tournament name yields the same bracket order.
-- **Player names**: **duplicate display names** rejected on create/rename using a **normalized** comparison; internal player ids stay stable so renames are safe.
-- **Shell polish**: **sticky** global **status** / header region so notices do not scroll away; **fixed bottom bar** with last command summary + **Undo / Redo**; hide **“Create groups & matches”** once groups already exist (global and per-class where applicable).
-- **Handicap** surfaced in labels and wizard where relevant.
-- **Tests** extended for the above (scores, bracket shuffle, command validation).
+- **UI:** **`BracketStreamView`** / **`BracketSubtree`** implement the interactive bracket “phase” view (click pairing → score entry; alignment with **`openBracketPairingModal`** in `App.svelte`).
+- **Domain:** Bracket winners, byes, seed propagation, and **when a slot is “done”** are centralized in **`model.ts`** helpers used from **`command.ts`**. After **clear** or **undo**, bracket metadata and player **`Match`** rows can briefly disagree; reconciliation order in **`command.ts`** was tuned so **settle / propagate** behave sensibly for the next score or seed update.
+- **Debug:** Under `DEBUG_UI`, **“[DEBUG] Simulate phase matches”** fills the **current minimum open knockout round** with random legal BO5 scores. Implementation details that matter after undo/clear:
+  - Ensures missing **`match-{bracketSlotId}`** rows via **`createMatch`** (same dependency idea as the pairing modal).
+  - Treats a slot as simulatable based on the **`Match`** (scheduled, no scores), **not** on **`BracketMatch.winner`** alone, so stale `winner` does not hide open games.
+  - **Re-queries** the tournament after each score so the same “min round” pass completes the round instead of using a stale snapshot.
 
----
-
-## What we have been **de-prioritizing / ignoring** (for now)
-
-- **Full tournament format matrix**: anything beyond the **group + bracket** (or RR) path that the UI exposes is **stubbed or disabled** in the wizard — not implemented end-to-end.
-- **Team tournament product**: domain may still mention teams for a narrow case; **multi-team tournaments** and team brackets remain **out of product scope** per `DESIGN.md`.
-- **Post-create class editing** in the session UI: deliberately removed in favor of **wizard-only** class setup.
-- **Backend / multi-writer / real-time sync**: still **single-organizer**, browser-local or file-based workflows; no “always online” server requirement.
-- **Lint / CI hardening**: root `lint` script is still a placeholder; rely on tests + `svelte-check` when touching UI.
-- **Visual design system**: pragmatic layout and spacing; not a polished design system pass.
+**Limitation (as of this writing):** that debug helper walks **`tournament.bracketMatches`** (main draw). **Per-class** brackets live under **`classTournaments[cid].bracketMatches`** in the model; the class tab UI may still show stubbed “create bracket” actions while reusing stream views for an existing class draw—if you extend simulation or row creation, thread **`classId`** / slice bracket arrays through the same way **`bracketScopeForPlayerMatch`** does in **`command.ts`**.
 
 ---
 
-## Prime design decision: **commands + log + undo/redo**
+## Small UI / product notes from recent passes
 
-1. **Tournament state** is derived by **applying an ordered command list** (with a cursor for “current time” in the log).
-2. **Commands** are small, typed, serializable records. Heavy lifting stays in **`model.ts`**; **`command.ts`** validates and delegates.
-3. **Undo** does not silently fork arbitrary state: it works through the **same command machinery** (e.g. inverse operations or dedicated undo entries — see **`src/controller.ts`** and **`Undo`** handling in **`src/command.ts`** for the live behavior). **Redo** reapplies work that was undone: in practice, redo is meaningful when the **tail of the log** is consistent with “we just undid something” (the UI footer is meant to make that legible to the organizer).
-4. **Benefits**: audit trail, export/import as JSONL, easier testing (feed commands, assert state), and a clear place for **sport-specific validation** before state changes commit.
-
-Secondary choices aligned with that:
-
-- **Pure functions** in the model where possible, so tests do not need a browser.
-- **Explicit keys** (`shuffleKey`) for reproducible bracket draws instead of `Math.random()` in the domain layer for that path.
-- **UI reflects the log**: footer text summarizes the **last command** so organizers trust what will undo.
+- **Tournament name:** the toolbar **“Use suggested”** button was **removed**; **`applySuggestedTournamentTitle`** / **`deriveLabel`** remain in **`App.svelte`** for a possible future control.
+- **Wizard / formats:** paths beyond the implemented **group + bracket** flow stay **stubbed or disabled** where the wizard exposes them.
+- **Lint:** root **`npm run lint`** is still a placeholder; rely on **tests** and **`npm run check -w web`**.
 
 ---
 
-## Quick pointers for the next change
+## Where to start for common tasks
 
-- If scoring rules change, start in **`src/model.ts`** (`isMatchScoreLegal` / winner helpers), then add **`tests/score.spec.ts`** cases.
-- If a new user-facing action should persist, add a **`CommandType`** + handler in **`command.ts`**, wire **`controller.ts`**, then UI in **`App.svelte`**.
-- If bracket fairness or seeding changes, **`generateBracket`** and **`GenerateBracket`** payload (`shuffleKey`) are the choke points.
-- If the web app shows a **blank page** after a change, open the browser console first: recent bugs in this stack were often **undefined Svelte 5 `$state`** fields or a **`svelte-check`** failure that only appears in the editor until you run `npm run check -w web`.
+| Task | Start here |
+|------|----------------|
+| Change TT scoring rules | `src/model.ts` (`isMatchScoreLegal`, related helpers), then `tests/score.spec.ts` |
+| New persisted action | New command type in `src/command.ts`, wire `src/controller.ts`, Vitest, then UI |
+| Bracket generation / shuffle | `generateBracket` / `GenerateBracket` payload and `shuffleKey` from session |
+| Bracket wrong after undo | `src/command.ts` (`reconcileBracketScope`, bracket command handlers), `src/model.ts` settlement/propagation |
+| Blank UI / runtime errors | Browser console; Svelte 5 runes (`$state`); run **`npm run check -w web`** |
 
 ---
 
@@ -164,22 +91,11 @@ Secondary choices aligned with that:
 
 | Document | Use |
 |----------|-----|
-| `docs/DESIGN.md` | Goals, non-goals, storage, offline, broader roadmap. |
-| `docs/TEST_SPECIFICATION.md` | Testing intent / scenarios (if maintained). |
-| `docs/AGENT_SUMMARY.md` | Short agent-oriented notes if present in your branch. |
-| `docs/HANDOFF.md` | This file: **recent focus**, **run commands (WSL)**, **command architecture** snapshot. |
-
-### Running a single Vitest file (optional)
-
-From the repo root, Vitest accepts path filters:
-
-```bash
-npx vitest run tests/score.spec.ts
-npx vitest run tests/command.spec.ts
-```
-
-Useful when iterating on one area without running the full suite.
+| `docs/DESIGN.md` | Goals, non-goals, hosting, data/log vision. |
+| `docs/TEST_SPECIFICATION.md` | Scenario-style testing notes (if kept in sync). |
+| `docs/AGENT_SUMMARY.md` | Extra agent-oriented notes if present on your branch. |
+| `docs/HANDOFF.md` | This file: layout, commands, runbook, **recent bracket/debug context**. |
 
 ---
 
-_End of handoff (~180 lines). Adjust the `cd` path if your clone is not under `/mnt/c/Users/...`._
+_Single maintainer or small team: keep this file honest when behavior shifts (especially bracket + command boundaries)._

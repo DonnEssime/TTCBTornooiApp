@@ -882,6 +882,56 @@ export function findBracketRoundForPlayerPairing(tournament: Tournament, playerA
   return findBracketRoundForPlayerPairingIn(tournament.bracketMatches, playerA, playerB);
 }
 
+/** Main draw vs per-class bracket slice for any player match (group or bracket). */
+export function bracketScopeForPlayerMatch(
+  tournament: Tournament,
+  match: Match,
+): { bracketMatches: BracketMatch[]; lockedBracketRounds: number[] } {
+  const cid = match.classId;
+  const slice = cid ? tournament.classTournaments[cid] : undefined;
+  if (slice?.bracketMatches?.length) {
+    return {
+      bracketMatches: slice.bracketMatches,
+      lockedBracketRounds: slice.lockedBracketRounds ?? [],
+    };
+  }
+  return {
+    bracketMatches: tournament.bracketMatches,
+    lockedBracketRounds: tournament.lockedBracketRounds ?? [],
+  };
+}
+
+/** True if any knockout player row for this draw has scores or is no longer an untouched scheduled row. */
+export function anyBracketKnockoutMatchHasRecordedPlay(
+  tournament: Tournament,
+  bracketMatches: BracketMatch[],
+): boolean {
+  if (bracketMatches.length === 0) return false;
+  for (const bm of bracketMatches) {
+    const mid = bracketPlayerMatchId(bm.id);
+    const m = tournament.matches[mid];
+    if (!m || m.groupId) continue;
+    if (m.scores.length > 0) return true;
+    if (m.status !== 'scheduled') return true;
+  }
+  return false;
+}
+
+/**
+ * Whether an existing group-phase result may be edited, re-entered, or cleared while a bracket exists.
+ * First-time score entry on a still-scheduled empty group match stays allowed (finish RR after KO is created).
+ */
+export function canMutateExistingGroupPhaseMatchScores(tournament: Tournament, match: Match): boolean {
+  if (!match.groupId) return true;
+  const bracketMatches =
+    match.classId && tournament.classTournaments[match.classId]
+      ? tournament.classTournaments[match.classId]!.bracketMatches
+      : tournament.bracketMatches;
+  if (bracketMatches.length === 0) return true;
+  if (match.status === 'scheduled' && match.scores.length === 0) return true;
+  return !anyBracketKnockoutMatchHasRecordedPlay(tournament, bracketMatches);
+}
+
 export function bracketMatchesSortedForRound(bracketMatches: BracketMatch[], round: number): BracketMatch[] {
   return bracketMatches.filter((m) => m.round === round).sort(compareBracketMatchId);
 }
