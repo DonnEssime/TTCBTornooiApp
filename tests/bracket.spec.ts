@@ -8,6 +8,9 @@ import {
   areTopSeedsSeparated,
   bracketRoundHasFinishedPlayerMatch,
   compareBracketMatchIdString,
+  ensureBracketPhasePlayerMatches,
+  formatBracketSlotPlayerLabel,
+  matchPlayersResolvedForBracketPhaseList,
   settleBracketWinners,
   scheduleRound,
 } from '../src/model';
@@ -238,5 +241,146 @@ describe('Bracket generation', () => {
 
     tournament.matches['match-m1'].scores = [{ playerA: 11, playerB: 5 }];
     expect(bracketRoundHasFinishedPlayerMatch(tournament, 1)).toBe(true);
+  });
+
+  it('ensureBracketPhasePlayerMatches adds scheduled rows for later rounds without winners', () => {
+    const t = createTournament();
+    t.players = {
+      p1: { id: 'p1', name: 'A', handicap: 0 },
+      p2: { id: 'p2', name: 'B', handicap: 0 },
+      p3: { id: 'p3', name: 'C', handicap: 0 },
+      p4: { id: 'p4', name: 'D', handicap: 0 },
+    };
+    t.bracketMatches = [
+      { id: 'm1', seedA: 'p1', seedB: 'p4', round: 1, winner: 'p1' },
+      { id: 'm2', seedA: 'p2', seedB: 'p3', round: 1, winner: 'p2' },
+      { id: 'm3', seedA: 'p1', seedB: 'p2', round: 2 },
+    ];
+    ensureBracketPhasePlayerMatches(t);
+    expect(t.matches['match-m3']).toMatchObject({
+      id: 'match-m3',
+      playerA: 'p1',
+      playerB: 'p2',
+      status: 'scheduled',
+    });
+    expect(t.matches['match-m1']).toBeUndefined();
+  });
+});
+
+describe('Group → bracket placeholders', () => {
+  it('formatBracketSlotPlayerLabel uses group place until the group is fully finished', () => {
+    const t = createTournament();
+    t.players = {
+      p1: { id: 'p1', name: 'Alice', handicap: 0 },
+      p2: { id: 'p2', name: 'Bob', handicap: 0 },
+    };
+    t.groups = { '1': { id: '1', label: 'group 1', playerIds: ['p1', 'p2'] } };
+    t.matches = {
+      'gm-1-p1-p2': {
+        id: 'gm-1-p1-p2',
+        playerA: 'p1',
+        playerB: 'p2',
+        scores: [],
+        status: 'scheduled',
+        groupId: '1',
+      },
+    };
+    expect(formatBracketSlotPlayerLabel(t, 'p1', undefined)).toBe('group 1 place 1');
+    expect(formatBracketSlotPlayerLabel(t, 'p2', undefined)).toBe('group 1 place 2');
+    t.matches['gm-1-p1-p2']!.status = 'finished';
+    t.matches['gm-1-p1-p2']!.scores = [
+      { playerA: 11, playerB: 3 },
+      { playerA: 11, playerB: 5 },
+      { playerA: 11, playerB: 4 },
+    ];
+    t.matches['gm-1-p1-p2']!.winner = 'p1';
+    expect(formatBracketSlotPlayerLabel(t, 'p1', undefined)).toBe('Alice');
+    expect(formatBracketSlotPlayerLabel(t, 'p2', undefined)).toBe('Bob');
+  });
+
+  it('matchPlayersResolvedForBracketPhaseList is false until both entrants groups are finished', () => {
+    const t = createTournament();
+    t.players = {
+      p1: { id: 'p1', name: 'A', handicap: 0 },
+      p2: { id: 'p2', name: 'B', handicap: 0 },
+      p3: { id: 'p3', name: 'C', handicap: 0 },
+      p4: { id: 'p4', name: 'D', handicap: 0 },
+    };
+    t.groups = {
+      g1: { id: 'g1', label: 'Alpha', playerIds: ['p1', 'p2'] },
+      g2: { id: 'g2', label: 'Beta', playerIds: ['p3', 'p4'] },
+    };
+    t.matches = {
+      'gm-g1-p1-p2': {
+        id: 'gm-g1-p1-p2',
+        playerA: 'p1',
+        playerB: 'p2',
+        scores: [],
+        status: 'scheduled',
+        groupId: 'g1',
+      },
+      'gm-g2-p3-p4': {
+        id: 'gm-g2-p3-p4',
+        playerA: 'p3',
+        playerB: 'p4',
+        scores: [],
+        status: 'scheduled',
+        groupId: 'g2',
+      },
+    };
+    const bracketMatch: Match = {
+      id: 'match-m1',
+      playerA: 'p1',
+      playerB: 'p3',
+      scores: [],
+      status: 'scheduled',
+    };
+    expect(matchPlayersResolvedForBracketPhaseList(t, bracketMatch, undefined)).toBe(false);
+    t.matches['gm-g1-p1-p2']!.status = 'finished';
+    t.matches['gm-g1-p1-p2']!.scores = [
+      { playerA: 11, playerB: 0 },
+      { playerA: 11, playerB: 0 },
+      { playerA: 11, playerB: 0 },
+    ];
+    t.matches['gm-g1-p1-p2']!.winner = 'p1';
+    expect(matchPlayersResolvedForBracketPhaseList(t, bracketMatch, undefined)).toBe(false);
+    t.matches['gm-g2-p3-p4']!.status = 'finished';
+    t.matches['gm-g2-p3-p4']!.scores = [
+      { playerA: 11, playerB: 0 },
+      { playerA: 11, playerB: 0 },
+      { playerA: 11, playerB: 0 },
+    ];
+    t.matches['gm-g2-p3-p4']!.winner = 'p3';
+    expect(matchPlayersResolvedForBracketPhaseList(t, bracketMatch, undefined)).toBe(true);
+  });
+
+  it('class-scoped groups use classId when resolving placeholders', () => {
+    const t = createTournament();
+    t.players = {
+      p1: { id: 'p1', name: 'Ann', handicap: 0 },
+      p2: { id: 'p2', name: 'Ben', handicap: 0 },
+    };
+    t.classDefinitions = [{ id: 'jun', name: 'Junior' }];
+    t.classTournaments = {
+      jun: {
+        seedings: ['p1', 'p2'],
+        groups: { '1': { id: '1', label: 'Pool A', playerIds: ['p1', 'p2'] } },
+        bracketMatches: [],
+        lockedBracketRounds: [],
+      },
+    };
+    t.matches = {
+      'gm-jun-1-p1-p2': {
+        id: 'gm-jun-1-p1-p2',
+        playerA: 'p1',
+        playerB: 'p2',
+        scores: [],
+        status: 'scheduled',
+        groupId: '1',
+        classId: 'jun',
+      },
+    };
+    expect(formatBracketSlotPlayerLabel(t, 'p1', 'jun')).toBe('Pool A place 1');
+    expect(formatBracketSlotPlayerLabel(t, 'p1', undefined)).toBe('Ann');
   });
 });

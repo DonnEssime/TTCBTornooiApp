@@ -17,6 +17,7 @@ import {
   roundRobinPairs,
   scheduleRound,
   settleBracketWinners,
+  ensureBracketPhasePlayerMatches,
   teamMatchWinner,
   tournamentUsesClassTabs,
   isPlayerDisplayNameTaken,
@@ -1006,5 +1007,6 @@ export class CommandRunner {
     if (isBracketRoundComplete(tournament, currentRound)) {
       advanceBracketRound(tournament);
     }
+    ensureBracketPhasePlayerMatches(tournament);
   }
 }

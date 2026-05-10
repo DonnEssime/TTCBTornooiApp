@@ -2,19 +2,21 @@
   import type { BracketMatch, Tournament } from 'ttc-tornooiapp';
   import BracketSubtree from './BracketSubtree.svelte';
   import { bracketTreeFromColumns } from './bracketStream/buildTree';
+  import { bracketSlotOutcome } from './bracketStream/slotOutcome';
 
   let {
     cols,
     tournament,
     slotTitle,
-    playerLabel,
+    bracketClassId = undefined,
     ariaLabel = 'Knockout bracket',
     emptyMessage = 'Add players on the Players tab to preview the tree.',
   }: {
     cols: BracketMatch[][];
     tournament: Tournament;
-    slotTitle: (m: BracketMatch, side: 'a' | 'b', t: Tournament) => string;
-    playerLabel: (playerId: string) => string;
+    slotTitle: (m: BracketMatch, side: 'a' | 'b', t: Tournament, classId?: string) => string;
+    /** When set (multi-class track), group placeholders resolve against this class slice. */
+    bracketClassId?: string;
     ariaLabel?: string;
     emptyMessage?: string;
   } = $props();
@@ -22,7 +24,7 @@
   const root = $derived(bracketTreeFromColumns(cols));
 
   function slot(m: BracketMatch, side: 'a' | 'b'): string {
-    return slotTitle(m, side, tournament);
+    return slotTitle(m, side, tournament, bracketClassId);
   }
 </script>
 
@@ -32,18 +34,27 @@
   {:else if !root.left || !root.right}
     <div class="stream-single">
       <div class="match-box final-only" class:match-done={Boolean(root.match.winner)}>
-        <div class="bracket-slot">{slot(root.match, 'a')}</div>
+        <div
+          class="bracket-slot"
+          class:bracket-slot--winner={bracketSlotOutcome(root.match, 'a') === 'winner'}
+          class:bracket-slot--loser={bracketSlotOutcome(root.match, 'a') === 'loser'}
+        >
+          {slot(root.match, 'a')}
+        </div>
         <div class="bracket-vs muted">vs</div>
-        <div class="bracket-slot">{slot(root.match, 'b')}</div>
-        {#if root.match.winner}
-          <div class="bracket-win muted">Winner: {playerLabel(root.match.winner)}</div>
-        {/if}
+        <div
+          class="bracket-slot"
+          class:bracket-slot--winner={bracketSlotOutcome(root.match, 'b') === 'winner'}
+          class:bracket-slot--loser={bracketSlotOutcome(root.match, 'b') === 'loser'}
+        >
+          {slot(root.match, 'b')}
+        </div>
       </div>
     </div>
   {:else}
     <div class="stream-inner">
       <div class="wing left">
-        <BracketSubtree node={root.left} wing="left" slotTitle={slot} {playerLabel} />
+        <BracketSubtree node={root.left} wing="left" slotTitle={slot} />
       </div>
       <div class="join-to-final" aria-hidden="true">
         <svg viewBox="0 0 18 100" preserveAspectRatio="none" class="join-svg">
@@ -56,12 +67,21 @@
       </div>
       <div class="final-col">
         <div class="match-box final" class:match-done={Boolean(root.match.winner)}>
-          <div class="bracket-slot">{slot(root.match, 'a')}</div>
+          <div
+            class="bracket-slot"
+            class:bracket-slot--winner={bracketSlotOutcome(root.match, 'a') === 'winner'}
+            class:bracket-slot--loser={bracketSlotOutcome(root.match, 'a') === 'loser'}
+          >
+            {slot(root.match, 'a')}
+          </div>
           <div class="bracket-vs muted">vs</div>
-          <div class="bracket-slot">{slot(root.match, 'b')}</div>
-          {#if root.match.winner}
-            <div class="bracket-win muted">Winner: {playerLabel(root.match.winner)}</div>
-          {/if}
+          <div
+            class="bracket-slot"
+            class:bracket-slot--winner={bracketSlotOutcome(root.match, 'b') === 'winner'}
+            class:bracket-slot--loser={bracketSlotOutcome(root.match, 'b') === 'loser'}
+          >
+            {slot(root.match, 'b')}
+          </div>
         </div>
       </div>
       <div class="join-to-final" aria-hidden="true">
@@ -70,7 +90,7 @@
         </svg>
       </div>
       <div class="wing right">
-        <BracketSubtree node={root.right} wing="right" slotTitle={slot} {playerLabel} />
+        <BracketSubtree node={root.right} wing="right" slotTitle={slot} />
       </div>
     </div>
   {/if}
@@ -167,7 +187,6 @@
   }
 
   .match-box.match-done {
-    opacity: 0.78;
     background: #f1f5f9;
     border-color: #cbd5e1;
   }
@@ -177,17 +196,21 @@
     word-break: break-word;
   }
 
+  .bracket-slot--winner {
+    font-weight: 700;
+    color: #0f172a;
+  }
+
+  .bracket-slot--loser {
+    text-decoration: line-through;
+    font-weight: 500;
+    color: #64748b;
+  }
+
   .bracket-vs {
     font-size: 0.72rem;
     text-align: center;
     margin: 0.1rem 0;
-  }
-
-  .bracket-win {
-    margin-top: 0.28rem;
-    padding-top: 0.28rem;
-    border-top: 1px dashed #e2e8f0;
-    font-size: 0.78rem;
   }
 
   .muted {

@@ -507,6 +507,103 @@ export function groupStandingsRowsForBracket(
     .sort((a, b) => b.w - a.w || a.l - b.l || a.pid.localeCompare(b.pid));
 }
 
+/** Label shown in lists (same fallback as the app group heading: `label` or `id`). */
+export function displayLabelForGroup(g: GroupDefinition): string {
+  return g.label?.trim() || g.id;
+}
+
+export function groupRecordForBracketScope(
+  tournament: Tournament,
+  classId: string | undefined,
+): Record<string, GroupDefinition> {
+  return classId ? tournament.classTournaments[classId]?.groups ?? {} : tournament.groups;
+}
+
+export function findGroupForPlayer(
+  tournament: Tournament,
+  playerId: PlayerId,
+  classId: string | undefined,
+): GroupDefinition | undefined {
+  const rec = groupRecordForBracketScope(tournament, classId);
+  return Object.values(rec).find((g) => g.playerIds.includes(playerId));
+}
+
+/**
+ * True when every group match for this group is finished with a winner.
+ * For global scope (`classId` undefined), ignores matches tagged with another `classId`.
+ */
+export function groupAllMatchesFinished(
+  tournament: Tournament,
+  group: GroupDefinition,
+  classId: string | undefined,
+): boolean {
+  for (const m of Object.values(tournament.matches)) {
+    if (m.groupId !== group.id) continue;
+    if (classId !== undefined) {
+      if (m.classId !== classId) continue;
+    } else if (m.classId) {
+      continue;
+    }
+    if (m.status !== 'finished' || !m.winner) return false;
+  }
+  return true;
+}
+
+/**
+ * True when the bracket UI may show this player's real name: not in a scoped group, or that group's
+ * phase is fully finished. Until then, slots use {@link formatBracketSlotPlayerLabel}.
+ */
+export function bracketPlayerIdentityResolvedForDisplay(
+  tournament: Tournament,
+  playerId: PlayerId,
+  classId: string | undefined,
+): boolean {
+  const g = findGroupForPlayer(tournament, playerId, classId);
+  if (!g) return true;
+  return groupAllMatchesFinished(tournament, g, classId);
+}
+
+/** 1-based index in current {@link groupStandingsRowsForBracket} order (best row = 1). */
+export function currentGroupPlace1Based(
+  tournament: Tournament,
+  group: GroupDefinition,
+  playerId: PlayerId,
+  classId: string | undefined,
+): number {
+  const rows = groupStandingsRowsForBracket(tournament, group, classId);
+  const idx = rows.findIndex((r) => r.pid === playerId);
+  return idx >= 0 ? idx + 1 : 1;
+}
+
+/**
+ * Bracket slot text: player name once their group is fully played; otherwise `"{group} place {n}"`
+ * from current standings order (names hidden until the whole group is finished).
+ */
+export function formatBracketSlotPlayerLabel(
+  tournament: Tournament,
+  playerId: PlayerId,
+  classId: string | undefined,
+): string {
+  const g = findGroupForPlayer(tournament, playerId, classId);
+  if (!g || groupAllMatchesFinished(tournament, g, classId)) {
+    return tournament.players[playerId]?.name ?? playerId;
+  }
+  const place = currentGroupPlace1Based(tournament, g, playerId, classId);
+  return `${displayLabelForGroup(g)} place ${place}`;
+}
+
+/** Whether a knockout-phase player match should appear in “matches this round” while groups may still be open. */
+export function matchPlayersResolvedForBracketPhaseList(
+  tournament: Tournament,
+  match: Match,
+  classId: string | undefined,
+): boolean {
+  return (
+    bracketPlayerIdentityResolvedForDisplay(tournament, match.playerA, classId) &&
+    bracketPlayerIdentityResolvedForDisplay(tournament, match.playerB, classId)
+  );
+}
+
 /**
  * Drops players until `previousPowerOfTwo(seedings.length)` remain.
  * Elimination order: all true 4th-place finishers (within their group) in random order, then all 3rd-place, etc.,
@@ -806,6 +903,31 @@ export function settleBracketWinners(tournament: Tournament): Tournament {
   }
 
   return tournament;
+}
+
+/**
+ * For every bracket slot that still needs to be played (two seeds, no winner), ensures a scheduled
+ * player {@link Match} exists at `match-${bracketMatch.id}` with no `groupId`. Later rounds only
+ * receive these rows when bracket reconciliation runs after a round completes (see command runner);
+ * round 1 is still typically created via explicit `CreateMatch` commands from the app.
+ */
+export function ensureBracketPhasePlayerMatches(tournament: Tournament): void {
+  if (Object.keys(tournament.teamMatches).length > 0) {
+    return;
+  }
+  for (const bm of tournament.bracketMatches) {
+    if (!bm.seedA || !bm.seedB || bm.winner) continue;
+    const mid = `match-${bm.id}`;
+    if (tournament.matches[mid]) continue;
+    if (!tournament.players[bm.seedA] || !tournament.players[bm.seedB]) continue;
+    tournament.matches[mid] = {
+      id: mid,
+      playerA: bm.seedA,
+      playerB: bm.seedB,
+      scores: [],
+      status: 'scheduled',
+    };
+  }
 }
 
 export function isBracketRoundComplete(tournament: Tournament, round: number): boolean {

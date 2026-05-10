@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { BracketMatch } from 'ttc-tornooiapp';
   import type { BracketBNode } from './bracketStream/buildTree';
+  import { bracketSlotOutcome } from './bracketStream/slotOutcome';
   import Subtree from './BracketSubtree.svelte';
 
   type Wing = 'left' | 'right';
@@ -9,12 +10,10 @@
     node,
     wing,
     slotTitle,
-    playerLabel,
   }: {
     node: BracketBNode;
     wing: Wing;
     slotTitle: (m: BracketMatch, side: 'a' | 'b') => string;
-    playerLabel: (playerId: string) => string;
   } = $props();
 
   const isLeaf = $derived(!node.left && !node.right);
@@ -22,21 +21,30 @@
 
 {#if isLeaf}
   <div class="match-box leaf" class:match-done={Boolean(node.match.winner)}>
-    <div class="bracket-slot">{slotTitle(node.match, 'a')}</div>
+    <div
+      class="bracket-slot"
+      class:bracket-slot--winner={bracketSlotOutcome(node.match, 'a') === 'winner'}
+      class:bracket-slot--loser={bracketSlotOutcome(node.match, 'a') === 'loser'}
+    >
+      {slotTitle(node.match, 'a')}
+    </div>
     <div class="bracket-vs muted">vs</div>
-    <div class="bracket-slot">{slotTitle(node.match, 'b')}</div>
-    {#if node.match.winner}
-      <div class="bracket-win muted">Winner: {playerLabel(node.match.winner)}</div>
-    {/if}
+    <div
+      class="bracket-slot"
+      class:bracket-slot--winner={bracketSlotOutcome(node.match, 'b') === 'winner'}
+      class:bracket-slot--loser={bracketSlotOutcome(node.match, 'b') === 'loser'}
+    >
+      {slotTitle(node.match, 'b')}
+    </div>
   </div>
 {:else}
   <div class="subtree" class:mirror={wing === 'right'}>
     <div class="feeders">
       <div class="feeder-cell">
-        <Subtree node={node.left!} {wing} {slotTitle} {playerLabel} />
+        <Subtree node={node.left!} {wing} {slotTitle} />
       </div>
       <div class="feeder-cell">
-        <Subtree node={node.right!} {wing} {slotTitle} {playerLabel} />
+        <Subtree node={node.right!} {wing} {slotTitle} />
       </div>
     </div>
     <div class="connector" aria-hidden="true">
@@ -58,12 +66,21 @@
       </svg>
     </div>
     <div class="match-box parent" class:match-done={Boolean(node.match.winner)}>
-      <div class="bracket-slot">{slotTitle(node.match, 'a')}</div>
+      <div
+        class="bracket-slot"
+        class:bracket-slot--winner={bracketSlotOutcome(node.match, 'a') === 'winner'}
+        class:bracket-slot--loser={bracketSlotOutcome(node.match, 'a') === 'loser'}
+      >
+        {slotTitle(node.match, 'a')}
+      </div>
       <div class="bracket-vs muted">vs</div>
-      <div class="bracket-slot">{slotTitle(node.match, 'b')}</div>
-      {#if node.match.winner}
-        <div class="bracket-win muted small-w">W: {playerLabel(node.match.winner)}</div>
-      {/if}
+      <div
+        class="bracket-slot"
+        class:bracket-slot--winner={bracketSlotOutcome(node.match, 'b') === 'winner'}
+        class:bracket-slot--loser={bracketSlotOutcome(node.match, 'b') === 'loser'}
+      >
+        {slotTitle(node.match, 'b')}
+      </div>
     </div>
   </div>
 {/if}
@@ -148,31 +165,30 @@
   }
 
   .match-box.match-done {
-    opacity: 0.78;
     background: #f1f5f9;
     border-color: #cbd5e1;
   }
 
   .bracket-slot {
-    font-weight: 550;
+    font-weight: 600;
     word-break: break-word;
+  }
+
+  .bracket-slot--winner {
+    font-weight: 700;
+    color: #0f172a;
+  }
+
+  .bracket-slot--loser {
+    text-decoration: line-through;
+    font-weight: 500;
+    color: #64748b;
   }
 
   .bracket-vs {
     font-size: 0.72rem;
     text-align: center;
     margin: 0.1rem 0;
-  }
-
-  .bracket-win {
-    margin-top: 0.25rem;
-    padding-top: 0.25rem;
-    border-top: 1px dashed #e2e8f0;
-    font-size: 0.78rem;
-  }
-
-  .small-w {
-    font-size: 0.72rem;
   }
 
   .muted {

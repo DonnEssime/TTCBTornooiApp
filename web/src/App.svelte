@@ -16,6 +16,8 @@
     compareBracketMatchId,
     compareBracketMatchIdString,
     findBracketRoundForPlayerPairing,
+    formatBracketSlotPlayerLabel,
+    matchPlayersResolvedForBracketPhaseList,
     gameWinner,
     generateBracket,
     tournamentUsesClassTabs,
@@ -518,7 +520,13 @@
       if (!bm.seedA || !bm.seedB || bm.winner) continue;
       const mid = `match-${bm.id}`;
       const m = t.matches[mid];
-      if (m && m.status === 'scheduled') out.push(m);
+      if (
+        m &&
+        m.status === 'scheduled' &&
+        matchPlayersResolvedForBracketPhaseList(t, m, undefined)
+      ) {
+        out.push(m);
+      }
     }
     return out.sort((a, b) => {
       const ma = /^match-(m\d+)$/.exec(a.id);
@@ -788,6 +796,7 @@
   function matchesForBracketRound(t: Tournament, round: number): Match[] {
     return Object.values(t.matches).filter((m) => {
       if (m.groupId) return false;
+      if (!matchPlayersResolvedForBracketPhaseList(t, m, undefined)) return false;
       return findBracketRoundForPlayerPairing(t, m.playerA, m.playerB) === round;
     });
   }
@@ -858,9 +867,9 @@
     }
   }
 
-  function bracketSlotTitle(m: BracketMatch, side: 'a' | 'b', t: Tournament): string {
+  function bracketSlotTitle(m: BracketMatch, side: 'a' | 'b', t: Tournament, bracketClassId?: string): string {
     const id = side === 'a' ? m.seedA : m.seedB;
-    if (id) return t.players[id]?.name ?? id;
+    if (id) return formatBracketSlotPlayerLabel(t, id, bracketClassId);
     if (m.id.startsWith('__ph-')) return '—';
     return '--empty--';
   }
@@ -1203,6 +1212,7 @@
     const slice = classSlice(t, classId);
     return Object.values(t.matches).filter((m) => {
       if (m.groupId) return false;
+      if (!matchPlayersResolvedForBracketPhaseList(t, m, classId)) return false;
       for (const bm of slice.bracketMatches) {
         if (bm.round !== round || !bm.seedA || !bm.seedB) continue;
         const same =
@@ -2141,9 +2151,11 @@
               {#if tournament.bracketMatches.length > 0}
                 <h3 class="h3">Knockout bracket</h3>
                 <p class="muted small">
-                  Single view: round&nbsp;1 on the outside, each round a step toward the final in the middle. Names when known,
-                  <span class="mono">--empty--</span> for bye slots, “—” for placeholders. Uses the same shuffle key as the tournament
-                  name.
+                  Single view: round&nbsp;1 on the outside, each round a step toward the final in the middle. Player names
+                  appear once their group is fully played; until then slots show
+                  <span class="mono">group … place …</span> from current standings order.
+                  <span class="mono">--empty--</span> is a bye slot; “—” is a structural placeholder. Uses the same shuffle
+                  key as the tournament name.
                 </p>
                 <BracketStreamView
                   cols={previewBracketColumns(
@@ -2154,7 +2166,6 @@
                   )}
                   {tournament}
                   slotTitle={bracketSlotTitle}
-                  playerLabel={(id) => playerLabel(id)}
                   ariaLabel="Knockout bracket"
                 />
                 {#if DEBUG_UI}
@@ -2193,13 +2204,20 @@
                         {#each bracketMatchesForRound(tournament.bracketMatches, round) as m (m.id)}
                           <tr>
                             <td><code>{m.id}</code></td>
-                            <td>{playerLabel(m.seedA)} vs {playerLabel(m.seedB)}</td>
+                            <td>
+                              {m.seedA ? formatBracketSlotPlayerLabel(tournament, m.seedA, undefined) : '—'} vs {m.seedB
+                                ? formatBracketSlotPlayerLabel(tournament, m.seedB, undefined)
+                                : '—'}
+                            </td>
                             <td>{m.winner ? playerLabel(m.winner) : '—'}</td>
                           </tr>
                         {/each}
                       </tbody>
                     </table>
                     <p class="muted small bracket-round-matches-head">Matches this round</p>
+                    <p class="muted small">
+                      A pairing appears here only when both players are known (their groups are fully finished).
+                    </p>
                     {#each matchesForBracketRound(tournament, round) as match (match.id)}
                       <article class="match-card">
                         <header>
@@ -2219,7 +2237,7 @@
                         {/if}
                       </article>
                     {:else}
-                      <p class="muted small">No player matches mapped to this bracket round yet.</p>
+                      <p class="muted small">No pairings ready yet — finish both players’ groups to enter scores here.</p>
                     {/each}
                   </div>
                 {/each}
@@ -2238,7 +2256,8 @@
                 <ul class="plain-list">
                   {#each finals as m (m.id)}
                     <li>
-                      <strong>{playerLabel(m.seedA)}</strong> vs <strong>{playerLabel(m.seedB)}</strong>
+                      <strong>{m.seedA ? formatBracketSlotPlayerLabel(tournament, m.seedA, undefined) : '—'}</strong> vs
+                      <strong>{m.seedB ? formatBracketSlotPlayerLabel(tournament, m.seedB, undefined) : '—'}</strong>
                       — winner: {m.winner ? playerLabel(m.winner) : '—'}
                     </li>
                   {/each}
@@ -2434,8 +2453,9 @@
                 {#if slice.bracketMatches.length > 0}
                   <h3 class="h3">Knockout bracket</h3>
                   <p class="muted small">
-                    Same centered layout as the global bracket: outside rounds feed toward the final. Names when known,
-                    <span class="mono">--empty--</span> for byes, “—” for placeholders.
+                    Same centered layout as the global bracket. Player names appear once their group is fully played; until
+                    then slots show <span class="mono">group … place …</span> from current standings order.
+                    <span class="mono">--empty--</span> is a bye; “—” is a structural placeholder.
                   </p>
                   <BracketStreamView
                     cols={previewBracketColumns(
@@ -2446,7 +2466,7 @@
                     )}
                     {tournament}
                     slotTitle={bracketSlotTitle}
-                    playerLabel={(id) => playerLabel(id)}
+                    bracketClassId={cid}
                     ariaLabel="Class knockout bracket"
                     emptyMessage="No class entrants — enable this class for players on the Players tab."
                   />
@@ -2486,13 +2506,20 @@
                           {#each bracketMatchesForRound(slice.bracketMatches, round) as m (m.id)}
                             <tr>
                               <td><code>{m.id}</code></td>
-                              <td>{playerLabel(m.seedA)} vs {playerLabel(m.seedB)}</td>
+                              <td>
+                                {m.seedA ? formatBracketSlotPlayerLabel(tournament, m.seedA, cid) : '—'} vs {m.seedB
+                                  ? formatBracketSlotPlayerLabel(tournament, m.seedB, cid)
+                                  : '—'}
+                              </td>
                               <td>{m.winner ? playerLabel(m.winner) : '—'}</td>
                             </tr>
                           {/each}
                         </tbody>
                       </table>
                       <p class="muted small bracket-round-matches-head">Matches this round</p>
+                      <p class="muted small">
+                        A pairing appears here only when both players are known (their groups are fully finished).
+                      </p>
                       {#each matchesForClassBracketRound(tournament, cid, round) as match (match.id)}
                         <article class="match-card">
                           <header>
@@ -2512,7 +2539,7 @@
                           {/if}
                         </article>
                       {:else}
-                        <p class="muted small">No player matches for this class bracket round yet.</p>
+                        <p class="muted small">No pairings ready yet — finish both players’ groups to enter scores here.</p>
                       {/each}
                     </div>
                   {/each}
@@ -2536,7 +2563,8 @@
                   <ul class="plain-list">
                     {#each finals as m (m.id)}
                       <li>
-                        <strong>{playerLabel(m.seedA)}</strong> vs <strong>{playerLabel(m.seedB)}</strong>
+                        <strong>{m.seedA ? formatBracketSlotPlayerLabel(tournament, m.seedA, cid) : '—'}</strong> vs
+                        <strong>{m.seedB ? formatBracketSlotPlayerLabel(tournament, m.seedB, cid) : '—'}</strong>
                         — winner: {m.winner ? playerLabel(m.winner) : '—'}
                       </li>
                     {/each}
