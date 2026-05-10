@@ -1286,7 +1286,7 @@
             <label class="field-block">
               <span class="field-label">Name</span>
               <input
-                class="grow draft-tournament-name-input"
+                class="draft-tournament-name-input"
                 type="text"
                 bind:value={draftTournamentName}
                 maxlength="120"
@@ -2435,11 +2435,31 @@
     color: #0f172a;
   }
 
-  .grow.draft-tournament-name-input {
-    padding: 0.28rem 0.55rem;
-    min-height: 0;
-    line-height: 1.35;
+  /**
+   * Do not combine with `.grow` here: `.field-block` is a column flex container, and
+   * `.grow` uses `flex: 1 1 12rem` (main axis = height), which stretches the control and
+   * fights `height` + `min-height: auto` intrinsic minimums.
+   */
+  .draft-tournament-name-input {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    font: inherit;
     font-size: 0.95rem;
+    padding: 0 0.55rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background: #fff;
+    color: inherit;
+    --draft-name-line: calc(0.95rem * 1.35);
+    height: calc(var(--draft-name-line) * 1.5);
+    line-height: calc(var(--draft-name-line) * 1.5 - 2px);
+  }
+
+  .draft-tournament-name-input:focus {
+    outline: none;
+    border-color: #16a34a;
+    box-shadow: 0 0 0 2px rgb(22 163 74 / 12%);
   }
 
   .title-input:focus {

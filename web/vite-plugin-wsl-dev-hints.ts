@@ -1,4 +1,17 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Plugin } from 'vite';
+
+const pluginDir = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * True when Vite runs in WSL and this package lives on a Windows mount (`/mnt/c/...`).
+ * File watchers that rely on Linux inotify often miss saves from Windows editors; Vite
+ * enables polling in that case (see `vite.config.ts` `server.watch`).
+ */
+export function isWslWindowsDrvFsRepo(): boolean {
+  return Boolean(process.env.WSL_DISTRO_NAME) && path.resolve(pluginDir).startsWith('/mnt/');
+}
 
 /**
  * When the dev server runs inside WSL but the browser runs on Windows, `http://localhost:5173`
@@ -11,6 +24,11 @@ export function wslDevHints(): Plugin {
     configureServer(server) {
       server.httpServer?.once('listening', () => {
         if (!process.env.WSL_DISTRO_NAME) return;
+        if (isWslWindowsDrvFsRepo()) {
+          console.log(
+            '\n\x1b[33m[WSL]\x1b[0m File watching uses \x1b[1mpolling\x1b[0m (repo on `/mnt/...`) so edits from Windows/Cursor propagate to Vite HMR.\n',
+          );
+        }
         console.log(
           '\n\x1b[33m[WSL]\x1b[0m If Windows/Edge shows \x1b[33mERR_CONNECTION_REFUSED\x1b[0m for localhost:5173 but this log says Vite is ready:\n' +
             '  \x1b[36m1)\x1b[0m Prefer \x1b[1mWSL networkingMode=mirrored\x1b[0m (Windows 11 22H2+): create/edit \x1b[1m%USERPROFILE%\\.wslconfig\x1b[0m:\n' +
