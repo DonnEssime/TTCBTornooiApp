@@ -10,6 +10,8 @@ import {
   compareBracketMatchIdString,
   ensureBracketPhasePlayerMatches,
   formatBracketSlotPlayerLabel,
+  singleEliminationPlacementRows,
+  bracketMatchLoser,
   matchPlayersResolvedForBracketPhaseList,
   settleBracketWinners,
   scheduleRound,
@@ -264,6 +266,59 @@ describe('Bracket generation', () => {
       status: 'scheduled',
     });
     expect(t.matches['match-m1']).toBeUndefined();
+  });
+});
+
+describe('Single-elimination placement order', () => {
+  it('returns null without a decided final', () => {
+    expect(singleEliminationPlacementRows([])).toBeNull();
+    expect(
+      singleEliminationPlacementRows([
+        { id: 'm1', seedA: 'p1', seedB: 'p2', round: 1 },
+        { id: 'm2', seedA: 'p1', seedB: 'p2', round: 2 },
+      ]),
+    ).toBeNull();
+  });
+
+  it('orders four players 1–4 from final back to semis', () => {
+    const bm = [
+      { id: 'm1', seedA: 'p1', seedB: 'p4', round: 1, winner: 'p1' },
+      { id: 'm2', seedA: 'p2', seedB: 'p3', round: 1, winner: 'p2' },
+      { id: 'm3', seedA: 'p1', seedB: 'p2', round: 2, winner: 'p1' },
+    ];
+    const rows = singleEliminationPlacementRows(bm)!;
+    expect(rows.map((r) => [r.place, r.playerId])).toEqual([
+      [1, 'p1'],
+      [2, 'p2'],
+      [3, 'p4'],
+      [4, 'p3'],
+    ]);
+  });
+
+  it('orders eight players so quarter losers map to places 5–8 by opponent rank', () => {
+    const bm = [
+      { id: 'm1', seedA: 'p1', seedB: 'p8', round: 1, winner: 'p1' },
+      { id: 'm2', seedA: 'p2', seedB: 'p7', round: 1, winner: 'p2' },
+      { id: 'm3', seedA: 'p3', seedB: 'p6', round: 1, winner: 'p3' },
+      { id: 'm4', seedA: 'p4', seedB: 'p5', round: 1, winner: 'p4' },
+      { id: 'm5', seedA: 'p1', seedB: 'p2', round: 2, winner: 'p1' },
+      { id: 'm6', seedA: 'p3', seedB: 'p4', round: 2, winner: 'p3' },
+      { id: 'm7', seedA: 'p1', seedB: 'p3', round: 3, winner: 'p1' },
+    ];
+    const rows = singleEliminationPlacementRows(bm)!;
+    const byId = Object.fromEntries(rows.map((r) => [r.playerId, r.place]));
+    expect(byId['p1']).toBe(1);
+    expect(byId['p3']).toBe(2);
+    expect(byId['p2']).toBe(3);
+    expect(byId['p4']).toBe(4);
+    expect(byId['p8']).toBe(5);
+    expect(byId['p6']).toBe(6);
+    expect(byId['p7']).toBe(7);
+    expect(byId['p5']).toBe(8);
+  });
+
+  it('bracketMatchLoser returns the non-winner when both seeds exist', () => {
+    expect(bracketMatchLoser({ id: 'm', seedA: 'a', seedB: 'b', round: 1, winner: 'a' })).toBe('b');
   });
 });
 

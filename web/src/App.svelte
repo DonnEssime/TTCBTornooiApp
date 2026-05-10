@@ -18,6 +18,7 @@
     findBracketRoundForPlayerPairing,
     formatBracketSlotPlayerLabel,
     matchPlayersResolvedForBracketPhaseList,
+    singleEliminationPlacementRows,
     gameWinner,
     generateBracket,
     tournamentUsesClassTabs,
@@ -2252,6 +2253,7 @@
 
               {#if tournament.bracketMatches.length > 0 && lastBracketRound > 0}
                 {@const finals = bracketMatchesForRound(tournament.bracketMatches, lastBracketRound)}
+                {@const placementRows = singleEliminationPlacementRows(tournament.bracketMatches)}
                 <h3 class="h3">Latest bracket round ({lastBracketRound})</h3>
                 <ul class="plain-list">
                   {#each finals as m (m.id)}
@@ -2262,6 +2264,24 @@
                     </li>
                   {/each}
                 </ul>
+                {#if placementRows}
+                  <h3 class="h3">Knockout placement</h3>
+                  <p class="muted small">
+                    Places 1–2 from the final; each earlier round’s losers are ordered by how far the player who beat them
+                    went (e.g. place 3 = semi loser to the champion, places 5–8 = quarter losers to places 1–4).
+                  </p>
+                  <ol class="plain-list placement-ol">
+                    {#each placementRows as row (row.playerId)}
+                      <li>
+                        <span class="placement-num">{row.place}.</span>
+                        {playerLabel(row.playerId)}
+                      </li>
+                    {/each}
+                  </ol>
+                {:else if tournament.bracketMatches.length > 0}
+                  <h3 class="h3">Knockout placement</h3>
+                  <p class="muted small">Complete the final match to list full knockout finishing order.</p>
+                {/if}
               {/if}
 
               <h3 class="h3">Finished player matches</h3>
@@ -2559,6 +2579,7 @@
                 <p class="muted small">Snapshot for this class track.</p>
                 {#if slice.bracketMatches.length > 0 && lastClassRound > 0}
                   {@const finals = bracketMatchesForRound(slice.bracketMatches, lastClassRound)}
+                  {@const classPlacementRows = singleEliminationPlacementRows(slice.bracketMatches)}
                   <h3 class="h3">Latest bracket round ({lastClassRound})</h3>
                   <ul class="plain-list">
                     {#each finals as m (m.id)}
@@ -2569,6 +2590,23 @@
                       </li>
                     {/each}
                   </ul>
+                  {#if classPlacementRows}
+                    <h3 class="h3">Knockout placement</h3>
+                    <p class="muted small">
+                      Places 1–2 from the final; earlier exits ordered by how far the opponent who beat you went.
+                    </p>
+                    <ol class="plain-list placement-ol">
+                      {#each classPlacementRows as row (row.playerId)}
+                        <li>
+                          <span class="placement-num">{row.place}.</span>
+                          {playerLabel(row.playerId)}
+                        </li>
+                      {/each}
+                    </ol>
+                  {:else}
+                    <h3 class="h3">Knockout placement</h3>
+                    <p class="muted small">Complete the final match to list full knockout finishing order.</p>
+                  {/if}
                 {/if}
                 <h3 class="h3">Finished matches (players in this class)</h3>
                 {#if classFinished.length === 0}
@@ -3464,6 +3502,23 @@
   .plain-list {
     margin: 0.25rem 0 0;
     padding-left: 1.15rem;
+  }
+
+  .placement-ol {
+    list-style: none;
+    padding-left: 0;
+  }
+
+  .placement-ol li {
+    margin: 0.22rem 0;
+    font-size: 0.95rem;
+  }
+
+  .placement-num {
+    display: inline-block;
+    min-width: 1.85rem;
+    font-weight: 600;
+    color: #334155;
   }
 
   .result-line {
