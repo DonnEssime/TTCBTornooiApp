@@ -14,8 +14,10 @@ import {
   type GroupDefinition,
   type BracketMatch,
   type Match,
+  type BracketSeedingMode,
   isBracketRoundCompleteIn,
   isMatchScoreLegal,
+  materializeReadyNextRoundBracketSlots,
   playerMatchWinner,
   propagateBracketSeedsFromChildWinners,
   recomputeClassTournamentSlices,
@@ -28,7 +30,9 @@ import {
   tournamentUsesClassTabs,
   isPlayerDisplayNameTaken,
   bracketScopeForPlayerMatch,
+  bracketMatchRound,
   canMutateExistingGroupPhaseMatchScores,
+  eliminateLowestRankedPlayersInBracketRound,
 } from './model';
 
 export type CommandType =
@@ -49,6 +53,7 @@ export type CommandType =
   | 'SetClassGroups'
   | 'GenerateGroupRoundRobin'
   | 'GenerateBracket'
+  | 'EliminateLowestBracketRound'
   | 'AssignTables'
   | 'AdvanceBracketRound'
   | 'RenamePlayer'
@@ -157,6 +162,19 @@ export interface GenerateBracketCommand extends CommandBase {
     shuffleKey?: string;
     cullByGroupPlacement?: boolean;
     classId?: string;
+    /** When omitted, defaults to heuristic ordering in {@link generateBracket}. */
+    bracketSeedingMode?: BracketSeedingMode;
+  };
+}
+
+export interface EliminateLowestBracketRoundCommand extends CommandBase {
+  type: 'EliminateLowestBracketRound';
+  payload: {
+    round: number;
+    /** Per-class bracket slice; omit for the main draw. */
+    classId?: string;
+    /** Non-empty salt so random tie-breaks replay deterministically. */
+    tieBreakSalt: string;
   };
 }
 
@@ -198,6 +216,7 @@ export type Command =
   | SetClassGroupsCommand
   | GenerateGroupRoundRobinCommand
   | GenerateBracketCommand
+  | EliminateLowestBracketRoundCommand
   | AssignTablesCommand
   | AdvanceBracketRoundCommand
   | RenamePlayerCommand
@@ -583,6 +602,12 @@ export class CommandRunner {
         if (!match) {
           return { success: false, reason: 'Match not found' };
         }
+        if (match.status === 'eliminated' || match.status === 'forfeit') {
+          return {
+            success: false,
+            reason: 'This match was already decided without entering game scores (forfeit / elimination).',
+          };
+        }
         const scope = bracketScopeForPlayerMatch(tournament, match);
         const round =
           match.groupId === undefined
@@ -644,6 +669,9 @@ export class CommandRunner {
           delete match.winner;
           this.reconcileBracketAfterScore(tournament);
           return { success: true };
+        }
+        if (!match.groupId && match.status === 'eliminated') {
+          return { success: false, reason: 'Eliminated results cannot be cleared here; use undo if applicable.' };
         }
         const scope = bracketScopeForPlayerMatch(tournament, match);
         const round =
@@ -1039,19 +1067,43 @@ export class CommandRunner {
         if (Object.keys(tournament.teamMatches).length > 0) {
           return { success: false, reason: 'Cannot generate bracket while a team vs team match exists' };
         }
-        const { fillByes, cullToPowerOfTwo, shuffleKey, cullByGroupPlacement, classId } = command.payload;
+        const { cullToPowerOfTwo, shuffleKey, cullByGroupPlacement, classId, bracketSeedingMode } = command.payload;
         try {
           const bm = generateBracket(tournament.seedings, tournament, {
-            fillByes: fillByes ?? true,
+            fillByes: true,
             cullToPowerOfTwo: cullToPowerOfTwo ?? false,
             ...(shuffleKey !== undefined ? { shuffleKey } : {}),
             ...(cullByGroupPlacement ? { cullByGroupPlacement: true } : {}),
             ...(classId !== undefined ? { classId } : {}),
+            ...(bracketSeedingMode !== undefined ? { bracketSeedingMode } : {}),
           });
           applyBracketToTournament(tournament, bm);
         } catch (e) {
           return { success: false, reason: e instanceof Error ? e.message : String(e) };
         }
+        return { success: true };
+      }
+      case 'EliminateLowestBracketRound': {
+        if (tournamentUsesClassTabs(tournament)) {
+          return {
+            success: false,
+            reason:
+              'Global bracket actions are disabled when multiple competition classes are defined; use the class track controls instead.',
+          };
+        }
+        if (Object.keys(tournament.teamMatches).length > 0) {
+          return { success: false, reason: 'Bracket elimination is not available alongside a team vs team match' };
+        }
+        const { round, classId, tieBreakSalt } = command.payload;
+        const r = Math.floor(Number(round));
+        if (!Number.isFinite(r) || r < 1) {
+          return { success: false, reason: 'round must be a positive integer' };
+        }
+        const err = eliminateLowestRankedPlayersInBracketRound(tournament, r, classId, tieBreakSalt);
+        if (err) {
+          return { success: false, reason: err };
+        }
+        this.reconcileBracketAfterScore(tournament);
         return { success: true };
       }
       case 'AssignTables': {
@@ -1111,8 +1163,14 @@ export class CommandRunner {
     propagateBracketSeedsFromChildWinners(bracketMatches);
     settleBracketWinnersIn(tournament, bracketMatches);
     syncBracketMatchPlayerRows(tournament, bracketMatches);
+    if (materializeReadyNextRoundBracketSlots(bracketMatches)) {
+      settleBracketWinnersIn(tournament, bracketMatches);
+      propagateBracketSeedsFromChildWinners(bracketMatches);
+      settleBracketWinnersIn(tournament, bracketMatches);
+      syncBracketMatchPlayerRows(tournament, bracketMatches);
+    }
     if (allowAdvance) {
-      const currentRound = Math.max(0, ...bracketMatches.map((m) => m.round));
+      const currentRound = Math.max(0, ...bracketMatches.map((m) => bracketMatchRound(m)));
       if (isBracketRoundCompleteIn(bracketMatches, currentRound)) {
         advanceBracketRound(tournament);
       }

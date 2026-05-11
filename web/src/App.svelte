@@ -1,6 +1,7 @@
 <script lang="ts">
   import type {
     BracketMatch,
+    BracketSeedingMode,
     ClassTournamentSlice,
     Command,
     GameScore,
@@ -15,14 +16,20 @@
     tournamentControllerFromCommandLog,
     compareBracketMatchId,
     compareBracketMatchIdString,
+    bracketMatchRound,
+    bracketWinnerToNextRoundSeed,
     bracketPlayerMatchId,
     canMutateBracketPlayerMatch,
     canMutateExistingGroupPhaseMatchScores,
+    equalSizedGroupBracketMeta,
     formatBracketSlotPlayerLabel,
+    isExactClosedFormBracketGrid,
+    supportsExtendedClosedFormBracketGrid,
     matchPlayersResolvedForBracketPhaseList,
     singleEliminationPlacementRows,
     gameWinner,
     generateBracket,
+    groupNumberedTitle,
     tournamentUsesClassTabs,
     isGameScoreLegal,
     isMatchScoreLegal,
@@ -31,6 +38,7 @@
     shuffleDeterministic,
   } from 'ttc-tornooiapp';
   import BracketStreamView from './BracketStreamView.svelte';
+  import TournamentOverview from './TournamentOverview.svelte';
   import { bracketTreeFromColumns, type BracketBNode } from './bracketStream/buildTree';
 
   /** When true, show developer shortcuts (bulk players, simulated group scores). */
@@ -39,17 +47,20 @@
   /** Draft count for [DEBUG] Fill players (parsed on click). */
   let debugFillPlayerCount = $state('9');
 
+  /** How to order participants before single-elimination seeding (see {@link generateBracket}). */
+  let bracketSeedingChoice = $state<BracketSeedingMode>('heuristic');
+
   function newCompetitionClassId(): string {
     return `cid-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
   }
 
   /** Sub-views for the active tournament (single Bracket tab holds the full knockout phase). */
-  type InnerTab = 'players' | 'groups' | 'bracket' | 'results';
+  type InnerTab = 'overview' | 'players' | 'groups' | 'bracket' | 'results';
   type ClassInnerTab = Exclude<InnerTab, 'players'>;
 
   type SessionNav =
     | { kind: 'single'; inner: InnerTab }
-    | { kind: 'multi'; screen: 'players' | { classId: string; inner: ClassInnerTab } };
+    | { kind: 'multi'; screen: 'players' | 'overview' | { classId: string; inner: ClassInnerTab } };
 
   type TournamentFormat = 'group-bracket' | 'bracket-only' | 'team-vs-team';
 
@@ -91,6 +102,15 @@
   let handicapFocusPid = $state<string | null>(null);
 
   let tournament = $state<Tournament>(createTournament());
+  const bracketGroupShapeMeta = $derived.by(() => equalSizedGroupBracketMeta(tournament, undefined));
+  const canPickClosedFormSeeding = $derived(
+    Boolean(bracketGroupShapeMeta && isExactClosedFormBracketGrid(bracketGroupShapeMeta.G, bracketGroupShapeMeta.S)),
+  );
+  const canPickExtendClosedFormSeeding = $derived(
+    Boolean(
+      bracketGroupShapeMeta && supportsExtendedClosedFormBracketGrid(bracketGroupShapeMeta.G, bracketGroupShapeMeta.S),
+    ),
+  );
   let status = $state<string | null>(null);
   /** Export/import activity lines for the Settings “Recent activity” list. */
   let recentTournamentNotes = $state<string[]>([]);
@@ -213,6 +233,10 @@
     }
     if (out.length === 0 || !isMatchScoreLegal(out)) return null;
     return out;
+  }
+
+  function gameScoresToDraftRows(scores: GameScore[]): ScoreRow[] {
+    return scores.map((g) => ({ a: String(g.playerA), b: String(g.playerB) }));
   }
 
   function setScoreModalCell(mid: string, rowIndex: number, col: 'a' | 'b', raw: string): void {
@@ -418,7 +442,7 @@
   }
 
   function groupDisplayLabel(g: GroupDefinition): string {
-    return g.label?.trim() || g.id;
+    return groupNumberedTitle(g);
   }
 
   /** Sort group definitions 1, 2, … numerically when ids are numeric. */
@@ -678,7 +702,7 @@
       if (m.status !== 'scheduled') continue;
       if (m.scores.length > 0) continue;
       if (!matchPlayersResolvedForBracketPhaseList(t, m, undefined)) continue;
-      entries.push({ m, round: bm.round });
+      entries.push({ m, round: bracketMatchRound(bm) });
     }
     return entries;
   }
@@ -1002,7 +1026,9 @@
   }
 
   function uniqueSortedRounds(matches: BracketMatch[]): number[] {
-    const set = new Set(matches.map((m) => m.round));
+    const set = new Set(
+      matches.map((m) => bracketMatchRound(m)).filter((r) => Number.isFinite(r) && r >= 1),
+    );
     return [...set].sort((a, b) => a - b);
   }
 
@@ -1015,17 +1041,34 @@
 
   /** Full knockout column layout: real rounds plus synthetic later rounds until final. */
   function buildBracketColumnsForDisplay(matches: BracketMatch[]): BracketMatch[][] {
-    const r1 = matches.filter((m) => m.round === 1).sort(compareBracketMatchId);
+    const r1 = matches.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
     if (r1.length === 0) return [];
     const leafSlots = r1.length * 2;
     const depth = Math.round(Math.log2(leafSlots));
     const cols: BracketMatch[][] = [];
     for (let r = 1; r <= depth; r++) {
       const expected = leafSlots / 2 ** r;
-      const real = matches.filter((m) => m.round === r).sort(compareBracketMatchId);
-      if (real.length === expected) cols.push(real);
-      else if (real.length > 0) cols.push(real);
-      else cols.push(syntheticBracketRound(r, expected));
+      const real = matches.filter((m) => bracketMatchRound(m) === r).sort(compareBracketMatchId);
+      if (real.length === expected) {
+        cols.push(real);
+        continue;
+      }
+      if (real.length === 0) {
+        cols.push(syntheticBracketRound(r, expected));
+        continue;
+      }
+      // Some bracket states legitimately contain a *partial* later round (e.g. byes / best-effort
+      // materialization). For display we must still provide a full column, otherwise `buildTree`
+      // indexes beyond the array and rendering hard-crashes.
+      if (real.length < expected) {
+        const ph = syntheticBracketRound(r, expected - real.length).map((m, i) => ({
+          ...m,
+          id: `__ph-${r}-${real.length + i}`,
+        }));
+        cols.push([...real, ...ph]);
+        continue;
+      }
+      cols.push(real);
     }
     return cols;
   }
@@ -1041,8 +1084,14 @@
       applyFeederWinners(node.left);
       applyFeederWinners(node.right);
       const m = node.match;
-      if (!m.seedA && node.left.match.winner) m.seedA = node.left.match.winner;
-      if (!m.seedB && node.right.match.winner) m.seedB = node.right.match.winner;
+      if (!m.seedA) {
+        const w = bracketWinnerToNextRoundSeed(node.left.match.winner);
+        if (w) m.seedA = w;
+      }
+      if (!m.seedB) {
+        const w = bracketWinnerToNextRoundSeed(node.right.match.winner);
+        if (w) m.seedB = w;
+      }
     }
     if (root) applyFeederWinners(root);
     return colsCopy;
@@ -1061,6 +1110,7 @@
         fillByes: true,
         cullToPowerOfTwo: false,
         shuffleKey: shuffleKey.trim() || 'Tournament',
+        bracketSeedingMode: bracketSeedingChoice,
       });
       return displayBracketColumns(r1);
     } catch {
@@ -1096,6 +1146,7 @@
     if (!multi) {
       if (nav.kind === 'multi') {
         if (nav.screen === 'players') return { kind: 'single', inner: 'players' };
+        if (nav.screen === 'overview') return { kind: 'single', inner: 'overview' };
         const inner0 = nav.screen.inner as string;
         const inner = (inner0 === 'bracket-setup' ? 'groups' : nav.screen.inner) as InnerTab;
         return { kind: 'single', inner: normalizeInnerTab(t, inner) };
@@ -1108,6 +1159,9 @@
     if (nav.kind === 'single') {
       if (nav.inner === 'players') {
         return { kind: 'multi', screen: 'players' };
+      }
+      if (nav.inner === 'overview') {
+        return { kind: 'multi', screen: 'overview' };
       }
       const first = t.classDefinitions[0];
       if (!first) {
@@ -1122,6 +1176,9 @@
       return { kind: 'multi', screen: { classId: first.id, inner } };
     }
     if (nav.screen === 'players') {
+      return nav;
+    }
+    if (nav.screen === 'overview') {
       return nav;
     }
     let { classId, inner } = nav.screen;
@@ -1157,42 +1214,49 @@
   }
 
   function pull(): void {
-    const s = getActiveSession();
-    if (!s) {
-      tournament = createTournament();
-      return;
-    }
-    const t = structuredClone(s.controller.getTournament());
-    tournament = t;
-
-    const navNext = normalizeSessionNav(t, s.nav);
-    if (JSON.stringify(navNext) !== JSON.stringify(s.nav)) {
-      patchActiveSession({ nav: navNext });
-    }
-
-    const sAfter = getActiveSession();
-    if (!sAfter) return;
-    const lastS = lastSetSeedingsCommandId(sAfter.controller.getCommandLog());
-    if (t.seedings.length > 0) {
-      const synced = [...t.seedings];
-      if (
-        synced.join(',') !== sAfter.playerOrder.join(',') ||
-        (lastS && lastS !== sAfter.lastSeedingCommandId)
-      ) {
-        patchActiveSession({
-          playerOrder: synced,
-          lastSeedingCommandId: lastS || sAfter.lastSeedingCommandId,
-        });
+    try {
+      const s = getActiveSession();
+      if (!s) {
+        tournament = createTournament();
+        return;
       }
-    } else {
-      /** All seedings undone or cleared: keep session list in sync (avoid ghost ids with no players). */
-      if (sAfter.playerOrder.length > 0 || sAfter.lastSeedingCommandId) {
-        patchActiveSession({
-          playerOrder: [],
-          lastSeedingCommandId: '',
-        });
+      const t = structuredClone(s.controller.getTournament());
+      // If the score modal is open for a match that doesn't exist in the next snapshot,
+      // clear it *before* swapping `tournament` to avoid rendering with `sm = undefined`.
+      if (scoreModalMatchId && !t.matches[scoreModalMatchId]) {
+        scoreModalMatchId = null;
+        scoreModalHint = null;
       }
-    }
+      tournament = t;
+
+      const navNext = normalizeSessionNav(t, s.nav);
+      if (JSON.stringify(navNext) !== JSON.stringify(s.nav)) {
+        patchActiveSession({ nav: navNext });
+      }
+
+      const sAfter = getActiveSession();
+      if (!sAfter) return;
+      const lastS = lastSetSeedingsCommandId(sAfter.controller.getCommandLog());
+      if (t.seedings.length > 0) {
+        const synced = [...t.seedings];
+        if (
+          synced.join(',') !== sAfter.playerOrder.join(',') ||
+          (lastS && lastS !== sAfter.lastSeedingCommandId)
+        ) {
+          patchActiveSession({
+            playerOrder: synced,
+            lastSeedingCommandId: lastS || sAfter.lastSeedingCommandId,
+          });
+        }
+      } else {
+        /** All seedings undone or cleared: keep session list in sync (avoid ghost ids with no players). */
+        if (sAfter.playerOrder.length > 0 || sAfter.lastSeedingCommandId) {
+          patchActiveSession({
+            playerOrder: [],
+            lastSeedingCommandId: '',
+          });
+        }
+      }
 
     const log = sAfter.controller.getCommandLog();
     const lastSG = lastCommandIdOfType(log, 'SetGroups');
@@ -1223,25 +1287,32 @@
     }
     setScoreDrafts(next);
 
-    if (scoreModalMatchId && !t.matches[scoreModalMatchId]) {
+      if (scoreModalMatchId && !t.matches[scoreModalMatchId]) {
+        scoreModalMatchId = null;
+        scoreModalHint = null;
+      }
+
+      const po = sAfter.playerOrder;
+      const hd: Record<string, number> = { ...handicapDrafts };
+      for (const pid of po) {
+        const h = t.players[pid]?.handicap ?? 0;
+        if (handicapFocusPid !== pid) {
+          hd[pid] = h;
+        } else if (!(pid in hd)) {
+          hd[pid] = h;
+        }
+      }
+      for (const k of Object.keys(hd)) {
+        if (!po.includes(k)) delete hd[k];
+      }
+      handicapDrafts = hd;
+    } catch (e) {
+      // Avoid hard-locking the UI on a render-triggering exception; surface it.
+      console.error('pull() failed', e);
       scoreModalMatchId = null;
       scoreModalHint = null;
+      status = `Internal UI error while updating: ${e instanceof Error ? e.message : String(e)}`;
     }
-
-    const po = sAfter.playerOrder;
-    const hd: Record<string, number> = { ...handicapDrafts };
-    for (const pid of po) {
-      const h = t.players[pid]?.handicap ?? 0;
-      if (handicapFocusPid !== pid) {
-        hd[pid] = h;
-      } else if (!(pid in hd)) {
-        hd[pid] = h;
-      }
-    }
-    for (const k of Object.keys(hd)) {
-      if (!po.includes(k)) delete hd[k];
-    }
-    handicapDrafts = hd;
   }
 
   function newId(): string {
@@ -1259,6 +1330,17 @@
   function selectSingleTrackTab(tab: InnerTab): void {
     if (!getActiveSession()) return;
     patchActiveSession({ nav: { kind: 'single', inner: tab } });
+  }
+
+  function selectOverviewNav(): void {
+    const s = getActiveSession();
+    if (!s) return;
+    const t = s.controller.getTournament();
+    if (tournamentUsesClassTabs(t)) {
+      patchActiveSession({ nav: { kind: 'multi', screen: 'overview' } });
+    } else {
+      patchActiveSession({ nav: { kind: 'single', inner: 'overview' } });
+    }
   }
 
   function selectPlayersNav(): void {
@@ -1409,7 +1491,7 @@
     pull();
   }
 
-  function generateBracketAndRoundOneMatches(mode: 'fillByes' | 'eliminatePlayers'): void {
+  function generateKnockoutBracket(): void {
     status = null;
     const s = getActiveSession();
     if (!s) return;
@@ -1437,23 +1519,16 @@
     }
     const genId = `cmd-gen-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
     const shuffleKey = s.tournamentName.trim() || 'Tournament';
-    const fill = mode === 'fillByes';
-    const cull = mode === 'eliminatePlayers';
-    const r = c.generateBracket(
-      fill,
-      cull,
-      deps,
-      genId,
-      shuffleKey,
-      cull ? { cullByGroupPlacement: true } : undefined,
-    );
+    const r = c.generateBracket(true, false, deps, genId, shuffleKey, {
+      bracketSeedingMode: bracketSeedingChoice,
+    });
     if (!r.success) {
       status = r.reason ?? 'Bracket generation failed';
       pull();
       return;
     }
     const live = c.getTournament();
-    const r1 = live.bracketMatches.filter((m) => m.round === 1 && m.seedA && m.seedB);
+    const r1 = live.bracketMatches.filter((m) => bracketMatchRound(m) === 1 && m.seedA && m.seedB);
     if (r1.length === 0) {
       status = 'Bracket generated, but no round‑1 pairings with two players.';
       pull();
@@ -1475,10 +1550,29 @@
     if (c.getTournament().bracketMatches.length > 0) {
       patchActiveSession({ nav: { kind: 'single', inner: 'bracket' } });
     }
-    status =
-      mode === 'fillByes'
-        ? 'Bracket generated (byes filled) and round‑1 matches created.'
-        : 'Bracket generated (players culled to a power of two) and round‑1 matches created.';
+    status = 'Knockout bracket generated (byes filled) and round‑1 matches created.';
+    pull();
+  }
+
+  function eliminateBracketRoundByRanking(round: number): void {
+    status = null;
+    const s = getActiveSession();
+    if (!s) return;
+    const salt = crypto.randomUUID();
+    const deps: string[] = s.playerOrder.map((pid) => `cmd-${pid}`);
+    if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
+    if (s.lastSetGroupsCommandId) deps.push(s.lastSetGroupsCommandId);
+    const log = s.controller.getCommandLog();
+    const gen = [...log].reverse().find((c) => c.type === 'GenerateBracket');
+    if (gen) deps.push(gen.id);
+    const cmdId = `cmd-elim-r${round}-${salt.replaceAll('-', '').slice(0, 12)}`;
+    const r = s.controller.eliminateLowestBracketRound(round, deps, salt, cmdId);
+    if (!r.success) {
+      status = r.reason ?? 'Elimination failed';
+      pull();
+      return;
+    }
+    status = `Eliminated lower-ranked players in round ${round} where pairings were still open.`;
     pull();
   }
 
@@ -1508,7 +1602,9 @@
   }
 
   function bracketRows(matches: BracketMatch[]): BracketMatch[] {
-    return [...matches].sort((a, b) => a.round - b.round || compareBracketMatchId(a, b));
+    return [...matches].sort(
+      (a, b) => bracketMatchRound(a) - bracketMatchRound(b) || compareBracketMatchId(a, b),
+    );
   }
 
   function setRoundLock(round: number, locked: boolean): void {
@@ -1645,6 +1741,32 @@
     pull();
   }
 
+  /** DEBUG: random legal BO5, write drafts, then same path as “Save match”. */
+  function debugSimulateOpenScoreModalMatch(): void {
+    if (!DEBUG_UI) return;
+    status = null;
+    scoreModalHint = null;
+    const sm = scoreModalTargetMatch();
+    if (!sm) return;
+    if (!scoreModalCanEditGames()) {
+      scoreModalHint = 'This match cannot be edited (locked or downstream scores exist).';
+      return;
+    }
+    const rng = Math.random;
+    let scores: GameScore[] = [];
+    for (let i = 0; i < 20; i++) {
+      scores = debugRandomLegalBo5Scores(rng);
+      if (isMatchScoreLegal(scores)) break;
+    }
+    if (!isMatchScoreLegal(scores)) {
+      scoreModalHint = 'Internal: could not generate legal scores.';
+      return;
+    }
+    const rows = normalizeScoreRows(gameScoresToDraftRows(scores));
+    setScoreDrafts({ ...scoreDrafts(), [sm.id]: rows });
+    submitScores(sm);
+  }
+
   function summarizeLastCommand(cmd: Command, t: Tournament): string {
     const pn = (id: string | undefined) => (id && t.players[id]?.name) || id || '—';
     const tn = (id: string | undefined) => (id && t.teams[id]?.name) || id || '—';
@@ -1673,8 +1795,18 @@
         return `Created team “${cmd.payload.name}”.`;
       case 'CreateTeamMatch':
         return `Created team match · ${tn(cmd.payload.teamA)} vs ${tn(cmd.payload.teamB)}`;
-      case 'GenerateBracket':
-        return 'Generated bracket.';
+      case 'GenerateBracket': {
+        const mode = cmd.payload.bracketSeedingMode ?? 'heuristic';
+        const label =
+          mode === 'closed_form'
+            ? 'closed-form seeding'
+            : mode === 'extend_closed_form'
+              ? 'extended closed-form seeding'
+              : 'heuristic seeding';
+        return `Generated bracket (${label}, byes filled).`;
+      }
+      case 'EliminateLowestBracketRound':
+        return `Eliminated lower-ranked players in round ${cmd.payload.round} (bureaucratic outcome).`;
       case 'GenerateGroupRoundRobin':
         return cmd.payload.classId ? 'Generated round‑robin for a class track.' : 'Generated group round‑robin.';
       case 'SetGroups': {
@@ -1733,14 +1865,14 @@
       { id: 'bracket', label: 'Bracket' },
     ];
     if (tournament.bracketMatches.length > 0) {
-      tabs.push({ id: 'results', label: 'Final overview' });
+      tabs.push({ id: 'results', label: 'Results' });
     }
     return tabs;
   });
 
   const classSubTabsList = $derived.by((): Array<{ id: ClassInnerTab; label: string }> => {
     const s = getActiveSession();
-    if (!s || s.nav.kind !== 'multi' || s.nav.screen === 'players') {
+    if (!s || s.nav.kind !== 'multi' || s.nav.screen === 'players' || s.nav.screen === 'overview') {
       return [];
     }
     const cid = s.nav.screen.classId;
@@ -1750,9 +1882,16 @@
       { id: 'bracket', label: 'Bracket' },
     ];
     if (rounds.length > 0) {
-      tabs.push({ id: 'results', label: 'Final overview' });
+      tabs.push({ id: 'results', label: 'Results' });
     }
     return tabs;
+  });
+
+  const showOverviewPanel = $derived.by(() => {
+    const s = getActiveSession();
+    if (!s) return false;
+    if (s.nav.kind === 'single') return s.nav.inner === 'overview';
+    return s.nav.screen === 'overview';
   });
 
   const showPlayersPanel = $derived.by(() => {
@@ -1764,7 +1903,8 @@
 
   const multiClassScreen = $derived.by((): { classId: string; inner: ClassInnerTab } | null => {
     const s = getActiveSession();
-    if (!s || s.nav.kind !== 'multi' || s.nav.screen === 'players') return null;
+    if (!s || s.nav.kind !== 'multi') return null;
+    if (s.nav.screen === 'players' || s.nav.screen === 'overview') return null;
     return s.nav.screen;
   });
 
@@ -2010,6 +2150,14 @@
           <button
             type="button"
             class="inner-tab"
+            class:active={showOverviewPanel}
+            onclick={selectOverviewNav}
+          >
+            Overview
+          </button>
+          <button
+            type="button"
+            class="inner-tab"
             class:active={showPlayersPanel}
             onclick={selectPlayersNav}
           >
@@ -2056,7 +2204,22 @@
         {/if}
 
         <div class="inner-panels">
-          {#if showPlayersPanel}
+          {#if showOverviewPanel}
+            <section class="card">
+              <h2 class="h2">Overview</h2>
+              <p class="muted small">
+                Snapshot of player count, phase completion, and matches that are ready to score (both players known).
+              </p>
+              <TournamentOverview
+                {tournament}
+                useClassTabs={useClassTabs}
+                playerLabel={playerLabel}
+                groupDisplayLabel={groupDisplayLabel}
+                onOpenGroupMatch={openScoreModal}
+                onOpenBracketSlot={openBracketPairingModal}
+              />
+            </section>
+          {:else if showPlayersPanel}
             <section class="card">
               <h2 class="h2">Players</h2>
 
@@ -2167,7 +2330,7 @@
               {#if Object.keys(tournament.groups).length === 0}
                 <p class="muted small">
                   Pick a target group size (each group will have that many players, or one fewer where needed). Groups are
-                  named <strong>group 1</strong>, <strong>group 2</strong>, … in seeding order. Creating groups also creates all
+                  named <strong>Group 1</strong>, <strong>Group 2</strong>, … in seeding order. Creating groups also creates all
                   round‑robin matches.
                 </p>
                 <div class="row group-editor-head">
@@ -2311,31 +2474,41 @@
                 Create the knockout draw after groups exist. Round locks and scores apply once the bracket is generated.
               </p>
               {#if tournament.bracketMatches.length === 0}
+                <fieldset class="bracket-seed-fieldset">
+                  <legend class="muted small">Bracket seeding (byes are always used to reach the next power of two)</legend>
+                  <label class="radio-line">
+                    <input type="radio" bind:group={bracketSeedingChoice} value="closed_form" disabled={!canPickClosedFormSeeding} />
+                    <span>
+                      <strong>Closed-form</strong>
+                      — built-in 2×4 / 4×4 / 8×4 layout (only when your group grid matches exactly).
+                    </span>
+                  </label>
+                  <label class="radio-line">
+                    <input type="radio" bind:group={bracketSeedingChoice} value="extend_closed_form" disabled={!canPickExtendClosedFormSeeding} />
+                    <span>
+                      <strong>Extend to next closed form</strong>
+                      — pad to the smallest supported virtual grid, then apply the same closed layout (BYE slots).
+                    </span>
+                  </label>
+                  <label class="radio-line">
+                    <input type="radio" bind:group={bracketSeedingChoice} value="heuristic" />
+                    <span>
+                      <strong>Heuristic</strong>
+                      — rule-based placement from group standings (with deterministic shuffle from the tournament name).
+                    </span>
+                  </label>
+                </fieldset>
                 <div class="row align-end bracket-create-row">
                   <button
                     type="button"
                     class="btn primary"
                     disabled={Object.keys(tournament.groups).length === 0 ||
                       eligibleGlobalGroupPlayerIds(tournament).length === 0}
-                    onclick={() => generateBracketAndRoundOneMatches('fillByes')}
+                    onclick={() => generateKnockoutBracket()}
                   >
-                    Create knockout bracket (fill with byes)
-                  </button>
-                  <button
-                    type="button"
-                    class="btn primary"
-                    disabled={Object.keys(tournament.groups).length === 0 ||
-                      eligibleGlobalGroupPlayerIds(tournament).length === 0}
-                    onclick={() => generateBracketAndRoundOneMatches('eliminatePlayers')}
-                  >
-                    Create knockout bracket (eliminate players)
+                    Create knockout bracket
                   </button>
                 </div>
-                <p class="muted small">
-                  Eliminate players: drop to a power of two using group W/L order — everyone tied on 4th in group is
-                  removed in random order (seeded by the tournament name), then all 3rd-place, and so on. Smaller groups
-                  have no 4th-place row until that tier is empty elsewhere.
-                </p>
                 {#if Object.keys(tournament.groups).length === 0}
                   <p class="muted small">Finish the group phase first — the create button enables after groups exist.</p>
                 {/if}
@@ -2347,8 +2520,7 @@
                   Single view: round&nbsp;1 on the outside, each round a step toward the final in the middle. Player names
                   appear once their group is fully played; until then slots show
                   <span class="mono">group … place …</span> from current standings order.
-                  <span class="mono">--empty--</span> is a bye slot; “—” is a structural placeholder. Uses the same shuffle
-                  key as the tournament name.
+                  <span class="mono">--empty--</span> is a bye slot; “—” is a structural placeholder.
                 </p>
                 <BracketStreamView
                   cols={previewBracketColumns(
@@ -2362,6 +2534,24 @@
                   onPairingClick={openBracketPairingModal}
                   ariaLabel="Knockout bracket"
                 />
+                <div class="row align-end bracket-elim-row" style="flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem;">
+                  <span class="muted small">Bureaucratic elimination (distinct from forfeit):</span>
+                  {#each uniqueSortedRounds(tournament.bracketMatches) as elimRound (elimRound)}
+                    <button
+                      type="button"
+                      class="btn subtle"
+                      disabled={useClassTabs || (tournament.lockedBracketRounds ?? []).includes(elimRound)}
+                      title={useClassTabs
+                        ? 'Use per-class controls when multiple classes are defined.'
+                        : (tournament.lockedBracketRounds ?? []).includes(elimRound)
+                          ? 'This round is locked.'
+                          : `In round ${elimRound}, eliminate the worse group finisher in each open pairing (ties favour larger groups, then a random pick).`}
+                      onclick={() => eliminateBracketRoundByRanking(elimRound)}
+                    >
+                      Eliminate lowest in round {elimRound}
+                    </button>
+                  {/each}
+                </div>
                 {#if DEBUG_UI}
                   <div class="row align-end">
                     <button
@@ -2387,7 +2577,7 @@
             </section>
           {:else if !useClassTabs && singleTrackInner === 'results'}
             <section class="card">
-              <h2 class="h2">Final overview</h2>
+              <h2 class="h2">Results</h2>
               {#if tournament.bracketMatches.length > 0}
                 {@const placementRows = singleEliminationPlacementRows(tournament.bracketMatches)}
                 {#if placementRows}
@@ -2423,7 +2613,7 @@
                 {#if Object.keys(slice.groups).length === 0}
                   <p class="muted small">
                     Players listed here are in this class (from the Players tab). Target size controls group sizes (each
-                    group is that size or one smaller). Groups are named group 1, group 2, …; creating them also creates all
+                    group is that size or one smaller). Groups are named Group 1, Group 2, …; creating them also creates all
                     round‑robin matches for this class.
                   </p>
                   <div class="row group-editor-head">
@@ -2569,8 +2759,7 @@
                   bracket for this class.
                 </p>
                 <div class="row align-end bracket-create-row">
-                  <button type="button" class="btn primary" disabled>Create knockout bracket (fill with byes)</button>
-                  <button type="button" class="btn primary" disabled>Create knockout bracket (eliminate players)</button>
+                  <button type="button" class="btn primary" disabled>Per-class bracket generation (coming soon)</button>
                 </div>
 
                 {#if slice.bracketMatches.length > 0}
@@ -2619,7 +2808,7 @@
               </section>
             {:else if cin === 'results'}
               <section class="card">
-                <h2 class="h2">Final overview · {def?.name ?? cid}</h2>
+                <h2 class="h2">Results · {def?.name ?? cid}</h2>
                 {#if slice.bracketMatches.length > 0}
                   {@const classPlacementRows = singleEliminationPlacementRows(slice.bracketMatches)}
                   {#if classPlacementRows}
@@ -2754,6 +2943,16 @@
           {/if}
           <div class="row modal-actions">
             <button type="button" class="btn" onclick={() => cancelScoreModal()}>Cancel</button>
+            {#if DEBUG_UI}
+              <button
+                type="button"
+                class="btn subtle"
+                disabled={!scoreModalCanEditGames()}
+                onclick={() => debugSimulateOpenScoreModalMatch()}
+              >
+                [DEBUG] Simulate match
+              </button>
+            {/if}
             {#if scoreModalCanClearResult()}
               <button type="button" class="btn danger-ghost" onclick={() => clearScoreModalBracketResult()}>
                 Clear result
@@ -2963,6 +3162,29 @@
 
   .bracket-create-row {
     margin-top: 0.35rem;
+  }
+
+  .bracket-seed-fieldset {
+    border: 0;
+    padding: 0;
+    margin: 0 0 0.75rem;
+  }
+
+  .bracket-seed-fieldset legend {
+    padding: 0;
+    margin-bottom: 0.35rem;
+  }
+
+  .radio-line {
+    display: flex;
+    gap: 0.45rem;
+    align-items: flex-start;
+    margin: 0.35rem 0;
+    max-width: 52rem;
+  }
+
+  .radio-line input {
+    margin-top: 0.2rem;
   }
 
   .bracket-round-block {

@@ -10,6 +10,7 @@ import {
   ClearMatchScoresCommand,
   EnterTeamScoreCommand,
   GenerateBracketCommand,
+  type EliminateLowestBracketRoundCommand,
   SetRoundLockCommand,
   SetSeedingsCommand,
   SetTournamentClassesCommand,
@@ -24,7 +25,7 @@ import {
   type RenamePlayerCommand,
   type UndoCommand,
 } from './command';
-import { Tournament } from './model';
+import { Tournament, type BracketSeedingMode } from './model';
 import { replayCommandsFromJsonLines } from './storage';
 import { TournamentView } from './view';
 
@@ -295,12 +296,12 @@ export class TournamentController {
   }
 
   generateBracket(
-    fillByes = true,
+    _fillByesIgnored = true,
     cullToPowerOfTwo = false,
     dependsOn: string[] = [],
     commandId?: string,
     shuffleKey?: string,
-    extras?: { cullByGroupPlacement?: boolean; classId?: string },
+    extras?: { cullByGroupPlacement?: boolean; classId?: string; bracketSeedingMode?: BracketSeedingMode },
   ): CommandResult {
     const payload: {
       fillByes: boolean;
@@ -308,8 +309,9 @@ export class TournamentController {
       shuffleKey?: string;
       cullByGroupPlacement?: boolean;
       classId?: string;
+      bracketSeedingMode?: BracketSeedingMode;
     } = {
-      fillByes,
+      fillByes: true,
       cullToPowerOfTwo,
     };
     if (shuffleKey !== undefined) {
@@ -321,6 +323,9 @@ export class TournamentController {
     if (extras?.classId !== undefined) {
       payload.classId = extras.classId;
     }
+    if (extras?.bracketSeedingMode !== undefined) {
+      payload.bracketSeedingMode = extras.bracketSeedingMode;
+    }
     const command: GenerateBracketCommand = {
       id: commandId ?? this.newCommandId(),
       type: 'GenerateBracket',
@@ -331,6 +336,33 @@ export class TournamentController {
     const result = this.runner.execute(command);
     if (!result.success) {
       this.view?.renderMessage(`generateBracket failed: ${result.reason ?? ''}`);
+      return result;
+    }
+    this.view?.renderBracket(this.getTournament());
+    return result;
+  }
+
+  eliminateLowestBracketRound(
+    round: number,
+    dependsOn: string[] = [],
+    tieBreakSalt: string,
+    commandId?: string,
+    classId?: string,
+  ): CommandResult {
+    const command: EliminateLowestBracketRoundCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'EliminateLowestBracketRound',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: {
+        round,
+        tieBreakSalt,
+        ...(classId !== undefined ? { classId } : {}),
+      },
+    };
+    const result = this.runner.execute(command);
+    if (!result.success) {
+      this.view?.renderMessage(`eliminateLowestBracketRound failed: ${result.reason ?? ''}`);
       return result;
     }
     this.view?.renderBracket(this.getTournament());

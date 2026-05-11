@@ -581,8 +581,8 @@ describe('CommandRunner dependency-aware undo', () => {
     expect(partitionPlayerCountIntoGroupSizes(4, 3)).toEqual([2, 2]);
     expect(partitionPlayerCountIntoGroupSizes(4, 10)).toEqual([4]);
     expect(buildNumberedGroupsFromPlayerOrder(['a', 'b', 'c', 'd'], 3)).toEqual([
-      { id: '1', label: 'group 1', playerIds: ['a', 'b'] },
-      { id: '2', label: 'group 2', playerIds: ['c', 'd'] },
+      { id: '1', label: 'Group 1', playerIds: ['a', 'b'] },
+      { id: '2', label: 'Group 2', playerIds: ['c', 'd'] },
     ]);
   });
 
@@ -675,7 +675,8 @@ describe('EnterScore', () => {
   it('locks editing or clearing a finished group match after any knockout player match has recorded play', () => {
     const runner = new CommandRunner();
     const ts = '2026-01-01T00:00:00.000Z';
-    for (const id of ['p1', 'p2', 'p3', 'p4'] as const) {
+    const pids = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'] as const;
+    for (const id of pids) {
       runner.execute({
         id,
         type: 'CreatePlayer',
@@ -687,8 +688,8 @@ describe('EnterScore', () => {
     runner.execute({
       id: 'seed',
       type: 'SetSeedings',
-      dependsOn: ['p1', 'p2', 'p3', 'p4'],
-      payload: { playerIds: ['p1', 'p2', 'p3', 'p4'] },
+      dependsOn: [...pids],
+      payload: { playerIds: [...pids] },
       timestamp: ts,
     });
     expect(
@@ -696,46 +697,57 @@ describe('EnterScore', () => {
         id: 'sg',
         type: 'SetGroups',
         dependsOn: ['seed'],
-        payload: { targetGroupSize: 2, playerIds: ['p1', 'p2', 'p3', 'p4'] },
+        payload: { targetGroupSize: 4, playerIds: [...pids] },
         timestamp: ts,
       }).success,
     ).toBe(true);
-    const g1 = Object.keys(runner.getTournament().matches).find((k) => k.startsWith('gm-1-'));
-    const g2 = Object.keys(runner.getTournament().matches).find((k) => k.startsWith('gm-2-'));
+    const groupMatchIds = Object.keys(runner.getTournament().matches)
+      .filter((k) => k.startsWith('gm-'))
+      .sort();
+    expect(groupMatchIds).toHaveLength(12);
+    const g1 = groupMatchIds.find((k) => k.startsWith('gm-1-'));
+    const g2 = groupMatchIds.find((k) => k.startsWith('gm-2-'));
     expect(g1 && g2).toBeTruthy();
     const bo5 = [
       { playerA: 11, playerB: 9 },
       { playerA: 11, playerB: 6 },
       { playerA: 11, playerB: 5 },
     ];
-    expect(
-      runner.execute({
-        id: 'e1',
-        type: 'EnterScore',
-        dependsOn: ['sg'],
-        payload: { matchId: g1!, scores: bo5 },
-        timestamp: ts,
-      }).success,
-    ).toBe(true);
+    const scoreDeps = ['sg', 'seed'];
+    for (let i = 0; i < groupMatchIds.length; i++) {
+      const cmdId = `egrr${i}`;
+      expect(
+        runner.execute({
+          id: cmdId,
+          type: 'EnterScore',
+          dependsOn: ['sg'],
+          payload: { matchId: groupMatchIds[i]!, scores: bo5 },
+          timestamp: ts,
+        }).success,
+      ).toBe(true);
+      scoreDeps.push(cmdId);
+    }
+    const g1ScoreCmd = `egrr${groupMatchIds.indexOf(g1!)}`;
+    const g2ScoreCmd = `egrr${groupMatchIds.indexOf(g2!)}`;
     expect(
       runner.execute({
         id: 'gen',
         type: 'GenerateBracket',
-        dependsOn: ['sg', 'seed'],
-        payload: { fillByes: true, cullToPowerOfTwo: false },
+        dependsOn: scoreDeps,
+        payload: { fillByes: true, cullToPowerOfTwo: false, bracketSeedingMode: 'closed_form' },
         timestamp: ts,
       }).success,
     ).toBe(true);
     const t1 = runner.getTournament();
     const bm = t1.bracketMatches.find((m) => m.round === 1 && m.seedA && m.seedB);
-    expect(bm?.seedA && bm?.seedB).toBeTruthy();
-    const mid = `match-${bm!.id}`;
+    expect(bm).toBeTruthy();
+    const bracketMid = `match-${bm!.id}`;
     expect(
       runner.execute({
         id: 'cm',
         type: 'CreateMatch',
-        dependsOn: ['gen', 'p1', 'p2', 'p3', 'p4'],
-        payload: { matchId: mid, playerA: bm!.seedA!, playerB: bm!.seedB! },
+        dependsOn: ['gen', ...pids],
+        payload: { matchId: bracketMid, playerA: bm!.seedA!, playerB: bm!.seedB! },
         timestamp: ts,
       }).success,
     ).toBe(true);
@@ -744,7 +756,7 @@ describe('EnterScore', () => {
         id: 'ek',
         type: 'EnterScore',
         dependsOn: ['cm'],
-        payload: { matchId: mid, scores: bo5 },
+        payload: { matchId: bracketMid, scores: bo5 },
         timestamp: ts,
       }).success,
     ).toBe(true);
@@ -752,7 +764,7 @@ describe('EnterScore', () => {
     const rescore = runner.execute({
       id: 'e1b',
       type: 'EnterScore',
-      dependsOn: ['e1'],
+      dependsOn: [g1ScoreCmd],
       payload: {
         matchId: g1!,
         scores: [
@@ -767,20 +779,28 @@ describe('EnterScore', () => {
     expect(rescore.success).toBe(false);
     expect(rescore.reason ?? '').toMatch(/group result cannot be changed/i);
 
-    expect(
-      runner.execute({
-        id: 'e2',
-        type: 'EnterScore',
-        dependsOn: ['sg'],
-        payload: { matchId: g2!, scores: bo5 },
-        timestamp: ts,
-      }).success,
-    ).toBe(true);
+    const rescoreG2 = runner.execute({
+      id: 'e2b',
+      type: 'EnterScore',
+      dependsOn: [g2ScoreCmd],
+      payload: {
+        matchId: g2!,
+        scores: [
+          { playerA: 9, playerB: 11 },
+          { playerA: 11, playerB: 7 },
+          { playerA: 11, playerB: 8 },
+          { playerA: 11, playerB: 6 },
+        ],
+      },
+      timestamp: ts,
+    });
+    expect(rescoreG2.success).toBe(false);
+    expect(rescoreG2.reason ?? '').toMatch(/group result cannot be changed/i);
 
     const clear = runner.execute({
       id: 'clr',
       type: 'ClearMatchScores',
-      dependsOn: ['e1'],
+      dependsOn: [g1ScoreCmd],
       payload: { matchId: g1! },
       timestamp: ts,
     });
