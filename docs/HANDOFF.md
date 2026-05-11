@@ -1,12 +1,12 @@
 # Handoff — `ttc-tornooiapp`
 
-Orientation for the **next developer or agent**: where things live, how to run them, and what the codebase has been **doing lately**. Product goals, non-goals, and storage vision live in **`docs/DESIGN.md`**; this file is a **practical map** and a **short memory** of recent work.
+Practical orientation for the **next developer or agent**: layout, how to run things, command boundaries, and **what changed recently** in the knockout bracket stack. Product intent and storage vision stay in **`docs/DESIGN.md`**; this file is a **map** and a **short operational memory**.
 
 ---
 
 ## What this is
 
-A **table tennis–first** tournament helper: **Svelte 5 + Vite** UI under **`web/`** on top of a **TypeScript domain package** at the repo root (`src/`, published build in `dist/` when you run `npm run build`). State is meant to be **command-driven**, **replayable**, and **undo/redo**-friendly—see **`src/controller.ts`** and **`src/command.ts`**.
+A **table tennis–first** tournament helper: **Svelte 5 + Vite** under **`web/`** on a **TypeScript** domain package at the repo root (`src/`, consumed as `ttc-tornooiapp` from the web workspace). State is **command-driven**, **replayable**, and **undo/redo**-aware—start at **`src/controller.ts`** and **`src/command.ts`**.
 
 ---
 
@@ -14,76 +14,102 @@ A **table tennis–first** tournament helper: **Svelte 5 + Vite** UI under **`we
 
 | Path | Role |
 |------|------|
-| `src/model.ts` | Tournament shape, pure helpers: groups, RR, brackets, **TT score legality** (including deuce / post-11 **exact two-point margin**), handicaps, bracket shuffle keyed by a string, bracket settlement and sync helpers. |
-| `src/command.ts` | Command types, `applyCommand`, validation, inverse/undo wiring. Bracket side-effects often go through **`reconcileBracketScope`**-style paths (settle / propagate ordering matters after clear or undo). |
-| `src/controller.ts` | Public API for the UI: dispatch commands, undo/redo cursor, bracket generation (`shuffleKey`, etc.). |
-| `src/view.ts` | View-model / presentation helpers consumed by the app or tests where relevant. |
-| `src/storage.ts` | Persistence helpers (see DESIGN for intent). |
-| `web/src/App.svelte` | Main shell: settings, wizard, sessions, players, groups, bracket phase, import/export, status, footer with undo/redo. Large file—search before duplicating patterns. |
-| `web/src/BracketStreamView.svelte` | Centered “stream” knockout layout; coordinates with **`BracketSubtree.svelte`** for interaction. |
-| `tests/*.spec.ts` | **Vitest**—model, commands, scores, **`tests/bracket.spec.ts`** for bracket behavior. |
+| `src/model.ts` | Tournament shape and pure logic: groups, round-robin, **TT score legality** (deuce / post-11 two-point margin), handicaps, bracket generation and settlement, group-balanced ordering, best-effort heuristic seeding, **elimination** outcomes, structural bye propagation. |
+| `src/command.ts` | Command types, validation, apply/undo; bracket side-effects flow through **`reconcileBracketScope`** (settle → propagate → settle order matters). |
+| `src/controller.ts` | UI-facing API: dispatch commands, undo/redo, bracket generation options (`shuffleKey`, `bracketSeedingMode`, `fillByes`). |
+| `src/view.ts` | Presentation helpers for CLI / tests where used. |
+| `src/storage.ts` | Persistence helpers (see DESIGN). |
+| `web/src/App.svelte` | Main shell: sessions, players, groups, **bracket phase** (seeding choice, knockout actions, import/export, undo/redo). Large—search before copying patterns. |
+| `web/src/TournamentOverview.svelte` | Overview / status-style bracket and group context (kept in sync with bracket commands). |
+| `web/src/BracketStreamView.svelte` + `BracketSubtree.svelte` | Stream-style knockout visualization. |
+| `web/src/bracketStream/slotOutcome.ts` | Per-slot winner/loser styling; ignores internal structural-bye winners. |
+| `tests/*.spec.ts` | **Vitest**; bracket-heavy coverage in **`tests/bracket.spec.ts`**, **`tests/bracket-best-effort.spec.ts`**, **`tests/command.spec.ts`**. |
 
 ---
 
 ## How to run
 
-**Requirements:** Node.js and npm (workspace at root includes `web/`).
+**Requirements:** Node.js and npm (root workspace includes `web/`).
 
 From the **repository root**:
 
 ```bash
-npm install          # root + web (web depends on local package file:..)
-npm test             # Vitest, once
-npm run test:watch   # watch mode
-npm run dev:web      # Vite dev server (--host 0.0.0.0); use the URL Vite prints (often port 5173)
-npm run check -w web # svelte-check + TS (run after UI/type changes)
-npm run build -w web # production bundle under web/dist/
+npm install
+npm test -- --run
+npm run test:watch
+npm run dev:web
+npm run check -w web
+npm run build -w web
 ```
 
-Paths like `/mnt/c/...` (WSL) or `C:\...\` (Windows) are both fine—the commands are the same once `cd` is correct.
+Use WSL or Windows paths consistently after `cd` into the repo.
 
 ---
 
-## Architecture you should not fight
+## Architecture rules worth keeping
 
-1. **Meaningful mutations** should become **commands** with stable **`commandId`** and correct **`dependsOn`** so replay and undo stay coherent.
-2. **Heavy rules** live in **`model.ts`**; **`command.ts`** validates at the boundary and applies; **`controller.ts`** is the façade the UI calls.
-3. When the UI shows **knockout** rows, some flows **create a `Match` on demand** (e.g. opening a pairing) so the log always has something to attach scores to—do not assume every bracket slot row exists before first open.
+1. **User-visible state changes** should be **commands** with stable **`commandId`** and correct **`dependsOn`** so replay and undo stay coherent.
+2. **Domain rules** live in **`model.ts`**; **`command.ts`** validates and applies; **`controller.ts`** is the façade the UI calls.
+3. Knockout **player `Match`** rows (`match-{bracketSlotId}`) may be created when the user opens a pairing or via reconciliation—do not assume every bracket row exists before first interaction.
 
-If you add a user-visible persistent action, expect to touch **command + controller + tests + App (or child component)**.
-
----
-
-## Knockout bracket (recent focus)
-
-- **UI:** **`BracketStreamView`** / **`BracketSubtree`** implement the interactive bracket “phase” view (click pairing → score entry; alignment with **`openBracketPairingModal`** in `App.svelte`).
-- **Domain:** Bracket winners, byes, seed propagation, and **when a slot is “done”** are centralized in **`model.ts`** helpers used from **`command.ts`**. After **clear** or **undo**, bracket metadata and player **`Match`** rows can briefly disagree; reconciliation order in **`command.ts`** was tuned so **settle / propagate** behave sensibly for the next score or seed update. **May 2026:** settlement must not let a **scheduled** canonical `match-{bracketId}` row shadow a finished alias row (e.g. `match-a`); see **“Session handoff — May 10, 2026”** below.
-- **Debug:** Under `DEBUG_UI`, **“[DEBUG] Simulate phase matches”** fills the **current minimum open knockout round** with random legal BO5 scores. Implementation details that matter after undo/clear:
-  - Ensures missing **`match-{bracketSlotId}`** rows via **`createMatch`** (same dependency idea as the pairing modal).
-  - Treats a slot as simulatable based on the **`Match`** (scheduled, no scores), **not** on **`BracketMatch.winner`** alone, so stale `winner` does not hide open games.
-  - **Re-queries** the tournament after each score so the same “min round” pass completes the round instead of using a stale snapshot.
-
-**Limitation (as of this writing):** that debug helper walks **`tournament.bracketMatches`** (main draw). **Per-class** brackets live under **`classTournaments[cid].bracketMatches`** in the model; the class tab UI may still show stubbed “create bracket” actions while reusing stream views for an existing class draw—if you extend simulation or row creation, thread **`classId`** / slice bracket arrays through the same way **`bracketScopeForPlayerMatch`** does in **`command.ts`**.
+New surface area typically touches **model + command + controller + tests + web**.
 
 ---
 
-## Small UI / product notes from recent passes
+## Knockout bracket (May 2026 state)
 
-- **Tournament name:** the toolbar **“Use suggested”** button was **removed**; **`applySuggestedTournamentTitle`** / **`deriveLabel`** remain in **`App.svelte`** for a possible future control.
-- **Wizard / formats:** paths beyond the implemented **group + bracket** flow stay **stubbed or disabled** where the wizard exposes them.
-- **Lint:** root **`npm run lint`** is still a placeholder; rely on **tests** and **`npm run check -w web`**.
+### Seeding modes (`BracketSeedingMode`)
+
+When generating a bracket from group-qualified participants, the app chooses **`bracketSeedingMode`** (UI radios; controller always sends it with **`fillByes: true`**):
+
+| Mode | Behaviour |
+|------|-----------|
+| **`closed_form`** | Equal-sized groups must match an **exact** built-in **G×4** grid (2×4, 4×4, 8×4). No virtual padding. |
+| **`extend_closed_form`** | Same group constraints, but allows **virtual padding** to the next supported grid; dummies become **`BYE`** in `generateBracket`. |
+| **`heuristic`** | **`bestEffortOrderParticipantsForGroupBracket`** when group data fits; else deterministic shuffle from `shuffleKey`. |
+
+There is **no silent auto-expand** into a balanced grid: the mode is explicit. Old tests that assumed implicit balanced expansion were updated to pass **`extend_closed_form`** where that geometry is intended.
+
+### Byes and “empty” slots
+
+- **`generateBracket`** pads to the next power of two with **`BYE`**, maps layout dummies (`--empty--#…`) and **`BYE`** to **empty seeds** on `BracketMatch`.
+- **Double-empty R1** (both sides empty / bye): **`BRACKET_STRUCTURAL_EMPTY_ADVANCE`** is stored on **`BracketMatch.winner`** so the slot counts as decided. **`bracketWinnerToNextRoundSeed`** maps that to **`undefined`** in the next round. **`settleBracketWinnersIn`** re-derives this and, for **round ≥ 2**, awards a **walkover** to a lone real seed when the missing side is a propagated structural empty (feeder-aware), not only when the sibling feeder is “still playing”.
+
+### Elimination vs forfeit
+
+- **`MatchStatus`** includes **`eliminated`** (bureaucratic advance without normal scored play), distinct from **`forfeit`**.
+- **`EliminateLowestBracketRound`** (command): in an open round, marks the lower group-finisher in each two-player slot as eliminated and the better finisher as winner, with tie-breaks (larger group, then deterministic salt).
+
+### Reconciliation
+
+After scores / clears / undo, **`reconcileBracketScope`** runs **`settleBracketWinnersIn`**, **`propagateBracketSeedsFromChildWinners`**, **`materializeReadyNextRoundBracketSlots`**, **`syncBracketMatchPlayerRows`**, and may **`advanceBracketRound`** when a round is complete. Settlement must prefer a **decisive** canonical or alias player row over a **scheduled placeholder** at `bracketPlayerMatchId`—see **`settleBracketWinnersIn`** and **`findMatchByPlayers`** (non–group rows only).
+
+### Heuristic placement tweak
+
+In **`bestEffortOrderParticipantsForGroupBracket`**, placement **prefers participant indices whose round-1 opponent leaf is still empty** (will become a bye after padding), using a shared bonus and **`pickPreferringR1ByeAmong`** on ties and fallbacks—without overriding hard bans (e.g. never R1 vs own group winner).
+
+### Multi-class brackets
+
+Main-draw helpers and much of the UI still assume **`tournament.bracketMatches`**. Per-class slices live under **`classTournaments[cid]`**; extending elimination, simulation, or materialization to every slice should follow **`bracketScopeForPlayerMatch`** patterns in **`model.ts`** / **`command.ts`**.
 
 ---
 
-## Where to start for common tasks
+## Debug UI note
+
+Under **`DEBUG_UI`**, “simulate phase matches” and similar helpers may still target the **main** bracket array only. Thread **`classId`** / slice **`bracketMatches`** when extending.
+
+---
+
+## Where to start
 
 | Task | Start here |
-|------|----------------|
-| Change TT scoring rules | `src/model.ts` (`isMatchScoreLegal`, related helpers), then `tests/score.spec.ts` |
-| New persisted action | New command type in `src/command.ts`, wire `src/controller.ts`, Vitest, then UI |
-| Bracket generation / shuffle | `generateBracket` / `GenerateBracket` payload and `shuffleKey` from session |
-| Bracket wrong after undo | `src/command.ts` (`reconcileBracketScope`, bracket command handlers), `src/model.ts` settlement/propagation |
-| Blank UI / runtime errors | Browser console; Svelte 5 runes (`$state`); run **`npm run check -w web`** |
+|------|------------|
+| TT scoring rules | `src/model.ts` (`isMatchScoreLegal`), `tests/score.spec.ts` |
+| New persisted action | `src/command.ts`, `src/controller.ts`, Vitest, then UI |
+| Bracket seeding / BYE / structural empty | `generateBracket`, `settleBracketWinnersIn`, `materializeReadyNextRoundBracketSlots`, `BRACKET_STRUCTURAL_EMPTY_ADVANCE` |
+| Heuristic ordering | `bestEffortOrderParticipantsForGroupBracket` |
+| Bracket wrong after undo | `reconcileBracketScope` in `src/command.ts` |
+| UI types / runes | `npm run check -w web` |
 
 ---
 
@@ -91,64 +117,24 @@ If you add a user-visible persistent action, expect to touch **command + control
 
 | Document | Use |
 |----------|-----|
-| `docs/DESIGN.md` | Goals, non-goals, hosting, data/log vision. |
-| `docs/TEST_SPECIFICATION.md` | Scenario-style testing notes (if kept in sync). |
-| `docs/AGENT_SUMMARY.md` | Extra agent-oriented notes if present on your branch. |
-| `docs/HANDOFF.md` | This file: layout, commands, runbook, **recent bracket/debug context**, **dated session notes** (see “Session handoff — May 10, 2026”). |
+| `docs/DESIGN.md` | Goals, non-goals, hosting, data vision. |
+| `docs/TEST_SPECIFICATION.md` | Scenario-style testing notes (if maintained). |
+| `docs/HANDOFF.md` | This file: layout, runbook, **current bracket behaviour**. |
 
 ---
 
-## Session handoff — **May 10, 2026** (WSL tests, bracket settlement, materialization)
+## Session notes — **May 2026** (bracket seeding, elimination, structural byes)
 
-### How we ran tests
+Consolidated from recent work on this branch:
 
-From WSL (paths under `/mnt/c/...` are fine):
+1. **Explicit seeding + tests** — `expectedR1MatchCountAfterSeeding` in **`tests/bracket-best-effort.spec.ts`** mirrors **`generateBracket`** participant resolution per **`bracketSeedingMode`** (default **`extend_closed_form`** in the stress loop). Large virtual layouts use **`extend_closed_form`** in **`tests/bracket.spec.ts`** where the scenario is “balanced padding, not raw shuffle”.
 
-```bash
-cd /mnt/c/Users/donne/code/ttc-tornooiapp && npm test -- --run
-```
+2. **Structural double-bye propagation** — Without a sentinel **`winner`**, **`materializeReadyNextRoundBracketSlots`** never saw two “decided” feeders for empty–empty R1. Fixed end-to-end in **`model.ts`**; **`web/src/bracketStream/slotOutcome.ts`** and **`displayBracketColumns`** in **`App.svelte`** use **`bracketWinnerToNextRoundSeed`** so previews do not copy the sentinel into **`seedA`/`seedB`**.
 
-### Bugs **confirmed** and fixes **merged** (this session)
+3. **Heuristic bye preference** — Empty R1 neighbour preference added in **`bestEffortOrderParticipantsForGroupBracket`** with **`preferR1ByeSlotBonus`** and **`pickPreferringR1ByeAmong`**.
 
-1. **`settleBracketWinnersIn` preferred the wrong player `Match` row (root cause of missing round 2 in e2e / replay)**  
-   - **Symptom:** After `CreateMatch('match-a', p1, p4, …)` + scores, `reconcileBracketScope` never saw finished knockout play on the **canonical** id `match-m1`, so `materializeReadyNextRoundBracketSlots` never got two decided R1 feeders with coherent `BracketMatch.winner`s, and tests expecting `bracketMatches.some(m => m.round === 2)` failed.  
-   - **Cause:** Code did `const match = direct && !direct.groupId ? direct : findMatchByPlayers(…)` so a **scheduled** placeholder at `tournament.matches[bracketPlayerMatchId(bm.id)]` (from `ensureBracketPhasePlayerMatchesIn`) **blocked** fallback to `findMatchByPlayers`, which would have found the finished `match-a` row.  
-   - **Fix (in `src/model.ts`):** Only treat `direct` as authoritative when it is **finished**, has a **winner**, and is not a group row; otherwise fall back to `findMatchByPlayers`.  
-   - **Hypothesis validated:** E2E and replay were **not** primarily a `materializeReadyNextRoundBracketSlots` bug; materialize behaved once settlement saw real results.
-
-2. **`materializeReadyNextRoundBracketSlots` could not materialize “later” feeder pairs while an earlier R1 pair was still open**  
-   - **Symptom:** `tests/bracket.spec.ts` “9 players, byes” partial materialization expected `materializeReadyNextRoundBracketSlots(b) === true` with 3 round-2 rows before the last R1 match finished.  
-   - **Cause:** Logic required `slotIdx === children.length` (strict sequential append), so ready pairs at indices 1,2,… were skipped if pair 0 was undecided.  
-   - **Fix:** Drop that gate; **dedupe** by whether a child with the same `(seedA, seedB)` pairing (either order) already exists, then append.
-
-3. **`findMatchByPlayers` could return a finished **group** RR row for the same two players**  
-   - **Symptom:** Bracket winner reconciliation could treat a group-phase result as a KO result (`BracketMatch.winner` corrupted downstream).  
-   - **Fix:** Only consider finished player matches with **`!m.groupId`** (and drop the old `bracketish ?? candidates[0]` fallback onto group rows).
-
-4. **`groupNumberedTitle` / placeholders**  
-   - **Symptom:** Numeric `id` (e.g. `'1'`) was winning over a **custom** `label` (e.g. `Pool A`), so bracket copy showed `Group 1 place …` instead of `Pool A place …`.  
-   - **Fix:** Prefer a non-empty **label** first (still normalizing legacy `group N` → `Group N`); only then derive `Group {id}` from a numeric id when there is no meaningful label.
-
-5. **`TournamentOverview.svelte`**  
-   - **Bug:** A bad edit had removed the `groupDefForMatch` function wrapper while leaving its body, breaking parse/runtime. **Fix:** Restore `groupDefForMatch` around the staggered “ready to play” group logic.
-
-6. **Tests / harness adjustments**  
-   - `tests/bracket-best-effort.spec.ts`: stress test expected R1 count from `nextPowerOfTwo(all.length)` while `generateBracket` can use a **larger** padded field when balanced / best-effort expands participants; added `expectedR1MatchCountAfterSeeding` mirroring `generateBracket`’s participant resolution (and `shuffleDeterministic` import).  
-   - `tests/command.spec.ts`: `buildNumberedGroupsFromPlayerOrder` expectations updated to **`Group 1` / `Group 2`** labels; group-lock test now finishes **both** group RR rows before `GenerateBracket` (`dependsOn: ['sg','seed','e1','e2']`).  
-   - `tests/bracket.spec.ts`: “settle then propagate …” test now uses **finished** canonical `match-m1` / `match-m2`, then **reopens** `match-m1` and runs settle + propagate so `m3` ends with `seedA` cleared and `seedB` intact; **4×4** R1 expectations adjusted for current balanced ordering; **3×3** allows at most one **BYE vs BYE** R1 leaf; added a small **materialize** regression for 4 players.
-
-### Still **failing or fragile** (explicitly for the next agent)
-
-| Area | Status | Notes / hypotheses |
-|------|--------|---------------------|
-| **`tests/command.spec.ts` — “locks editing … knockout …”** | **Resolved (May 11, 2026)** | Balanced **2×2** group layout pads to a virtual **2×4** tree, so round‑1 `BracketMatch` rows are often **one seed + bye**; the test now uses **eight players** in **two groups of four** (exact **2×4**), finishes all RR rows, then `GenerateBracket` so at least one **dual‑seed** R1 exists for `CreateMatch`. Removed the duplicate `e2` command id (would always fail with “Command ID already exists”) and assert **both** groups’ finished rows reject rescoring after KO scores. |
-| **`tests/bracket.spec.ts` — “8×4 …”** | **Resolved (May 11, 2026)** | Expectations for **pair(10)–pair(15)** were updated to match current `generateBracket` + balanced ordering (including fixing **pair(11)** vs **pair(15)** both claiming `p3`/`p26`). |
-
-### Commands / files touched this session (quick index)
-
-- **`src/model.ts`:** `groupNumberedTitle`, `findMatchByPlayers`, `materializeReadyNextRoundBracketSlots`, `settleBracketWinnersIn` (direct-match guard), plus earlier bracket helpers as in summary.  
-- **`tests/bracket.spec.ts`**, **`tests/bracket-best-effort.spec.ts`**, **`tests/command.spec.ts`**, **`web/src/TournamentOverview.svelte`** (restore `groupDefForMatch`).
+4. **Commit** — Large cohesive commit on **`main`**: `feat: bracket seeding modes, elimination, and structural bye propagation` (message lists seeding modes, elimination command, structural sentinel, heuristic tweak, web, tests, handoff).
 
 ---
 
-_Single maintainer or small team: keep this file honest when behavior shifts (especially bracket + command boundaries)._
+_Keep this file aligned when bracket or command contracts change; prefer updating a short “Session notes” paragraph over growing stale bug tables._
