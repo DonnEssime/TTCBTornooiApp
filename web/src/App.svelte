@@ -151,33 +151,83 @@
     closedFormGroupCountForPlayerCount(globalGroupPlayerCount),
   );
 
-  /** Suggested closed-form group count (2 / 4 / 8) from eligible players before groups exist. */
+  /** Baseline player counts for group-target auto-sync (reset on session switch). */
+  let groupTargetSyncSessionId: string | null = null;
+  let prevGlobalGroupPlayerCount = -1;
+  let prevClassGroupPlayerCountByClassId: Record<string, number> = {};
+
+  function resetGroupTargetSyncBaseline(sessionId: string, globalPlayerCount: number): boolean {
+    if (groupTargetSyncSessionId === sessionId) return false;
+    groupTargetSyncSessionId = sessionId;
+    prevGlobalGroupPlayerCount = globalPlayerCount;
+    prevClassGroupPlayerCountByClassId = {};
+    return true;
+  }
+
+  /** When player count changes, update group target only if it still matches the old closed-form suggestion. */
   $effect(() => {
     if (tournament.bracketMatches.length > 0) return;
     if (Object.keys(tournament.groups).length > 0) return;
     const s = getActiveSession();
     if (!s) return;
-    const next = suggestedGlobalGroupTargetCount;
-    if (s.groupTargetCount === next) return;
-    patchActiveSession({ groupTargetCount: next });
+    void activeSessionId;
+
+    const playerCount = globalGroupPlayerCount;
+    if (resetGroupTargetSyncBaseline(s.id, playerCount)) return;
+
+    const prevCount = prevGlobalGroupPlayerCount;
+    if (playerCount === prevCount) return;
+
+    const prevSuggested = closedFormGroupCountForPlayerCount(prevCount);
+    const nextSuggested = closedFormGroupCountForPlayerCount(playerCount);
+    prevGlobalGroupPlayerCount = playerCount;
+
+    if (s.groupTargetCount === prevSuggested && nextSuggested !== s.groupTargetCount) {
+      patchActiveSession({ groupTargetCount: nextSuggested });
+    }
   });
 
   $effect(() => {
     if (!tournamentUsesClassTabs(tournament)) return;
     const s = getActiveSession();
     if (!s) return;
+    void activeSessionId;
+
+    if (resetGroupTargetSyncBaseline(s.id, globalGroupPlayerCount)) return;
+
     const nextByClass: Record<string, number> = { ...s.classGroupTargetCountByClassId };
     let changed = false;
+
     for (const def of tournament.classDefinitions) {
       const slice = tournament.classTournaments[def.id];
       if (!slice) continue;
       if (slice.bracketMatches.length > 0) continue;
       if (Object.keys(slice.groups).length > 0) continue;
-      const next = closedFormGroupCountForPlayerCount(slice.seedings.length);
-      if (nextByClass[def.id] === next) continue;
-      nextByClass[def.id] = next;
-      changed = true;
+
+      const cid = def.id;
+      const playerCount = slice.seedings.length;
+      if (prevClassGroupPlayerCountByClassId[cid] === undefined) {
+        prevClassGroupPlayerCountByClassId[cid] = playerCount;
+        continue;
+      }
+
+      const prevCount = prevClassGroupPlayerCountByClassId[cid]!;
+      if (playerCount === prevCount) continue;
+
+      const prevSuggested = closedFormGroupCountForPlayerCount(prevCount);
+      const nextSuggested = closedFormGroupCountForPlayerCount(playerCount);
+      prevClassGroupPlayerCountByClassId[cid] = playerCount;
+
+      const stored = s.classGroupTargetCountByClassId[cid];
+      const currentVal =
+        typeof stored === 'number' && stored >= 1 ? stored : prevSuggested;
+
+      if (currentVal === prevSuggested && nextSuggested !== currentVal) {
+        nextByClass[cid] = nextSuggested;
+        changed = true;
+      }
     }
+
     if (changed) patchActiveSession({ classGroupTargetCountByClassId: nextByClass });
   });
 
@@ -819,7 +869,7 @@
     const s = getActiveSession();
     if (!s) return;
     const targetSize = Math.max(1, Math.floor(Number(s.groupTargetSize) || CLOSED_FORM_PLAYERS_PER_GROUP));
-    runSetGlobalGroups({ targetGroupSize, playerIds: [] });
+    runSetGlobalGroups({ targetGroupSize: targetSize, playerIds: [] });
   }
 
   function createGlobalGroupsByGroupCount(): void {
