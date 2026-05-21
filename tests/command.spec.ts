@@ -1,7 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { CommandRunner, CreatePlayerCommand, CreateMatchCommand, type UndoCommand } from '../src/command';
 import { TournamentController } from '../src/controller';
-import { buildNumberedGroupsFromPlayerOrder, partitionPlayerCountIntoGroupSizes } from '../src/model';
+import {
+  buildNumberedGroupsFromPlayerOrder,
+  buildNumberedGroupsFromPlayerOrderByGroupCount,
+  closedFormGroupCountForPlayerCount,
+  partitionPlayerCountIntoGroupCount,
+  partitionPlayerCountIntoGroupSizes,
+} from '../src/model';
 
 function appendUndo(runner: CommandRunner, targetId: string, undoId: string): ReturnType<CommandRunner['execute']> {
   const u: UndoCommand = {
@@ -583,6 +589,22 @@ describe('CommandRunner dependency-aware undo', () => {
     expect(buildNumberedGroupsFromPlayerOrder(['a', 'b', 'c', 'd'], 3)).toEqual([
       { id: '1', label: 'Group 1', playerIds: ['a', 'b'] },
       { id: '2', label: 'Group 2', playerIds: ['c', 'd'] },
+    ]);
+  });
+
+  it('closedFormGroupCountForPlayerCount picks 2, 4, or 8 from ceil(n/4)', () => {
+    expect(closedFormGroupCountForPlayerCount(8)).toBe(2);
+    expect(closedFormGroupCountForPlayerCount(9)).toBe(4);
+    expect(closedFormGroupCountForPlayerCount(16)).toBe(4);
+    expect(closedFormGroupCountForPlayerCount(32)).toBe(8);
+    expect(closedFormGroupCountForPlayerCount(33)).toBe(8);
+  });
+
+  it('partitions players across a fixed group count', () => {
+    expect(partitionPlayerCountIntoGroupCount(10, 4)).toEqual([3, 3, 2, 2]);
+    expect(buildNumberedGroupsFromPlayerOrderByGroupCount(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'], 2)).toEqual([
+      { id: '1', label: 'Group 1', playerIds: ['a', 'b', 'c', 'd'] },
+      { id: '2', label: 'Group 2', playerIds: ['e', 'f', 'g', 'h'] },
     ]);
   });
 

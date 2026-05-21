@@ -262,7 +262,8 @@ export class TournamentController {
   setGroups(
     payload:
       | Array<{ id: string; label?: string; playerIds: string[] }>
-      | { targetGroupSize: number; playerIds: string[] },
+      | { targetGroupSize: number; playerIds: string[] }
+      | { targetGroupCount: number; playerIds: string[] },
     dependsOn: string[] = [],
     commandId?: string,
   ): CommandResult {
@@ -283,7 +284,8 @@ export class TournamentController {
     classId: string,
     payload:
       | Array<{ id: string; label?: string; playerIds: string[] }>
-      | { targetGroupSize: number; playerIds: string[] },
+      | { targetGroupSize: number; playerIds: string[] }
+      | { targetGroupCount: number; playerIds: string[] },
     dependsOn: string[] = [],
     commandId?: string,
   ): CommandResult {

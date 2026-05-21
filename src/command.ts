@@ -4,6 +4,7 @@ import {
   applyBracketToTournament,
   bracketRoundHasFinishedPlayerMatch,
   buildNumberedGroupsFromPlayerOrder,
+  buildNumberedGroupsFromPlayerOrderByGroupCount,
   canMutateBracketPlayerMatch,
   createTournament,
   ensureBracketPhasePlayerMatchesIn,
@@ -152,7 +153,8 @@ export interface SetPlayerClassFlagsCommand extends CommandBase {
 
 export type SetGroupsPayload =
   | { groups: Array<{ id: string; label?: string; playerIds: string[] }> }
-  | { targetGroupSize: number; playerIds: string[] };
+  | { targetGroupSize: number; playerIds: string[] }
+  | { targetGroupCount: number; playerIds: string[] };
 
 export interface SetGroupsCommand extends CommandBase {
   type: 'SetGroups';
@@ -161,7 +163,8 @@ export interface SetGroupsCommand extends CommandBase {
 
 export type SetClassGroupsPayload =
   | { groups: Array<{ id: string; label?: string; playerIds: string[] }> }
-  | { targetGroupSize: number; playerIds: string[] };
+  | { targetGroupSize: number; playerIds: string[] }
+  | { targetGroupCount: number; playerIds: string[] };
 
 export interface SetClassGroupsCommand extends CommandBase {
   type: 'SetClassGroups';
@@ -921,24 +924,23 @@ export class CommandRunner {
         const payload = command.payload as SetGroupsPayload;
         const hasGroups = 'groups' in payload && payload.groups !== undefined;
         const hasSize = 'targetGroupSize' in payload;
-        if (hasGroups && hasSize) {
+        const hasCount = 'targetGroupCount' in payload;
+        if ((hasGroups ? 1 : 0) + (hasSize ? 1 : 0) + (hasCount ? 1 : 0) > 1) {
           return {
             success: false,
-            reason: 'SetGroups: pass either groups or targetGroupSize with playerIds, not both',
+            reason: 'SetGroups: pass one of groups, targetGroupSize, or targetGroupCount with playerIds',
           };
         }
         let shuffleGroupMemberOrder = false;
         let groups: Array<{ id: string; label?: string; playerIds: string[] }>;
-        if (hasSize) {
+        if (hasSize || hasCount) {
           shuffleGroupMemberOrder = true;
-          const ts = Number((payload as { targetGroupSize: number }).targetGroupSize);
-          const tInt = Math.floor(ts);
-          if (!Number.isFinite(ts) || tInt < 1) {
-            return { success: false, reason: 'targetGroupSize must be a positive integer' };
-          }
           const rawList = (payload as { playerIds: unknown }).playerIds;
           if (!Array.isArray(rawList)) {
-            return { success: false, reason: 'playerIds must be an array when using targetGroupSize' };
+            return {
+              success: false,
+              reason: 'playerIds must be an array when using targetGroupSize or targetGroupCount',
+            };
           }
           const ordered: string[] = [];
           const seenPid = new Set<string>();
@@ -951,8 +953,23 @@ export class CommandRunner {
             seenPid.add(pid);
             ordered.push(pid);
           }
-          const defs = buildNumberedGroupsFromPlayerOrder(ordered, tInt);
-          groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
+          if (hasSize) {
+            const ts = Number((payload as { targetGroupSize: number }).targetGroupSize);
+            const tInt = Math.floor(ts);
+            if (!Number.isFinite(ts) || tInt < 1) {
+              return { success: false, reason: 'targetGroupSize must be a positive integer' };
+            }
+            const defs = buildNumberedGroupsFromPlayerOrder(ordered, tInt);
+            groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
+          } else {
+            const tc = Number((payload as { targetGroupCount: number }).targetGroupCount);
+            const gInt = Math.floor(tc);
+            if (!Number.isFinite(tc) || gInt < 1) {
+              return { success: false, reason: 'targetGroupCount must be a positive integer' };
+            }
+            const defs = buildNumberedGroupsFromPlayerOrderByGroupCount(ordered, gInt);
+            groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
+          }
         } else if (hasGroups) {
           const arr = (payload as { groups: unknown }).groups;
           if (!Array.isArray(arr)) {
@@ -960,7 +977,10 @@ export class CommandRunner {
           }
           groups = arr as Array<{ id: string; label?: string; playerIds: string[] }>;
         } else {
-          return { success: false, reason: 'SetGroups requires groups or targetGroupSize + playerIds' };
+          return {
+            success: false,
+            reason: 'SetGroups requires groups, targetGroupSize + playerIds, or targetGroupCount + playerIds',
+          };
         }
         for (const mid of Object.keys(tournament.matches)) {
           const m = tournament.matches[mid];
@@ -1022,24 +1042,23 @@ export class CommandRunner {
         const eligible = new Set(slice.seedings);
         const hasGroups = 'groups' in payload && payload.groups !== undefined;
         const hasSize = 'targetGroupSize' in payload;
-        if (hasGroups && hasSize) {
+        const hasCount = 'targetGroupCount' in payload;
+        if ((hasGroups ? 1 : 0) + (hasSize ? 1 : 0) + (hasCount ? 1 : 0) > 1) {
           return {
             success: false,
-            reason: 'SetClassGroups: pass either groups or targetGroupSize with playerIds, not both',
+            reason: 'SetClassGroups: pass one of groups, targetGroupSize, or targetGroupCount with playerIds',
           };
         }
         let shuffleGroupMemberOrder = false;
         let groups: Array<{ id: string; label?: string; playerIds: string[] }>;
-        if (hasSize) {
+        if (hasSize || hasCount) {
           shuffleGroupMemberOrder = true;
-          const ts = Number((payload as { targetGroupSize: number }).targetGroupSize);
-          const tInt = Math.floor(ts);
-          if (!Number.isFinite(ts) || tInt < 1) {
-            return { success: false, reason: 'targetGroupSize must be a positive integer' };
-          }
           const rawList = (payload as { playerIds: unknown }).playerIds;
           if (!Array.isArray(rawList)) {
-            return { success: false, reason: 'playerIds must be an array when using targetGroupSize' };
+            return {
+              success: false,
+              reason: 'playerIds must be an array when using targetGroupSize or targetGroupCount',
+            };
           }
           const ordered: string[] = [];
           const seenPid = new Set<string>();
@@ -1052,8 +1071,23 @@ export class CommandRunner {
             seenPid.add(pid);
             ordered.push(pid);
           }
-          const defs = buildNumberedGroupsFromPlayerOrder(ordered, tInt);
-          groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
+          if (hasSize) {
+            const ts = Number((payload as { targetGroupSize: number }).targetGroupSize);
+            const tInt = Math.floor(ts);
+            if (!Number.isFinite(ts) || tInt < 1) {
+              return { success: false, reason: 'targetGroupSize must be a positive integer' };
+            }
+            const defs = buildNumberedGroupsFromPlayerOrder(ordered, tInt);
+            groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
+          } else {
+            const tc = Number((payload as { targetGroupCount: number }).targetGroupCount);
+            const gInt = Math.floor(tc);
+            if (!Number.isFinite(tc) || gInt < 1) {
+              return { success: false, reason: 'targetGroupCount must be a positive integer' };
+            }
+            const defs = buildNumberedGroupsFromPlayerOrderByGroupCount(ordered, gInt);
+            groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
+          }
         } else if (hasGroups) {
           const arr = (payload as { groups: unknown }).groups;
           if (!Array.isArray(arr)) {
@@ -1061,7 +1095,10 @@ export class CommandRunner {
           }
           groups = arr as Array<{ id: string; label?: string; playerIds: string[] }>;
         } else {
-          return { success: false, reason: 'SetClassGroups requires groups or targetGroupSize + playerIds' };
+          return {
+            success: false,
+            reason: 'SetClassGroups requires groups, targetGroupSize + playerIds, or targetGroupCount + playerIds',
+          };
         }
         for (const mid of Object.keys(tournament.matches)) {
           const m = tournament.matches[mid];

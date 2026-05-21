@@ -23,6 +23,9 @@
     canMutateBracketPlayerMatch,
     canMutateExistingGroupPhaseMatchScores,
     clampPlayerHandicapValue,
+    closedFormGroupCountForPlayerCount,
+    CLOSED_FORM_PLAYERS_PER_GROUP,
+    defaultBracketSeedingModeFromMeta,
     equalSizedGroupBracketMeta,
     formatBracketSlotPlayerLabel,
     handicapValueBounds,
@@ -46,7 +49,7 @@
     DEFAULT_NUMERICAL_HANDICAP_CONFIG,
     buildDefaultTableIds,
     matchAssignedTableId,
-    isTableOccupiedByOtherMatch,
+    matchIdOnTable,
   } from 'ttc-tornooiapp';
   import BracketStreamView from './BracketStreamView.svelte';
   import PlayerName from './PlayerName.svelte';
@@ -57,7 +60,7 @@
   const DEBUG_UI = true;
 
   /** Draft count for [DEBUG] Fill players (parsed on click). */
-  let debugFillPlayerCount = $state('9');
+  let debugFillPlayerCount = $state('8');
 
   /** How to order participants before single-elimination seeding (see {@link generateBracket}). */
   let bracketSeedingChoice = $state<BracketSeedingMode>('heuristic');
@@ -90,10 +93,14 @@
     classEditorRows: Array<{ id: string; name: string }>;
     /** Target max players per group (sizes will be this or one smaller). */
     groupTargetSize: number;
+    /** Target number of groups when creating by group count. */
+    groupTargetCount: number;
     /** Latest `SetGroups` command id (optional extra deps for follow-up commands). */
     lastSetGroupsCommandId: string;
     /** Per-class target group size. */
     classGroupTargetSizeByClassId: Record<string, number>;
+    /** Per-class target group count. */
+    classGroupTargetCountByClassId: Record<string, number>;
     /** Latest `SetClassGroups` command id per class. */
     lastSetClassGroupsCommandIdByClass: Record<string, string>;
     /** Planned flow; only `group-bracket` is implemented end-to-end. */
@@ -125,7 +132,32 @@
       bracketGroupShapeMeta && supportsExtendedClosedFormBracketGrid(bracketGroupShapeMeta.G, bracketGroupShapeMeta.S),
     ),
   );
-  let status = $state<string | null>(null);
+  const globalGroupPlayerCount = $derived(eligibleGlobalGroupPlayerIds(tournament).length);
+
+  /** Keep bracket-tab radios aligned with group grid while knockout not yet created. */
+  $effect(() => {
+    if (tournament.bracketMatches.length > 0) return;
+    bracketSeedingChoice = defaultBracketSeedingModeFromMeta(bracketGroupShapeMeta);
+  });
+  type StatusKind = 'info' | 'warn' | 'error';
+  type AppStatus = { message: string; kind: StatusKind };
+  let status = $state<AppStatus | null>(null);
+
+  function clearStatus(): void {
+    status = null;
+  }
+  function showStatus(message: string, kind: StatusKind): void {
+    status = { message, kind };
+  }
+  function showInfo(message: string): void {
+    showStatus(message, 'info');
+  }
+  function showWarn(message: string): void {
+    showStatus(message, 'warn');
+  }
+  function showError(message: string): void {
+    showStatus(message, 'error');
+  }
   /** Export/import activity lines for the Settings “Recent activity” list. */
   let recentTournamentNotes = $state<string[]>([]);
 
@@ -333,7 +365,7 @@
       const cmdId = `cmd-bracket-slot-${bm.id}-${Date.now()}`;
       const r = c.createMatch(mid, seedA, seedB, deps, cmdId);
       if (!r.success) {
-        status = r.reason ?? 'Could not create bracket match row';
+        showError(r.reason ?? 'Could not create bracket match row');
         return;
       }
       pull();
@@ -408,11 +440,11 @@
       const r = c.clearMatchScores(sm.id, [], `cmd-clear-${sm.id}-${Date.now()}`);
       if (!r.success) {
         scoreModalHint = r.reason ?? 'clearMatchScores failed';
-        status = r.reason ?? 'clearMatchScores failed';
+        showError(r.reason ?? 'clearMatchScores failed');
         pull();
         return;
       }
-      status = `Cleared group result for ${playerLabel(sm.playerA)} vs ${playerLabel(sm.playerB)}.`;
+      showInfo(`Cleared group result for ${playerLabel(sm.playerA)} vs ${playerLabel(sm.playerB)}.`);
       closeScoreModal();
       pull();
       return;
@@ -424,11 +456,11 @@
     const r = c.clearMatchScores(sm.id, deps, `cmd-clear-${sm.id}-${Date.now()}`);
     if (!r.success) {
       scoreModalHint = r.reason ?? 'clearMatchScores failed';
-      status = r.reason ?? 'clearMatchScores failed';
+      showError(r.reason ?? 'clearMatchScores failed');
       pull();
       return;
     }
-    status = `Cleared result for ${sm.id}.`;
+    showInfo(`Cleared result for ${sm.id}.`);
     closeScoreModal();
     pull();
   }
@@ -512,57 +544,71 @@
 
   function classGroupTargetSize(classId: string): number {
     const s = getActiveSession();
-    if (!s) return 4;
+    if (!s) return CLOSED_FORM_PLAYERS_PER_GROUP;
     const v = s.classGroupTargetSizeByClassId[classId];
+    return typeof v === 'number' && v >= 1 ? v : CLOSED_FORM_PLAYERS_PER_GROUP;
+  }
+
+  function classGroupTargetCount(classId: string): number {
+    const s = getActiveSession();
+    if (!s) return 4;
+    const v = s.classGroupTargetCountByClassId[classId];
     return typeof v === 'number' && v >= 1 ? v : 4;
   }
 
-  function setClassGroupTargetSize(classId: string, size: number): void {
-    const s = getActiveSession();
-    if (!s) return;
-    patchActiveSession({
-      classGroupTargetSizeByClassId: { ...s.classGroupTargetSizeByClassId, [classId]: Math.max(1, Math.floor(size)) },
-    });
-  }
-
-  function createGlobalGroupsAndMatches(): void {
-    status = null;
+  function runSetGlobalGroups(
+    payload: { targetGroupSize: number; playerIds: string[] } | { targetGroupCount: number; playerIds: string[] },
+  ): void {
+    clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const c = s.controller;
     const t = c.getTournament();
     if (tournamentUsesClassTabs(t)) {
-      status = 'With multiple competition classes, use each class tab for groups.';
+      showWarn('With multiple competition classes, use each class tab for groups.');
       return;
     }
     const ordered = eligibleGlobalGroupPlayerIds(t);
     if (ordered.length === 0) {
-      status = 'Add at least one player (and seedings) before creating groups.';
+      showWarn('Add at least one player (and seedings) before creating groups.');
       return;
     }
-    const targetSize = Math.max(1, Math.floor(Number(s.groupTargetSize) || 4));
     const deps: string[] = [...new Set(ordered)].map((id) => `cmd-${id}`);
     if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
     const cmdId = `cmd-setgroups-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
-    const r = c.setGroups({ targetGroupSize: targetSize, playerIds: ordered }, deps, cmdId);
+    const r = c.setGroups({ ...payload, playerIds: ordered }, deps, cmdId);
     if (!r.success) {
-      status = r.reason ?? 'Could not create groups';
+      showError(r.reason ?? 'Could not create groups');
       pull();
       return;
     }
     patchActiveSession({ lastSetGroupsCommandId: cmdId });
-    status = 'Created groups and all round‑robin matches.';
+    showInfo('Created groups and all round‑robin matches.');
     pull();
   }
 
+  function createGlobalGroupsByPlayerCount(): void {
+    const s = getActiveSession();
+    if (!s) return;
+    const targetSize = Math.max(1, Math.floor(Number(s.groupTargetSize) || CLOSED_FORM_PLAYERS_PER_GROUP));
+    runSetGlobalGroups({ targetGroupSize, playerIds: [] });
+  }
+
+  function createGlobalGroupsByGroupCount(): void {
+    const s = getActiveSession();
+    if (!s) return;
+    const targetCount = Math.max(1, Math.floor(Number(s.groupTargetCount) || 4));
+    runSetGlobalGroups({ targetGroupCount: targetCount, playerIds: [] });
+  }
+
   function clearGlobalGroups(): void {
-    status = null;
+    clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const c = s.controller;
     const t = c.getTournament();
     if (tournamentUsesClassTabs(t)) {
-      status = 'Use class tabs to clear class groups.';
+      showWarn('Use class tabs to clear class groups.');
       return;
     }
     const deps: string[] = [];
@@ -570,50 +616,60 @@
     const cmdId = `cmd-setgroups-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
     const r = c.setGroups([], deps, cmdId);
     if (!r.success) {
-      status = r.reason ?? 'Could not clear groups';
+      showError(r.reason ?? 'Could not clear groups');
       pull();
       return;
     }
     patchActiveSession({ lastSetGroupsCommandId: cmdId });
-    status = 'Cleared groups and group matches.';
+    showInfo('Cleared groups and group matches.');
     pull();
   }
 
-  function createClassGroupsAndMatches(classId: string): void {
-    status = null;
+  function runSetClassGroups(
+    classId: string,
+    payload: { targetGroupSize: number; playerIds: string[] } | { targetGroupCount: number; playerIds: string[] },
+  ): void {
+    clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const c = s.controller;
     const t = c.getTournament();
     if (!tournamentUsesClassTabs(t)) {
-      status = 'Class groups require two or more competition classes.';
+      showWarn('Class groups require two or more competition classes.');
       return;
     }
     const slice = classSlice(t, classId);
     const ordered = [...slice.seedings];
     if (ordered.length === 0) {
-      status = 'No players in this class yet — enable the class for players on the Players tab.';
+      showWarn('No players in this class yet — enable the class for players on the Players tab.');
       return;
     }
-    const targetSize = classGroupTargetSize(classId);
     const deps: string[] = [...new Set(ordered)].map((id) => `cmd-${id}`);
     if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
     const cmdId = `cmd-setcg-${classId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
-    const r = c.setClassGroups(classId, { targetGroupSize: targetSize, playerIds: ordered }, deps, cmdId);
+    const r = c.setClassGroups(classId, { ...payload, playerIds: ordered }, deps, cmdId);
     if (!r.success) {
-      status = r.reason ?? 'Could not create class groups';
+      showError(r.reason ?? 'Could not create class groups');
       pull();
       return;
     }
     patchActiveSession({
       lastSetClassGroupsCommandIdByClass: { ...s.lastSetClassGroupsCommandIdByClass, [classId]: cmdId },
     });
-    status = 'Created groups and round‑robin matches for this class.';
+    showInfo('Created groups and round‑robin matches for this class.');
     pull();
   }
 
+  function createClassGroupsByPlayerCount(classId: string): void {
+    runSetClassGroups(classId, { targetGroupSize: classGroupTargetSize(classId), playerIds: [] });
+  }
+
+  function createClassGroupsByGroupCount(classId: string): void {
+    runSetClassGroups(classId, { targetGroupCount: classGroupTargetCount(classId), playerIds: [] });
+  }
+
   function clearClassGroups(classId: string): void {
-    status = null;
+    clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const c = s.controller;
@@ -623,14 +679,14 @@
     const cmdId = `cmd-setcg-${classId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
     const r = c.setClassGroups(classId, [], deps, cmdId);
     if (!r.success) {
-      status = r.reason ?? 'Could not clear class groups';
+      showError(r.reason ?? 'Could not clear class groups');
       pull();
       return;
     }
     patchActiveSession({
       lastSetClassGroupsCommandIdByClass: { ...s.lastSetClassGroupsCommandIdByClass, [classId]: cmdId },
     });
-    status = 'Cleared groups for this class.';
+    showInfo('Cleared groups for this class.');
     pull();
   }
 
@@ -715,6 +771,11 @@
     return false;
   }
 
+  /** Scheduled or assigned to a table — still needs scores for debug simulate. */
+  function matchOpenForScoring(m: Match): boolean {
+    return m.status === 'scheduled' || m.status === 'in-progress';
+  }
+
   /** After undo/clear, bracket slots may lack a `match-*` row; create scheduled rows so debug scoring can run. */
   function debugEnsureBracketMatchRows(c: TournamentController, s: TournamentSession): void {
     if (Object.keys(c.getTournament().teamMatches).length > 0) return;
@@ -730,7 +791,7 @@
       const cmdId = `cmd-dbg-ensure-${bm.id}-${Date.now()}`;
       const r = c.createMatch(mid, bm.seedA, bm.seedB, deps, cmdId);
       if (!r.success && r.reason !== 'Match already exists') {
-        status = r.reason ?? `Could not create ${mid}`;
+        showError(r.reason ?? `Could not create ${mid}`);
       }
       t = c.getTournament();
     }
@@ -744,7 +805,7 @@
       const mid = bracketPlayerMatchId(bm.id);
       const m = t.matches[mid];
       if (!m || m.groupId) continue;
-      if (m.status !== 'scheduled') continue;
+      if (!matchOpenForScoring(m)) continue;
       if (m.scores.length > 0) continue;
       if (!matchPlayersResolvedForBracketPhaseList(t, m, undefined)) continue;
       entries.push({ m, round: bracketMatchRound(bm) });
@@ -762,13 +823,13 @@
   }
 
   function debugSimulateBracketPhaseMatches(): void {
-    status = null;
+    clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const c = s.controller;
     let t = c.getTournament();
     if (anyUnfinishedGroupPhaseMatch(t)) {
-      status = 'Finish all group‑phase matches before simulating bracket scores.';
+      showWarn('Finish all group‑phase matches before simulating bracket scores.');
       pull();
       return;
     }
@@ -776,7 +837,7 @@
     t = c.getTournament();
     const seedEntries = bracketSimulateEligibleEntries(t);
     if (seedEntries.length === 0) {
-      status = 'No scheduled knockout matches to simulate (byes and finished slots are skipped).';
+      showWarn('No knockout matches awaiting scores to simulate (byes and finished slots are skipped).');
       pull();
       return;
     }
@@ -795,7 +856,7 @@
 
       const scores = debugRandomLegalBo5Scores(rng);
       if (!isMatchScoreLegal(scores)) {
-        status = 'Internal: generated illegal scores.';
+        showError('Internal: generated illegal scores.');
         pull();
         return;
       }
@@ -806,7 +867,7 @@
       const cmdId = `cmd-dbg-brkt-${m.id}-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
       const r = c.enterScore(m.id, scores, deps, cmdId);
       if (!r.success) {
-        status = r.reason ?? `Stopped while scoring ${m.id} (${done} done).`;
+        showError(r.reason ?? `Stopped while scoring ${m.id} (${done} done).`);
         pull();
         return;
       }
@@ -815,33 +876,35 @@
     }
 
     if (done === 0) {
-      status = 'No scheduled knockout matches to simulate (byes and finished slots are skipped).';
+      showWarn('No knockout matches awaiting scores to simulate (byes and finished slots are skipped).');
       pull();
       return;
     }
 
-    status = `Debug: simulated ${done} bracket match(es) (round ${targetRound}).`;
+    showInfo(`Debug: simulated ${done} bracket match(es) (round ${targetRound}).`);
     pull();
   }
 
   function debugFillPlayers(): void {
-    status = null;
+    clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const n = Math.max(0, Math.min(80, Math.floor(Number(debugFillPlayerCount.trim()))));
     if (!Number.isFinite(n) || n < 1) {
-      status = 'Enter a positive number of players.';
+      showWarn('Enter a positive number of players.');
       return;
     }
     const c = s.controller;
     const t0 = c.getTournament();
     if (Object.keys(t0.teamMatches).length > 0) {
-      status = 'Debug fill is disabled while a team vs team match exists.';
+      showWarn('Debug fill is disabled while a team vs team match exists.');
       return;
     }
     const basePool = debugAllAdjNounNames().filter((nm) => !isPlayerDisplayNameTaken(t0, nm));
     if (basePool.length < n) {
-      status = `Only ${basePool.length} unused debug name(s) are available; reduce the count or rename/remove players.`;
+      showWarn(
+        `Only ${basePool.length} unused debug name(s) are available; reduce the count or rename/remove players.`,
+      );
       return;
     }
     const shuffleKey =
@@ -855,7 +918,7 @@
       const hc = randomHandicapForTournament(rng);
       const r = c.createPlayer(id, pool[i]!, hc, cmdId);
       if (!r.success) {
-        status = r.reason ?? `Stopped after ${addedIds.length} player(s).`;
+        showError(r.reason ?? `Stopped after ${addedIds.length} player(s).`);
         pull();
         return;
       }
@@ -866,7 +929,7 @@
     const seedCmdId = `cmd-seed-${crypto.randomUUID().replaceAll('-', '').slice(0, 14)}`;
     const rSeed = c.setSeedings(newOrder, seedDeps, seedCmdId);
     if (!rSeed.success) {
-      status = rSeed.reason ?? 'Could not update seedings after debug fill';
+      showError(rSeed.reason ?? 'Could not update seedings after debug fill');
       pull();
       return;
     }
@@ -887,19 +950,19 @@
         c.setPlayerClassFlags(pid, flags, [`cmd-${pid}`], cmdId);
       }
     }
-    status = `Debug: added ${n} player(s).`;
+    showInfo(`Debug: added ${n} player(s).`);
     pull();
   }
 
   function debugSimulateGroupMatches(classId: string | undefined): void {
-    status = null;
+    clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const c = s.controller;
     const t = c.getTournament();
-    const list = groupMatchesInScope(t, classId).filter((m) => m.status === 'scheduled');
+    const list = groupMatchesInScope(t, classId).filter(matchOpenForScoring);
     if (list.length === 0) {
-      status = 'No scheduled group matches to simulate.';
+      showWarn('No group matches awaiting scores to simulate.');
       pull();
       return;
     }
@@ -908,20 +971,20 @@
     for (const m of list) {
       const scores = debugRandomLegalBo5Scores(rng);
       if (!isMatchScoreLegal(scores)) {
-        status = 'Internal: generated illegal scores.';
+        showError('Internal: generated illegal scores.');
         pull();
         return;
       }
       const cmdId = `cmd-dbg-sim-${m.id}-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
       const r = c.enterScore(m.id, scores, [], cmdId);
       if (!r.success) {
-        status = r.reason ?? `Stopped while scoring ${m.id} (${done} done).`;
+        showError(r.reason ?? `Stopped while scoring ${m.id} (${done} done).`);
         pull();
         return;
       }
       done++;
     }
-    status = `Debug: simulated ${done} group match(es).`;
+    showInfo(`Debug: simulated ${done} group match(es).`);
     pull();
   }
 
@@ -1053,7 +1116,7 @@
     const suggested = deriveLabel(t, s.playerOrder);
     patchActiveSession({ tournamentName: suggested });
     nameDraft = suggested;
-    status = `Title set to: ${suggested}`;
+    showInfo(`Title set to: ${suggested}`);
   }
 
   function deriveLabel(t: Tournament, playerOrder: string[]): string {
@@ -1356,7 +1419,7 @@
       console.error('pull() failed', e);
       scoreModalMatchId = null;
       scoreModalHint = null;
-      status = `Internal UI error while updating: ${e instanceof Error ? e.message : String(e)}`;
+      showError(`Internal UI error while updating: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -1423,14 +1486,14 @@
   }
 
   function createTournamentFromWizard(): void {
-    status = null;
+    clearStatus();
     const controller = new TournamentController();
     const handicapConfig = draftHandicapConfigFromWizard();
     if (handicapConfig) {
       const cmdId = `cmd-hc-init-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
       const rHc = controller.setHandicapConfig(handicapConfig, [], cmdId);
       if (!rHc.success) {
-        status = rHc.reason ?? 'Could not apply handicap settings';
+        showError(rHc.reason ?? 'Could not apply handicap settings');
         return;
       }
     }
@@ -1446,7 +1509,7 @@
       const cmdId = `cmd-classes-init-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
       const r = controller.setTournamentClasses(namedClasses, [], cmdId);
       if (!r.success) {
-        status = r.reason ?? 'Could not apply competition classes';
+        showError(r.reason ?? 'Could not apply competition classes');
         return;
       }
     }
@@ -1455,7 +1518,7 @@
       const tableIds = buildDefaultTableIds(Math.max(1, Math.floor(Number(draftTableCount) || 1)));
       const rTables = controller.setTournamentTables(tableIds, [], cmdId);
       if (!rTables.success) {
-        status = rTables.reason ?? 'Could not configure tables';
+        showError(rTables.reason ?? 'Could not configure tables');
         return;
       }
     }
@@ -1474,9 +1537,11 @@
       lastSeedingCommandId: '',
       nav,
       classEditorRows: classEditorRowsForSession,
-      groupTargetSize: 4,
+      groupTargetSize: CLOSED_FORM_PLAYERS_PER_GROUP,
+      groupTargetCount: 4,
       lastSetGroupsCommandId: '',
       classGroupTargetSizeByClassId: {},
+      classGroupTargetCountByClassId: {},
       lastSetClassGroupsCommandIdByClass: {},
       tournamentFormat: draftTournamentFormat,
     };
@@ -1496,18 +1561,18 @@
     draftTournamentFormat = 'group-bracket';
     draftTableCount = 4;
     pull();
-    status = 'Tournament created. Add players on the Players tab.';
+    showInfo('Tournament created. Add players on the Players tab.');
   }
 
   function applyOverviewTableCount(count: number): void {
-    status = null;
+    clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const clamped = Math.min(32, Math.max(1, Math.floor(count)));
     const tableIds = buildDefaultTableIds(clamped);
     const r = s.controller.setTournamentTables(tableIds, [], `cmd-tables-${Date.now()}`);
     if (!r.success) {
-      status = r.reason ?? 'Could not update tables';
+      showError(r.reason ?? 'Could not update tables');
     }
     pull();
   }
@@ -1525,77 +1590,99 @@
     openScoreModal(m);
   }
 
-  function scoreModalCanAssignTable(): boolean {
+  /** Read-only: table assignment is changed on the Overview via drag-and-drop. */
+  function scoreModalAssignedTableId(): string | null {
     const m = scoreModalTargetMatch();
-    if (!m) return false;
-    return m.status === 'scheduled' || m.status === 'in-progress';
+    if (!m) return null;
+    return matchAssignedTableId(tournament, m.id) ?? null;
   }
 
-  function scoreModalSelectedTableId(): string {
-    const m = scoreModalTargetMatch();
-    if (!m) return '';
-    return matchAssignedTableId(tournament, m.id) ?? '';
-  }
-
-  function scoreModalTableOptionDisabled(tableId: string): boolean {
-    const m = scoreModalTargetMatch();
-    if (!m) return true;
-    return isTableOccupiedByOtherMatch(tournament, tableId, m.id);
-  }
-
-  function changeScoreModalTable(tableId: string): void {
-    status = null;
-    scoreModalHint = null;
-    const sm = scoreModalTargetMatch();
+  function overviewAssignMatchToTable(matchId: string, tableId: string): void {
+    clearStatus();
     const s = getActiveSession();
-    if (!sm || !s) return;
-    const current = matchAssignedTableId(tournament, sm.id);
-    if (tableId === '') {
-      if (!current) return;
-      const r = s.controller.clearMatchTableAssignment(sm.id, [], `cmd-table-clear-${sm.id}-${Date.now()}`);
-      if (!r.success) scoreModalHint = r.reason ?? 'Could not clear table';
+    if (!s) return;
+    const incumbent = matchIdOnTable(tournament, tableId);
+    const sourceTableId = matchAssignedTableId(tournament, matchId);
+    const ts = Date.now();
+
+    if (incumbent && incumbent !== matchId && sourceTableId && sourceTableId !== tableId) {
+      const rClear = s.controller.clearMatchTableAssignment(incumbent, [], `cmd-table-clear-${incumbent}-${ts}`);
+      if (!rClear.success) {
+        showError(rClear.reason ?? 'Could not clear table');
+        pull();
+        return;
+      }
+      const rAssign = s.controller.assignMatchToTable(matchId, tableId, [], `cmd-table-assign-${matchId}-${ts}`);
+      if (!rAssign.success) {
+        showError(rAssign.reason ?? 'Could not assign table');
+        pull();
+        return;
+      }
+      const rSwap = s.controller.assignMatchToTable(incumbent, sourceTableId, [], `cmd-table-assign-${incumbent}-${ts}`);
+      if (!rSwap.success) showError(rSwap.reason ?? 'Could not swap tables');
       pull();
       return;
     }
-    if (tableId === current) return;
-    const r = s.controller.assignMatchToTable(sm.id, tableId, [], `cmd-table-assign-${sm.id}-${Date.now()}`);
-    if (!r.success) scoreModalHint = r.reason ?? 'Could not assign table';
+
+    if (incumbent && incumbent !== matchId) {
+      const rClear = s.controller.clearMatchTableAssignment(
+        incumbent,
+        [],
+        `cmd-table-clear-${incumbent}-${ts}`,
+      );
+      if (!rClear.success) {
+        showError(rClear.reason ?? 'Could not clear table');
+        pull();
+        return;
+      }
+    }
+    const r = s.controller.assignMatchToTable(matchId, tableId, [], `cmd-table-assign-${matchId}-${ts}`);
+    if (!r.success) showError(r.reason ?? 'Could not assign table');
+    pull();
+  }
+
+  function overviewClearMatchFromTable(matchId: string): void {
+    clearStatus();
+    const s = getActiveSession();
+    if (!s) return;
+    const r = s.controller.clearMatchTableAssignment(matchId, [], `cmd-table-clear-${matchId}-${Date.now()}`);
+    if (!r.success) showError(r.reason ?? 'Could not clear table');
     pull();
   }
 
   function doUndo(): void {
-    status = null;
+    clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const r = s.controller.undoLast();
     if (!r.success) {
-      status = r.reason ?? 'Undo failed';
+      showError(r.reason ?? 'Undo failed');
     } else {
-      status = 'Undid one step (logged as Undo command).';
+      showInfo('Undid one step (logged as Undo command).');
     }
     pull();
   }
 
   function doRedo(): void {
-    status = null;
+    clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const r = s.controller.redo();
     if (!r.success) {
-      status = r.reason ?? 'Redo failed';
+      showError(r.reason ?? 'Redo failed');
     } else {
-      status = 'Redo: removed last Undo from the log.';
+      showInfo('Redo: removed last Undo from the log.');
     }
     pull();
   }
 
   function addPlayer(): void {
-    status = null;
+    clearStatus();
     const s0 = getActiveSession();
     if (!s0) return;
     const name = newName.trim();
     if (!name) {
-      status = 'Enter a player name.';
+      showWarn('Enter a player name.');
       return;
     }
     const id = newId();
@@ -1605,7 +1692,7 @@
     const hc = cfg ? clampPlayerHandicapValue(cfg, Number(newHc) || 0) : 0;
     const r = c.createPlayer(id, name, hc, cmdId);
     if (!r.success) {
-      status = r.reason ?? 'Could not add player';
+      showError(r.reason ?? 'Could not add player');
       return;
     }
     const s = s0;
@@ -1614,34 +1701,35 @@
     const seedCmdId = `cmd-seed-${crypto.randomUUID().replaceAll('-', '').slice(0, 14)}`;
     const rSeed = c.setSeedings([...newOrder], seedDeps, seedCmdId);
     if (!rSeed.success) {
-      status = rSeed.reason ?? 'Could not update seeding order';
+      showError(rSeed.reason ?? 'Could not update seeding order');
       pull();
       return;
     }
     patchActiveSession({ playerOrder: newOrder, lastSeedingCommandId: seedCmdId });
     newName = '';
     newHc = 0;
-    status = `Added ${name} (${id}).`;
+    showInfo(`Added ${name} (${id}).`);
     pull();
   }
 
   function generateKnockoutBracket(): void {
-    status = null;
+    clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const c = s.controller;
     const t = c.getTournament();
     if (tournamentUsesClassTabs(t)) {
-      status =
-        'This tournament has multiple competition classes. Per-class bracket generation from each class tab will be added next; the global bracket control is disabled.';
+      showWarn(
+        'This tournament has multiple competition classes. Per-class bracket generation from each class tab will be added next; the global bracket control is disabled.',
+      );
       return;
     }
     if (Object.keys(t.groups).length === 0) {
-      status = 'Create groups (group phase) before generating the knockout bracket.';
+      showWarn('Create groups (group phase) before generating the knockout bracket.');
       return;
     }
     if (t.seedings.length === 0 || s.playerOrder.length === 0) {
-      status = 'Add at least one player first.';
+      showWarn('Add at least one player first.');
       return;
     }
     const deps: string[] = s.playerOrder.map((pid) => `cmd-${pid}`);
@@ -1657,14 +1745,14 @@
       bracketSeedingMode: bracketSeedingChoice,
     });
     if (!r.success) {
-      status = r.reason ?? 'Bracket generation failed';
+      showError(r.reason ?? 'Bracket generation failed');
       pull();
       return;
     }
     const live = c.getTournament();
     const r1 = live.bracketMatches.filter((m) => bracketMatchRound(m) === 1 && m.seedA && m.seedB);
     if (r1.length === 0) {
-      status = 'Bracket generated, but no round‑1 pairings with two players.';
+      showWarn('Bracket generated, but no round‑1 pairings with two players.');
       pull();
       return;
     }
@@ -1676,7 +1764,7 @@
       const createCmdId = `${genId}-pair-${bm.id}`;
       const rM = c.createMatch(mid, a, b, [genId, `cmd-${a}`, `cmd-${b}`], createCmdId);
       if (!rM.success) {
-        status = rM.reason ?? 'createMatch failed';
+        showError(rM.reason ?? 'createMatch failed');
         pull();
         return;
       }
@@ -1684,16 +1772,16 @@
     if (c.getTournament().bracketMatches.length > 0) {
       patchActiveSession({ nav: { kind: 'single', inner: 'bracket' } });
     }
-    status = 'Knockout bracket generated (byes filled) and round‑1 matches created.';
+    showInfo('Knockout bracket generated (byes filled) and round‑1 matches created.');
     pull();
   }
 
   function removeKnockoutBracket(): void {
-    status = null;
+    clearStatus();
     const s = getActiveSession();
     if (!s) return;
     if (tournament.bracketMatches.length === 0) {
-      status = 'No knockout bracket to remove.';
+      showWarn('No knockout bracket to remove.');
       return;
     }
     if (
@@ -1711,16 +1799,16 @@
     const cmdId = `cmd-clear-bracket-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
     const r = s.controller.clearBracket(deps, cmdId);
     if (!r.success) {
-      status = r.reason ?? 'Could not remove bracket';
+      showError(r.reason ?? 'Could not remove bracket');
       pull();
       return;
     }
-    status = 'Knockout bracket removed. You can create a new bracket when ready.';
+    showInfo('Knockout bracket removed. You can create a new bracket when ready.');
     pull();
   }
 
   function eliminateBracketRoundByRanking(round: number): void {
-    status = null;
+    clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const salt = crypto.randomUUID();
@@ -1733,16 +1821,16 @@
     const cmdId = `cmd-elim-r${round}-${salt.replaceAll('-', '').slice(0, 12)}`;
     const r = s.controller.eliminateLowestBracketRound(round, deps, salt, cmdId);
     if (!r.success) {
-      status = r.reason ?? 'Elimination failed';
+      showError(r.reason ?? 'Elimination failed');
       pull();
       return;
     }
-    status = `Eliminated lower-ranked players in round ${round} where pairings were still open.`;
+    showInfo(`Eliminated lower-ranked players in round ${round} where pairings were still open.`);
     pull();
   }
 
   function commitPlayerHandicap(playerId: string): void {
-    status = null;
+    clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const cfg = tournament.handicapConfig;
@@ -1756,9 +1844,9 @@
     const cmdId = `cmd-hc-${playerId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
     const r = c.renamePlayer(playerId, p.name, next, [`cmd-${playerId}`], cmdId);
     if (!r.success) {
-      status = r.reason ?? 'Could not update handicap';
+      showError(r.reason ?? 'Could not update handicap');
     } else {
-      status = `Handicap for ${p.name} set to ${next}.`;
+      showInfo(`Handicap for ${p.name} set to ${next}.`);
     }
     pull();
   }
@@ -1775,7 +1863,7 @@
   }
 
   function setRoundLock(round: number, locked: boolean): void {
-    status = null;
+    clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const c = s.controller;
@@ -1786,9 +1874,9 @@
       `cmd-lock-${round}-${locked ? 'on' : 'off'}-${crypto.randomUUID().slice(0, 8)}`,
     );
     if (!r.success) {
-      status = r.reason ?? 'SetRoundLock failed';
+      showError(r.reason ?? 'SetRoundLock failed');
     } else {
-      status = locked ? `Locked bracket round ${round}.` : `Unlocked bracket round ${round}.`;
+      showInfo(locked ? `Locked bracket round ${round}.` : `Unlocked bracket round ${round}.`);
     }
     pull();
   }
@@ -1796,7 +1884,7 @@
   function downloadJsonl(): void {
     const s = getActiveSession();
     if (!s) {
-      status = 'Create or import a tournament before exporting.';
+      showWarn('Create or import a tournament before exporting.');
       return;
     }
     const c = s.controller;
@@ -1807,7 +1895,7 @@
     a.download = `${slugForFilename(s.tournamentName)}-${new Date().toISOString().slice(0, 10)}.jsonl`;
     a.click();
     URL.revokeObjectURL(a.href);
-    status = 'Downloaded command log (.jsonl).';
+    showInfo('Downloaded command log (.jsonl).');
     recentTournamentNotes = [`Exported command log · ${new Date().toLocaleString()}`, ...recentTournamentNotes].slice(0, 8);
   }
 
@@ -1816,12 +1904,12 @@
     const file = input.files?.[0];
     input.value = '';
     if (!file) return;
-    status = null;
+    clearStatus();
     const text = await file.text();
     const { controller: next, replay } = tournamentControllerFromCommandLog(text);
     if (!replay.success) {
       const reason = replay.results.find((r) => !r.success)?.reason ?? 'Replay failed';
-      status = `Import failed: ${reason}`;
+      showError(`Import failed: ${reason}`);
       return;
     }
     const t0 = next.getTournament();
@@ -1842,8 +1930,10 @@
         t0.classDefinitions.length > 0
           ? t0.classDefinitions.map((d) => ({ id: d.id, name: d.name }))
           : [{ id: newCompetitionClassId(), name: '' }],
-      groupTargetSize: 4,
+      groupTargetSize: CLOSED_FORM_PLAYERS_PER_GROUP,
+      groupTargetCount: 4,
       classGroupTargetSizeByClassId: {},
+      classGroupTargetCountByClassId: {},
       tournamentFormat: 'group-bracket',
     };
     sessions = [...sessions, session];
@@ -1852,16 +1942,16 @@
     scoreDraftsBySession = { ...scoreDraftsBySession, [id]: {} };
     nameDraft = session.tournamentName;
     setScoreDrafts({});
-    status = `Imported ${file.name} (${replay.results.length} commands).`;
+    showInfo(`Imported ${file.name} (${replay.results.length} commands).`);
     recentTournamentNotes = [`Imported “${file.name}” · ${new Date().toLocaleString()}`, ...recentTournamentNotes].slice(0, 8);
     pull();
   }
 
   function submitScores(match: Match): void {
-    status = null;
+    clearStatus();
     const rows = scoreDrafts()[match.id];
     if (!rows) {
-      status = 'Internal: no score draft for this match.';
+      showError('Internal: no score draft for this match.');
       return;
     }
     const scores = scoresForSubmitFromRows(rows);
@@ -1898,11 +1988,11 @@
     const r = c.enterScore(match.id, scores, deps, `cmd-score-${match.id}-${Date.now()}`);
     if (!r.success) {
       scoreModalHint = r.reason ?? 'enterScore failed';
-      status = r.reason ?? 'enterScore failed';
+      showError(r.reason ?? 'enterScore failed');
       pull();
       return;
     }
-    status = `Saved scores for ${match.id}.`;
+    showInfo(`Saved scores for ${match.id}.`);
     closeScoreModal();
     pull();
   }
@@ -1910,7 +2000,7 @@
   /** DEBUG: random legal BO5, write drafts, then same path as “Save match”. */
   function debugSimulateOpenScoreModalMatch(): void {
     if (!DEBUG_UI) return;
-    status = null;
+    clearStatus();
     scoreModalHint = null;
     const sm = scoreModalTargetMatch();
     if (!sm) return;
@@ -2104,14 +2194,14 @@
   });
 
   function togglePlayerClass(playerId: string, classId: string, checked: boolean): void {
-    status = null;
+    clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const c = s.controller;
     const cmdId = `cmd-pcf-${playerId}-${classId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 8)}`;
     const r = c.setPlayerClassFlags(playerId, { [classId]: checked }, [`cmd-${playerId}`], cmdId);
     if (!r.success) {
-      status = r.reason ?? 'Could not update class flags';
+      showError(r.reason ?? 'Could not update class flags');
     }
     pull();
   }
@@ -2149,7 +2239,14 @@
     </header>
 
     {#if status}
-      <div class="banner status-banner" role="status">{status}</div>
+      <div
+        class="banner status-banner"
+        class:status-banner--warn={status.kind === 'warn'}
+        class:status-banner--error={status.kind === 'error'}
+        role={status.kind === 'error' ? 'alert' : 'status'}
+      >
+        {status.message}
+      </div>
     {/if}
   </div>
 
@@ -2435,7 +2532,8 @@
             <section class="card">
               <h2 class="h2">Overview</h2>
               <p class="muted small">
-                Snapshot of player count, phase completion, and matches that are ready to score (both players known).
+                Snapshot of player count, phase completion, and matches ready to play. Drag matches onto tables to start
+                them; drag back to Ready to play to unassign.
               </p>
               <TournamentOverview
                 {tournament}
@@ -2447,6 +2545,8 @@
                 onOpenGroupMatch={openScoreModal}
                 onOpenBracketSlot={openBracketPairingModal}
                 onOpenTableMatch={openTableMatch}
+                onAssignMatchToTable={overviewAssignMatchToTable}
+                onClearMatchFromTable={overviewClearMatchFromTable}
               />
             </section>
           {:else if showPlayersPanel}
@@ -2561,35 +2661,64 @@
               {/if}
               {#if Object.keys(tournament.groups).length === 0}
                 <p class="muted small">
-                  Pick a target group size (each group will have that many players, or one fewer where needed). Groups are
-                  named <strong>Group 1</strong>, <strong>Group 2</strong>, … in seeding order. Creating groups also creates all
+                  Groups are named <strong>Group 1</strong>, <strong>Group 2</strong>, … in seeding order. Targets use
+                  closed-form bracket sizes (4 players per group; 2, 4, or 8 groups). Creating groups also creates all
                   round‑robin matches.
                 </p>
-                <div class="row group-editor-head">
-                  <label class="grow">
-                    <span class="field-label">Target players per group</span>
-                    <input
-                      class="grow"
-                      type="number"
-                      min="1"
-                      step="1"
-                      disabled={tournament.bracketMatches.length > 0}
-                      value={activeSess.groupTargetSize}
-                      aria-label="Target group size"
-                      oninput={(e) => {
-                        const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));
-                        patchActiveSession({ groupTargetSize: v });
-                      }}
-                    />
-                  </label>
-                </div>
                 <p class="muted small">
-                  {#if eligibleGlobalGroupPlayerIds(tournament).length === 0}
+                  {#if globalGroupPlayerCount === 0}
                     Add players on the Players tab first.
                   {:else}
-                    All {eligibleGlobalGroupPlayerIds(tournament).length} seeded players are included, in seeding order.
+                    All {globalGroupPlayerCount} seeded players are included, in seeding order.
                   {/if}
                 </p>
+                <div class="group-create-row">
+                  <input
+                    class="group-create-num"
+                    type="number"
+                    min="1"
+                    step="1"
+                    disabled={tournament.bracketMatches.length > 0}
+                    value={activeSess?.groupTargetSize ?? CLOSED_FORM_PLAYERS_PER_GROUP}
+                    aria-label="Target players per group"
+                    oninput={(e) => {
+                      const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));
+                      patchActiveSession({ groupTargetSize: v });
+                    }}
+                  />
+                  <button
+                    type="button"
+                    class="btn primary"
+                    disabled={tournament.bracketMatches.length > 0 || globalGroupPlayerCount === 0}
+                    onclick={createGlobalGroupsByPlayerCount}
+                  >
+                    Create by player count
+                  </button>
+                  <div class="group-create-gap" aria-hidden="true"></div>
+                  <input
+                    class="group-create-num"
+                    type="number"
+                    min="1"
+                    step="1"
+                    disabled={tournament.bracketMatches.length > 0}
+                    value={activeSess?.groupTargetCount ?? 4}
+                    aria-label="Target number of groups"
+                    oninput={(e) => {
+                      const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));
+                      patchActiveSession({ groupTargetCount: v });
+                    }}
+                  />
+                  <button
+                    type="button"
+                    class="btn primary"
+                    disabled={tournament.bracketMatches.length > 0 || globalGroupPlayerCount === 0}
+                    onclick={createGlobalGroupsByGroupCount}
+                  >
+                    Create by group count
+                  </button>
+                  <div class="group-create-spacer" aria-hidden="true"></div>
+                </div>
+              {:else}
                 <div class="row align-end">
                   <button
                     type="button"
@@ -2599,44 +2728,20 @@
                   >
                     Clear groups
                   </button>
-                  <button
-                    type="button"
-                    class="btn primary"
-                    disabled={tournament.bracketMatches.length > 0}
-                    onclick={createGlobalGroupsAndMatches}
-                  >
-                    Create groups & matches
-                  </button>
                 </div>
-                {:else}
+                {#if DEBUG_UI}
                   <div class="row align-end">
-                    <button
-                      type="button"
-                      class="btn danger-ghost"
-                      disabled={tournament.bracketMatches.length > 0}
-                      onclick={clearGlobalGroups}
-                    >
-                      Clear groups
+                    <button type="button" class="btn subtle" onclick={() => debugSimulateGroupMatches(undefined)}>
+                      [DEBUG] Simulate matches
                     </button>
                   </div>
-                  {#if DEBUG_UI}
-                    <div class="row align-end">
-                      <button type="button" class="btn subtle" onclick={() => debugSimulateGroupMatches(undefined)}>
-                        [DEBUG] Simulate matches
-                      </button>
-                    </div>
-                  {/if}
                 {/if}
-
-              <h3 class="h3">Groups</h3>
-              <p class="muted small group-matrix-hint">
-                Click a head-to-head cell to enter or edit games. Row and column order is fixed when groups are created;
-                W and L still follow current standings. Results stay editable until a knockout match in this track has
-                recorded play.
-              </p>
-              {#if Object.keys(tournament.groups).length === 0}
-                <p class="muted small">No groups yet. Use Create groups & matches.</p>
-              {:else}
+                <h3 class="h3">Groups</h3>
+                <p class="muted small group-matrix-hint">
+                  Click a head-to-head cell to enter or edit games. Row and column order is fixed when groups are created;
+                  W and L still follow current standings. Results stay editable until a knockout match in this track has
+                  recorded play.
+                </p>
                 {#each sortGroupsForDisplay(tournament.groups) as g (g.id)}
                   {@const matrixPids = groupMatrixPlayerOrder(g)}
                   {@const standingsWl = groupStandingsWlByPid(tournament, g, undefined)}
@@ -2874,54 +2979,72 @@
                   </p>
                 {/if}
                 {#if Object.keys(slice.groups).length === 0}
+                  {@const classGroupPlayerCount = slice.seedings.length}
                   <p class="muted small">
-                    Players listed here are in this class (from the Players tab). Target size controls group sizes (each
-                    group is that size or one smaller). Groups are named Group 1, Group 2, …; creating them also creates all
-                    round‑robin matches for this class.
+                    Players listed here are in this class (from the Players tab). Targets use closed-form bracket sizes
+                    (4 players per group; 2, 4, or 8 groups). Creating groups also creates all round‑robin matches for this
+                    class.
                   </p>
-                  <div class="row group-editor-head">
-                    <label class="grow">
-                      <span class="field-label">Target players per group</span>
-                      <input
-                        class="grow"
-                        type="number"
-                        min="1"
-                        step="1"
-                        disabled={slice.bracketMatches.length > 0}
-                        value={classGroupTargetSize(cid)}
-                        aria-label="Target group size for class"
-                        oninput={(e) =>
-                          setClassGroupTargetSize(
-                            cid,
-                            Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1)),
-                          )}
-                      />
-                    </label>
-                  </div>
                   <p class="muted small">
-                    {#if slice.seedings.length === 0}
+                    {#if classGroupPlayerCount === 0}
                       No players in this class yet — enable the class checkbox for players on the Players tab.
                     {:else}
-                      All {slice.seedings.length} players in this class are included, in class seeding order.
+                      All {classGroupPlayerCount} players in this class are included, in class seeding order.
                     {/if}
                   </p>
-                  <div class="row align-end">
-                    <button
-                      type="button"
-                      class="btn danger-ghost"
+                  <div class="group-create-row">
+                    <input
+                      class="group-create-num"
+                      type="number"
+                      min="1"
+                      step="1"
                       disabled={slice.bracketMatches.length > 0}
-                      onclick={() => clearClassGroups(cid)}
-                    >
-                      Clear groups
-                    </button>
+                      value={classGroupTargetSize(cid)}
+                      aria-label="Target players per group for class"
+                      oninput={(e) => {
+                        const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));
+                        const s = getActiveSession();
+                        if (!s) return;
+                        patchActiveSession({
+                          classGroupTargetSizeByClassId: { ...s.classGroupTargetSizeByClassId, [cid]: v },
+                        });
+                      }}
+                    />
                     <button
                       type="button"
                       class="btn primary"
-                      disabled={slice.bracketMatches.length > 0}
-                      onclick={() => createClassGroupsAndMatches(cid)}
+                      disabled={slice.bracketMatches.length > 0 || classGroupPlayerCount === 0}
+                      onclick={() => createClassGroupsByPlayerCount(cid)}
                     >
-                      Create groups & matches
+                      Create by player count
                     </button>
+                    <div class="group-create-gap" aria-hidden="true"></div>
+                    <input
+                      class="group-create-num"
+                      type="number"
+                      min="1"
+                      step="1"
+                      disabled={slice.bracketMatches.length > 0}
+                      value={classGroupTargetCount(cid)}
+                      aria-label="Target number of groups for class"
+                      oninput={(e) => {
+                        const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));
+                        const s = getActiveSession();
+                        if (!s) return;
+                        patchActiveSession({
+                          classGroupTargetCountByClassId: { ...s.classGroupTargetCountByClassId, [cid]: v },
+                        });
+                      }}
+                    />
+                    <button
+                      type="button"
+                      class="btn primary"
+                      disabled={slice.bracketMatches.length > 0 || classGroupPlayerCount === 0}
+                      onclick={() => createClassGroupsByGroupCount(cid)}
+                    >
+                      Create by group count
+                    </button>
+                    <div class="group-create-spacer" aria-hidden="true"></div>
                   </div>
                 {:else}
                   <div class="row align-end">
@@ -2941,17 +3064,12 @@
                       </button>
                     </div>
                   {/if}
-                {/if}
-
-                <h3 class="h3">Groups</h3>
-                <p class="muted small group-matrix-hint">
-                  Click a head-to-head cell to enter or edit games. Row and column order is fixed when groups are created;
-                  W and L still follow current standings. Results stay editable until a knockout match in this track has
-                  recorded play.
-                </p>
-                {#if Object.keys(slice.groups).length === 0}
-                  <p class="muted small">No groups for this class yet.</p>
-                {:else}
+                  <h3 class="h3">Groups</h3>
+                  <p class="muted small group-matrix-hint">
+                    Click a head-to-head cell to enter or edit games. Row and column order is fixed when groups are created;
+                    W and L still follow current standings. Results stay editable until a knockout match in this track has
+                    recorded play.
+                  </p>
                   {#each sortGroupsForDisplay(slice.groups) as g (g.id)}
                     {@const matrixPids = groupMatrixPlayerOrder(g)}
                     {@const standingsWl = groupStandingsWlByPid(tournament, g, cid)}
@@ -3162,21 +3280,10 @@
               {/if}
             </p>
           {/if}
-          {#if scoreModalCanAssignTable() && tournament.tables.length > 0}
-            <label class="score-modal-table-field">
-              <span class="field-label">Playing on table</span>
-              <select
-                value={scoreModalSelectedTableId()}
-                onchange={(e) => changeScoreModalTable((e.currentTarget as HTMLSelectElement).value)}
-              >
-                <option value="">— Not on a table —</option>
-                {#each tournament.tables as tableId (tableId)}
-                  <option value={tableId} disabled={scoreModalTableOptionDisabled(tableId)}>
-                    Table {tableId}{scoreModalTableOptionDisabled(tableId) ? ' (in use)' : ''}
-                  </option>
-                {/each}
-              </select>
-            </label>
+          {#if scoreModalAssignedTableId()}
+            <p class="score-modal-table-readout muted small">
+              <span class="field-label">Playing on table</span> Table {scoreModalAssignedTableId()}
+            </p>
           {/if}
           <table class="mini score-modal-table">
             <thead>
@@ -3356,7 +3463,20 @@
     border: none;
     border-bottom: 1px solid #bbf7d0;
     background: rgb(236 253 245 / 96%);
+    color: #14532d;
     backdrop-filter: blur(8px);
+  }
+
+  .status-banner.status-banner--warn {
+    border-bottom-color: #fed7aa;
+    background: rgb(255 247 237 / 96%);
+    color: #9a3412;
+  }
+
+  .status-banner.status-banner--error {
+    border-bottom-color: #fecaca;
+    background: rgb(254 242 242 / 96%);
+    color: #991b1b;
   }
 
   .main {
@@ -3857,6 +3977,37 @@
     gap: 0.75rem;
   }
 
+  .group-create-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.65rem;
+    margin-top: 0.75rem;
+  }
+
+  .group-create-num {
+    width: 3.25rem;
+    min-height: 0;
+    padding: 0.15rem 0.35rem;
+    font-size: 0.9rem;
+    line-height: 1.5;
+    box-sizing: border-box;
+  }
+
+  .group-create-gap {
+    flex: 0 0 100px;
+    width: 100px;
+  }
+
+  .group-create-spacer {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .group-create-row .btn {
+    white-space: nowrap;
+  }
+
   .grid.compact th,
   .grid.compact td {
     padding: 0.25rem 0.5rem;
@@ -4334,19 +4485,14 @@
     justify-content: flex-end;
   }
 
-  .score-modal-table-field {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
+  .score-modal-table-readout {
     margin: 0.5rem 0 0.65rem;
   }
 
-  .score-modal-table-field select {
-    max-width: 16rem;
-    padding: 0.35rem 0.5rem;
-    border: 1px solid #cbd5e1;
-    border-radius: 6px;
-    font: inherit;
+  .score-modal-table-readout .field-label {
+    font-weight: 600;
+    color: #334155;
+    margin-right: 0.35rem;
   }
 
   .score-modal-table {

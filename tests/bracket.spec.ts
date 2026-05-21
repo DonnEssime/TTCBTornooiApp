@@ -3,6 +3,8 @@ import {
   balancedBracketVirtualGridTarget,
   BRACKET_STRUCTURAL_EMPTY_ADVANCE,
   createTournament,
+  defaultBracketSeedingMode,
+  defaultBracketSeedingModeFromMeta,
   forfeitPlayer,
   forfeitTeam,
   generateBracket,
@@ -995,5 +997,27 @@ describe('bracketRoundHasOpenEliminationPairings', () => {
     finishGroupRR4(t, 'g1', ['p1', 'p2', 'p3', 'p4']);
     t.bracketMatches = generateBracket(['p1', 'p2', 'p3', 'p4'], { fillByes: false, cullToPowerOfTwo: false });
     expect(bracketRoundHasOpenEliminationPairings(t, t.bracketMatches, 1)).toBe(true);
+  });
+});
+
+describe('defaultBracketSeedingMode', () => {
+  it('prefers closed_form on exact 2×4 / 4×4 / 8×4 grids', () => {
+    expect(defaultBracketSeedingMode(2, 4)).toBe('closed_form');
+    expect(defaultBracketSeedingMode(4, 4)).toBe('closed_form');
+    expect(defaultBracketSeedingMode(8, 4)).toBe('closed_form');
+  });
+
+  it('prefers extend_closed_form when only padding places within existing groups', () => {
+    expect(defaultBracketSeedingMode(2, 3)).toBe('extend_closed_form');
+    expect(defaultBracketSeedingMode(4, 3)).toBe('extend_closed_form');
+  });
+
+  it('prefers heuristic when virtual layout would add dummy groups', () => {
+    expect(defaultBracketSeedingMode(3, 4)).toBe('heuristic');
+    expect(defaultBracketSeedingMode(5, 4)).toBe('heuristic');
+  });
+
+  it('returns heuristic when meta is null', () => {
+    expect(defaultBracketSeedingModeFromMeta(null)).toBe('heuristic');
   });
 });

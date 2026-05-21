@@ -95,15 +95,58 @@ describe('Tournament tables', () => {
       payload: { matchId: 'gm-g1-c-b', playerA: 'c', playerB: 'b', groupId: 'g1' },
       timestamp: iso(),
     });
-    const blocked = runner.execute({
+    const blockedTable = runner.execute({
       id: 'a2',
       type: 'AssignMatchToTable',
       dependsOn: ['m2'],
       payload: { matchId: 'gm-g1-c-b', tableId: '1' },
       timestamp: iso(),
     });
-    expect(blocked.success).toBe(false);
-    expect(blocked.reason).toMatch(/already/i);
+    expect(blockedTable.success).toBe(false);
+    expect(blockedTable.reason).toMatch(/table already/i);
+
+    const blockedPlayer = runner.execute({
+      id: 'a3',
+      type: 'AssignMatchToTable',
+      dependsOn: ['m2'],
+      payload: { matchId: 'gm-g1-c-b', tableId: '2' },
+      timestamp: iso(),
+    });
+    expect(blockedPlayer.success).toBe(false);
+    expect(blockedPlayer.reason).toMatch(/already playing another match on table 1/i);
+  });
+
+  it('AssignMatchToTable allows moving the same in-progress match to another table', () => {
+    const runner = new CommandRunner();
+    setupPlayersAndMatch(runner);
+    runner.execute({
+      id: 'tabs',
+      type: 'SetTournamentTables',
+      dependsOn: [],
+      payload: { tableIds: ['1', '2'] },
+      timestamp: iso(),
+    });
+    const mid = 'gm-g1-a-b';
+    runner.execute({
+      id: 'a1',
+      type: 'AssignMatchToTable',
+      dependsOn: ['m1'],
+      payload: { matchId: mid, tableId: '1' },
+      timestamp: iso(),
+    });
+    const moved = runner.execute({
+      id: 'a2',
+      type: 'AssignMatchToTable',
+      dependsOn: ['a1'],
+      payload: { matchId: mid, tableId: '2' },
+      timestamp: iso(),
+    });
+    expect(moved.success).toBe(true);
+    const t = runner.getTournament();
+    expect(t.matches[mid]?.status).toBe('in-progress');
+    expect(matchAssignedTableId(t, mid)).toBe('2');
+    expect(matchIdOnTable(t, '1')).toBeUndefined();
+    expect(matchIdOnTable(t, '2')).toBe(mid);
   });
 
   it('EnterScore frees the table', () => {

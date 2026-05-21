@@ -18,6 +18,8 @@
     onOpenGroupMatch,
     onOpenBracketSlot,
     onOpenTableMatch,
+    onAssignMatchToTable,
+    onClearMatchFromTable,
     tableCount,
     onIncrementTables,
     onDecrementTables,
@@ -31,7 +33,108 @@
     onOpenGroupMatch: (m: Match) => void;
     onOpenBracketSlot: (bm: BracketMatch) => void;
     onOpenTableMatch: (m: Match) => void;
+    onAssignMatchToTable: (matchId: string, tableId: string) => void;
+    onClearMatchFromTable: (matchId: string) => void;
   } = $props();
+
+  const DND_MATCH = 'application/x-ttc-match-id';
+  const DND_SOURCE = 'application/x-ttc-dnd-source';
+
+  type DndSource = 'ready' | 'table';
+
+  let draggingMatchId = $state<string | null>(null);
+  let draggingSource = $state<DndSource | null>(null);
+  let dragOverTableId = $state<string | null>(null);
+  let dragOverReady = $state(false);
+
+  function resetDragState(): void {
+    draggingMatchId = null;
+    draggingSource = null;
+    dragOverTableId = null;
+    dragOverReady = false;
+  }
+
+  function handleDragStart(e: DragEvent, matchId: string, source: DndSource): void {
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    dt.setData(DND_MATCH, matchId);
+    dt.setData(DND_SOURCE, source);
+    dt.effectAllowed = 'move';
+    draggingMatchId = matchId;
+    draggingSource = source;
+  }
+
+  function handleDragEnd(): void {
+    resetDragState();
+  }
+
+  function handleTableDragOver(e: DragEvent, tableId: string): void {
+    if (!draggingMatchId) return;
+    e.preventDefault();
+    const dt = e.dataTransfer;
+    if (dt) dt.dropEffect = 'move';
+    dragOverTableId = tableId;
+    dragOverReady = false;
+  }
+
+  function handleTableDragLeave(tableId: string, e: DragEvent): void {
+    if (dragOverTableId !== tableId) return;
+    const rel = e.relatedTarget as Node | null;
+    const tile = e.currentTarget as HTMLElement;
+    if (rel && tile.contains(rel)) return;
+    dragOverTableId = null;
+  }
+
+  function handleTableDrop(e: DragEvent, tableId: string): void {
+    e.preventDefault();
+    const matchId = e.dataTransfer?.getData(DND_MATCH) || draggingMatchId;
+    resetDragState();
+    if (!matchId) return;
+    onAssignMatchToTable(matchId, tableId);
+  }
+
+  function handleReadyDragOver(e: DragEvent): void {
+    if (draggingSource !== 'table' || !draggingMatchId) return;
+    e.preventDefault();
+    const dt = e.dataTransfer;
+    if (dt) dt.dropEffect = 'move';
+    dragOverReady = true;
+    dragOverTableId = null;
+  }
+
+  function handleReadyDragLeave(e: DragEvent): void {
+    const rel = e.relatedTarget as Node | null;
+    const zone = e.currentTarget as HTMLElement;
+    if (rel && zone.contains(rel)) return;
+    dragOverReady = false;
+  }
+
+  function handleReadyDrop(e: DragEvent): void {
+    if (draggingSource !== 'table') {
+      resetDragState();
+      return;
+    }
+    e.preventDefault();
+    const matchId = e.dataTransfer?.getData(DND_MATCH) || draggingMatchId;
+    resetDragState();
+    if (!matchId) return;
+    onClearMatchFromTable(matchId);
+  }
+
+  /** Knockout ready row with a playable scheduled player match (draggable to a table). */
+  function readyBracketPlayableMatchId(
+    t: Tournament,
+    bm: BracketMatch,
+    classId: string | undefined,
+  ): string | null {
+    if (bm.winner) return null;
+    const mid = bracketPlayerMatchId(bm.id);
+    const m = t.matches[mid];
+    if (!m || m.groupId) return null;
+    if (m.status !== 'scheduled' || m.scores.length > 0) return null;
+    if (!matchPlayersResolvedForBracketPhaseList(t, m, classId)) return null;
+    return mid;
+  }
 
   function sortGroupsForDisplay(groups: Record<string, GroupDefinition>): GroupDefinition[] {
     return Object.values(groups).sort((a, b) => {
@@ -301,22 +404,49 @@
   <div class="ov-main">
     <section class="ov-card ov-tables-card">
       <h3 class="ov-h">Tables</h3>
+      {#if tournament.tables.length > 0}
+        <p class="muted small ov-dnd-hint">Drag matches from Ready to play onto a table; drag back to unassign.</p>
+      {/if}
       {#if tournament.tables.length === 0}
         <p class="muted small">No tables configured yet. Use #Tables in the sidebar to add tables.</p>
       {:else}
         <div class="ov-table-grid" role="list" aria-label="Tournament tables">
           {#each tournament.tables as tableId (tableId)}
             {@const tm = matchOnTable(tableId)}
-            <div class="ov-table-tile" class:ov-table-busy={Boolean(tm)} role="listitem">
+            <div
+              class="ov-table-tile"
+              class:ov-table-busy={Boolean(tm)}
+              class:ov-drop-highlight={dragOverTableId === tableId}
+              role="listitem"
+              ondragover={(e) => handleTableDragOver(e, tableId)}
+              ondragleave={(e) => handleTableDragLeave(tableId, e)}
+              ondrop={(e) => handleTableDrop(e, tableId)}
+            >
               <div class="ov-table-num">Table {tableId}</div>
               {#if tm}
-                <button type="button" class="ov-table-match-btn" onclick={() => onOpenTableMatch(tm)}>
+                <div
+                  class="ov-table-match-drag ov-table-match-btn"
+                  draggable="true"
+                  class:ov-dragging={draggingMatchId === tm.id}
+                  role="button"
+                  tabindex="0"
+                  aria-label={`Match on table ${tableId}, drag to move or unassign`}
+                  ondragstart={(e) => handleDragStart(e, tm.id, 'table')}
+                  ondragend={handleDragEnd}
+                  onclick={() => onOpenTableMatch(tm)}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onOpenTableMatch(tm);
+                    }
+                  }}
+                >
                   <span class="ov-table-match-pair">
                     <PlayerName {tournament} playerId={tm.playerA} tag="strong" /> vs
                     <PlayerName {tournament} playerId={tm.playerB} tag="strong" />
                   </span>
                   <span class="muted small">In progress</span>
-                </button>
+                </div>
               {:else}
                 <p class="ov-table-free muted small">Free</p>
               {/if}
@@ -326,7 +456,13 @@
       {/if}
     </section>
 
-    <section class="ov-card ov-card-main">
+    <section
+      class="ov-card ov-card-main"
+      class:ov-ready-drop-highlight={dragOverReady}
+      ondragover={handleReadyDragOver}
+      ondragleave={handleReadyDragLeave}
+      ondrop={handleReadyDrop}
+    >
       <h3 class="ov-h">Ready to play</h3>
       {#if readyGroupsAll.length === 0 && readyBracketsAll.length === 0}
         <p class="muted small">Nothing to highlight: no group matches waiting, and no knockout slots that are ready to play or already decided.</p>
@@ -335,7 +471,13 @@
           <h4 class="ov-h4">Group</h4>
           <ul class="ov-ready-list">
             {#each readyGroupsAll as m (m.id)}
-              <li>
+              <li
+                class="ov-ready-item"
+                draggable="true"
+                class:ov-dragging={draggingMatchId === m.id}
+                ondragstart={(e) => handleDragStart(e, m.id, 'ready')}
+                ondragend={handleDragEnd}
+              >
                 <button type="button" class="ov-ready-btn" onclick={() => onOpenGroupMatch(m)}>
                   <span class="ov-ready-pair"
                     ><PlayerName {tournament} playerId={m.playerA} tag="strong" /> vs <PlayerName
@@ -354,7 +496,17 @@
           <h4 class="ov-h4">Knockout</h4>
           <ul class="ov-ready-list">
             {#each readyBracketsAll as item (item.bm.id)}
-              <li>
+              {@const bracketMid = readyBracketPlayableMatchId(tournament, item.bm, item.classId)}
+              <li
+                class="ov-ready-item"
+                class:ov-ready-not-draggable={!bracketMid}
+                draggable={Boolean(bracketMid)}
+                class:ov-dragging={bracketMid !== null && draggingMatchId === bracketMid}
+                ondragstart={(e) => {
+                  if (bracketMid) handleDragStart(e, bracketMid, 'ready');
+                }}
+                ondragend={handleDragEnd}
+              >
                 <button type="button" class="ov-ready-btn" onclick={() => onOpenBracketSlot(item.bm)}>
                   <span class="ov-ready-pair"
                     ><PlayerName {tournament} playerId={item.bm.seedA!} tag="strong" /> vs <PlayerName
@@ -576,6 +728,10 @@
     margin-bottom: 0.65rem;
   }
 
+  .ov-dnd-hint {
+    margin: 0 0 0.5rem;
+  }
+
   .ov-table-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
@@ -597,6 +753,16 @@
     border-color: #0d9488;
     background: linear-gradient(180deg, #f0fdfa 0%, #ccfbf1 40%, #f0fdfa 100%);
     box-shadow: 0 0 0 1px rgba(13, 148, 136, 0.15);
+  }
+
+  .ov-table-tile.ov-drop-highlight {
+    border-color: #0d9488;
+    box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.35);
+  }
+
+  .ov-card-main.ov-ready-drop-highlight {
+    box-shadow: inset 0 0 0 2px rgba(13, 148, 136, 0.45);
+    border-color: #0d9488;
   }
 
   .ov-table-num {
@@ -635,6 +801,32 @@
 
   .ov-table-match-btn:hover {
     background: rgba(255, 255, 255, 0.65);
+  }
+
+  .ov-table-match-drag {
+    cursor: grab;
+  }
+
+  .ov-table-match-drag:active {
+    cursor: grabbing;
+  }
+
+  .ov-ready-item {
+    cursor: grab;
+    list-style: none;
+  }
+
+  .ov-ready-item.ov-ready-not-draggable {
+    cursor: default;
+  }
+
+  .ov-ready-item.ov-dragging,
+  .ov-table-match-drag.ov-dragging {
+    opacity: 0.55;
+  }
+
+  .ov-ready-item:active {
+    cursor: grabbing;
   }
 
   .ov-table-match-pair {
@@ -845,6 +1037,11 @@
     margin: 0;
     padding: 0;
     list-style: none;
+  }
+
+  .ov-ready-list .ov-ready-item {
+    margin: 0;
+    padding: 0;
   }
 
   .ov-ready-btn {

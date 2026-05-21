@@ -317,16 +317,60 @@ export function partitionPlayerCountIntoGroupSizes(playerCount: number, targetSi
   return sizes;
 }
 
+/** Players per group for closed-form bracket layouts (2×4, 4×4, 8×4). */
+export const CLOSED_FORM_PLAYERS_PER_GROUP = 4;
+
+const CLOSED_FORM_GROUP_COUNT_OPTIONS = [2, 4, 8] as const;
+
+/** Smallest supported closed-form group count (2, 4, or 8) that fits `ceil(playerCount / 4)`. */
+export function closedFormGroupCountForPlayerCount(playerCount: number): number {
+  const n = Math.max(0, Math.floor(playerCount));
+  if (n === 0) return CLOSED_FORM_GROUP_COUNT_OPTIONS[0];
+  const need = Math.ceil(n / CLOSED_FORM_PLAYERS_PER_GROUP);
+  for (const g of CLOSED_FORM_GROUP_COUNT_OPTIONS) {
+    if (g >= need) return g;
+  }
+  return CLOSED_FORM_GROUP_COUNT_OPTIONS[CLOSED_FORM_GROUP_COUNT_OPTIONS.length - 1];
+}
+
+/** Split `playerCount` across `groupCount` consecutive groups (first groups get +1 when remainder). */
+export function partitionPlayerCountIntoGroupCount(playerCount: number, groupCount: number): number[] {
+  const n = Math.max(0, Math.floor(playerCount));
+  const G = Math.max(1, Math.floor(groupCount));
+  if (n === 0) return [];
+  const q = Math.floor(n / G);
+  const r = n % G;
+  const sizes: number[] = [];
+  for (let i = 0; i < G; i++) sizes.push(q + (i < r ? 1 : 0));
+  return sizes.filter((sz) => sz > 0);
+}
+
 /** Build groups with ids "1", "2", … and labels {@link groupNumberedTitle}-compatible (`Group 1`, …), in order, splitting `playerIds` by {@link partitionPlayerCountIntoGroupSizes}. */
 export function buildNumberedGroupsFromPlayerOrder(playerIds: PlayerId[], targetSize: number): GroupDefinition[] {
   const ids = [...playerIds].filter(Boolean);
   const n = ids.length;
   if (n === 0) return [];
   const sizes = partitionPlayerCountIntoGroupSizes(n, targetSize);
+  return buildNumberedGroupsFromSizes(ids, sizes);
+}
+
+/** Build groups from seeding order and a fixed target number of groups. */
+export function buildNumberedGroupsFromPlayerOrderByGroupCount(
+  playerIds: PlayerId[],
+  targetGroupCount: number,
+): GroupDefinition[] {
+  const ids = [...playerIds].filter(Boolean);
+  const n = ids.length;
+  if (n === 0) return [];
+  const sizes = partitionPlayerCountIntoGroupCount(n, targetGroupCount);
+  return buildNumberedGroupsFromSizes(ids, sizes);
+}
+
+function buildNumberedGroupsFromSizes(ids: PlayerId[], sizes: number[]): GroupDefinition[] {
   const out: GroupDefinition[] = [];
   let offset = 0;
   for (let gi = 0; gi < sizes.length; gi++) {
-    const sz = sizes[gi];
+    const sz = sizes[gi]!;
     const chunk = ids.slice(offset, offset + sz);
     offset += sz;
     const num = String(gi + 1);
@@ -854,6 +898,22 @@ export function isExactClosedFormBracketGrid(G: number, S: number): boolean {
 /** True when a virtual padded closed layout exists for this **G×S** (see {@link balancedBracketVirtualGridTarget}). */
 export function supportsExtendedClosedFormBracketGrid(G: number, S: number): boolean {
   return balancedBracketVirtualGridTarget(G, S) !== null;
+}
+
+/**
+ * Default UI seeding mode for an equal-sized **G×S** group grid: exact closed layout, virtual padding within
+ * the same group count only, or heuristic when virtual padding would add dummy groups.
+ */
+export function defaultBracketSeedingMode(G: number, S: number): BracketSeedingMode {
+  if (isExactClosedFormBracketGrid(G, S)) return 'closed_form';
+  const grid = balancedBracketVirtualGridTarget(G, S);
+  if (grid && grid.G_tgt === G) return 'extend_closed_form';
+  return 'heuristic';
+}
+
+export function defaultBracketSeedingModeFromMeta(meta: { G: number; S: number } | null): BracketSeedingMode {
+  if (!meta) return 'heuristic';
+  return defaultBracketSeedingMode(meta.G, meta.S);
 }
 
 function mapLayoutDummiesToBye(ids: readonly PlayerId[]): PlayerId[] {
@@ -2310,6 +2370,28 @@ export function isTableOccupiedByOtherMatch(tournament: Tournament, tableId: str
   return other !== undefined && other !== matchId;
 }
 
+/** In-progress player match ids involving this player. */
+export function inProgressMatchIdsForPlayer(tournament: Tournament, playerId: PlayerId): string[] {
+  const ids: string[] = [];
+  for (const m of Object.values(tournament.matches)) {
+    if (m.status !== 'in-progress') continue;
+    if (m.playerA === playerId || m.playerB === playerId) ids.push(m.id);
+  }
+  return ids;
+}
+
+function assertPlayersFreeForMatchAssignment(tournament: Tournament, matchId: string, match: Match): void {
+  for (const playerId of [match.playerA, match.playerB]) {
+    const other = inProgressMatchIdsForPlayer(tournament, playerId).filter((id) => id !== matchId);
+    if (other.length === 0) continue;
+    const name = tournament.players[playerId]?.name ?? playerId;
+    const otherMatchId = other[0];
+    const tableId = otherMatchId ? matchAssignedTableId(tournament, otherMatchId) : undefined;
+    const tablePart = tableId ? ` on table ${tableId}` : '';
+    throw new Error(`${name} is already playing another match${tablePart}`);
+  }
+}
+
 function releaseLiveTableForMatch(tournament: Tournament, matchId: string): void {
   tournament.tableAssignments = tournament.tableAssignments.filter((a) => a.matchId !== matchId);
   const m = tournament.matches[matchId];
@@ -2347,6 +2429,7 @@ export function assignMatchToTable(tournament: Tournament, matchId: string, tabl
   if (isTableOccupiedByOtherMatch(tournament, tableId, matchId)) {
     throw new Error('That table already has a match in progress');
   }
+  assertPlayersFreeForMatchAssignment(tournament, matchId, match);
   tournament.tableAssignments = tournament.tableAssignments.filter((a) => a.matchId !== matchId);
   tournament.tableAssignments.push({ tableId, matchId });
   match.status = 'in-progress';
