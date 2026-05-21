@@ -133,6 +133,39 @@
     ),
   );
   const globalGroupPlayerCount = $derived(eligibleGlobalGroupPlayerIds(tournament).length);
+  const suggestedGlobalGroupTargetCount = $derived(
+    closedFormGroupCountForPlayerCount(globalGroupPlayerCount),
+  );
+
+  /** Suggested closed-form group count (2 / 4 / 8) from eligible players before groups exist. */
+  $effect(() => {
+    if (tournament.bracketMatches.length > 0) return;
+    if (Object.keys(tournament.groups).length > 0) return;
+    const s = getActiveSession();
+    if (!s) return;
+    const next = suggestedGlobalGroupTargetCount;
+    if (s.groupTargetCount === next) return;
+    patchActiveSession({ groupTargetCount: next });
+  });
+
+  $effect(() => {
+    if (!tournamentUsesClassTabs(tournament)) return;
+    const s = getActiveSession();
+    if (!s) return;
+    const nextByClass: Record<string, number> = { ...s.classGroupTargetCountByClassId };
+    let changed = false;
+    for (const def of tournament.classDefinitions) {
+      const slice = tournament.classTournaments[def.id];
+      if (!slice) continue;
+      if (slice.bracketMatches.length > 0) continue;
+      if (Object.keys(slice.groups).length > 0) continue;
+      const next = closedFormGroupCountForPlayerCount(slice.seedings.length);
+      if (nextByClass[def.id] === next) continue;
+      nextByClass[def.id] = next;
+      changed = true;
+    }
+    if (changed) patchActiveSession({ classGroupTargetCountByClassId: nextByClass });
+  });
 
   /** Keep bracket-tab radios aligned with group grid while knockout not yet created. */
   $effect(() => {
@@ -551,9 +584,11 @@
 
   function classGroupTargetCount(classId: string): number {
     const s = getActiveSession();
-    if (!s) return 4;
+    const n = tournament.classTournaments[classId]?.seedings.length ?? 0;
+    const suggested = closedFormGroupCountForPlayerCount(n);
+    if (!s) return suggested;
     const v = s.classGroupTargetCountByClassId[classId];
-    return typeof v === 'number' && v >= 1 ? v : 4;
+    return typeof v === 'number' && v >= 1 ? v : suggested;
   }
 
   function runSetGlobalGroups(
@@ -597,7 +632,10 @@
   function createGlobalGroupsByGroupCount(): void {
     const s = getActiveSession();
     if (!s) return;
-    const targetCount = Math.max(1, Math.floor(Number(s.groupTargetCount) || 4));
+    const targetCount = Math.max(
+      1,
+      Math.floor(Number(s.groupTargetCount) || suggestedGlobalGroupTargetCount),
+    );
     runSetGlobalGroups({ targetGroupCount: targetCount, playerIds: [] });
   }
 
@@ -1538,7 +1576,7 @@
       nav,
       classEditorRows: classEditorRowsForSession,
       groupTargetSize: CLOSED_FORM_PLAYERS_PER_GROUP,
-      groupTargetCount: 4,
+      groupTargetCount: closedFormGroupCountForPlayerCount(0),
       lastSetGroupsCommandId: '',
       classGroupTargetSizeByClassId: {},
       classGroupTargetCountByClassId: {},
@@ -1931,7 +1969,7 @@
           ? t0.classDefinitions.map((d) => ({ id: d.id, name: d.name }))
           : [{ id: newCompetitionClassId(), name: '' }],
       groupTargetSize: CLOSED_FORM_PLAYERS_PER_GROUP,
-      groupTargetCount: 4,
+      groupTargetCount: closedFormGroupCountForPlayerCount(playerOrder.length),
       classGroupTargetSizeByClassId: {},
       classGroupTargetCountByClassId: {},
       tournamentFormat: 'group-bracket',
@@ -2701,7 +2739,7 @@
                     min="1"
                     step="1"
                     disabled={tournament.bracketMatches.length > 0}
-                    value={activeSess?.groupTargetCount ?? 4}
+                    value={activeSess?.groupTargetCount ?? suggestedGlobalGroupTargetCount}
                     aria-label="Target number of groups"
                     oninput={(e) => {
                       const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));

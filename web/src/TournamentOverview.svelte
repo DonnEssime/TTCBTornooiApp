@@ -5,6 +5,7 @@
     bracketPhaseCountsIncludingFutureRounds,
     bracketPlayerMatchId,
     bracketRoundAggregatesIncludingFutureRounds,
+    bracketSlotAwaitingPlay,
     compareBracketMatchId,
     matchIdOnTable,
     matchPlayersResolvedForBracketPhaseList,
@@ -127,7 +128,7 @@
     bm: BracketMatch,
     classId: string | undefined,
   ): string | null {
-    if (bm.winner) return null;
+    if (!bracketSlotAwaitingPlay(t, bm)) return null;
     const mid = bracketPlayerMatchId(bm.id);
     const m = t.matches[mid];
     if (!m || m.groupId) return null;
@@ -252,24 +253,16 @@
   }
 
   /**
-   * Knockout slots to surface on the overview: (1) scheduled player matches with both seeds and no
-   * scores (unchanged); (2) bracket rows already decided (`winner` or finished player row); (3) both
-   * seeds set but no canonical player row yet (e.g. materialized next round before `ensureBracketPhase`
-   * runs). Sorted later by round, then actionable rows first.
+   * Knockout slots still awaiting play: scheduled player rows with both seeds and no scores, or both
+   * seeds set but no canonical player row yet (e.g. next round before reconciliation creates rows).
+   * Finished or simulated slots are excluded.
    */
   function readyBracketMatches(t: Tournament, bracketMatches: BracketMatch[], classId: string | undefined): BracketMatch[] {
     const out: BracketMatch[] = [];
     for (const bm of bracketMatches) {
-      if (!bm.seedA || !bm.seedB) continue;
+      if (!bracketSlotAwaitingPlay(t, bm)) continue;
       const mid = bracketPlayerMatchId(bm.id);
       const m = t.matches[mid];
-
-      const playerFinished = Boolean(m && !m.groupId && m.status === 'finished' && m.winner);
-      const bracketDecided = Boolean(bm.winner);
-      if (bracketDecided || playerFinished) {
-        out.push(bm);
-        continue;
-      }
 
       const playableScheduled =
         m &&
@@ -282,7 +275,7 @@
         continue;
       }
 
-      if (!bm.winner && !m) {
+      if (!m) {
         out.push(bm);
       }
     }
@@ -465,7 +458,7 @@
     >
       <h3 class="ov-h">Ready to play</h3>
       {#if readyGroupsAll.length === 0 && readyBracketsAll.length === 0}
-        <p class="muted small">Nothing to highlight: no group matches waiting, and no knockout slots that are ready to play or already decided.</p>
+        <p class="muted small">Nothing to highlight: no group matches waiting and no knockout slots ready to play.</p>
       {:else}
         {#if readyGroupsAll.length > 0}
           <h4 class="ov-h4">Group</h4>

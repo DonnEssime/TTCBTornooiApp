@@ -1891,12 +1891,31 @@ export function bracketParentMatch(bracketMatches: BracketMatch[], bm: BracketMa
   return parents[pIdx];
 }
 
-function bracketEffectiveWinnerForLock(tournament: Tournament, bm: BracketMatch): PlayerId | undefined {
+/**
+ * Resolved winner for a bracket slot from `bm.winner`, forfeits/byes, or a decisive canonical or
+ * alias player row (same sources as {@link settleBracketWinnersIn}).
+ */
+export function bracketEffectiveWinner(tournament: Tournament, bm: BracketMatch): PlayerId | undefined {
   if (bm.winner && !isBracketStructuralEmptyAdvanceWinner(bm.winner)) return bm.winner;
+  if (!bm.seedA || !bm.seedB) return undefined;
   const mid = bracketPlayerMatchId(bm.id);
-  const m = tournament.matches[mid];
-  if (m && !m.groupId && knockoutMatchHasDecisiveOutcome(m)) return m.winner;
+  const direct = tournament.matches[mid];
+  const match =
+    direct && !direct.groupId && knockoutMatchHasDecisiveOutcome(direct)
+      ? direct
+      : findMatchByPlayers(tournament, bm.seedA, bm.seedB);
+  if (match && !match.groupId && knockoutMatchHasDecisiveOutcome(match)) return match.winner;
   return undefined;
+}
+
+/** True when both seeds are set but the slot has no decisive outcome yet. */
+export function bracketSlotAwaitingPlay(tournament: Tournament, bm: BracketMatch): boolean {
+  if (!bm.seedA || !bm.seedB) return false;
+  return bracketEffectiveWinner(tournament, bm) === undefined;
+}
+
+function bracketEffectiveWinnerForLock(tournament: Tournament, bm: BracketMatch): PlayerId | undefined {
+  return bracketEffectiveWinner(tournament, bm);
 }
 
 /**

@@ -23,6 +23,8 @@ import {
   singleEliminationPlacementRows,
   bracketMatchLoser,
   bracketPlayerMatchId,
+  bracketSlotAwaitingPlay,
+  bracketEffectiveWinner,
   bracketRoundHasOpenEliminationPairings,
   eliminateLowestRankedPlayersInBracketRound,
   matchPlayersResolvedForBracketPhaseList,
@@ -337,6 +339,51 @@ describe('Bracket generation', () => {
       status: 'scheduled',
     });
     expect(t.matches['match-m1']).toBeUndefined();
+  });
+
+  it('bracketSlotAwaitingPlay is false after a decisive canonical or alias player row', () => {
+    const t = createTournament();
+    t.players = {
+      p1: { id: 'p1', name: 'A', handicap: 0 },
+      p2: { id: 'p2', name: 'B', handicap: 0 },
+    };
+    const bm = { id: 'm1', seedA: 'p1', seedB: 'p2', round: 1 };
+    t.bracketMatches = [bm];
+    expect(bracketSlotAwaitingPlay(t, bm)).toBe(true);
+
+    t.matches['match-m1'] = {
+      id: 'match-m1',
+      playerA: 'p1',
+      playerB: 'p2',
+      scores: [
+        { playerA: 11, playerB: 0 },
+        { playerA: 11, playerB: 0 },
+        { playerA: 11, playerB: 0 },
+      ],
+      status: 'finished',
+      winner: 'p1',
+    };
+    settleBracketWinners(t);
+    expect(bracketSlotAwaitingPlay(t, bm)).toBe(false);
+    expect(bracketEffectiveWinner(t, bm)).toBe('p1');
+
+    delete t.matches['match-m1'];
+    bm.winner = undefined;
+    t.matches['match-alias'] = {
+      id: 'match-alias',
+      playerA: 'p2',
+      playerB: 'p1',
+      scores: [
+        { playerA: 0, playerB: 11 },
+        { playerA: 0, playerB: 11 },
+        { playerA: 0, playerB: 11 },
+      ],
+      status: 'finished',
+      winner: 'p1',
+    };
+    settleBracketWinners(t);
+    expect(bracketSlotAwaitingPlay(t, bm)).toBe(false);
+    expect(bracketEffectiveWinner(t, bm)).toBe('p1');
   });
 
   it('canMutateBracketPlayerMatch is false when the winner’s next bracket match already has scores', () => {
