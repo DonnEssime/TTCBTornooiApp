@@ -2290,6 +2290,57 @@ export function bracketMatchLoser(m: BracketMatch): PlayerId | undefined {
   return m.winner === a ? b : a;
 }
 
+function isRealBracketMatch(m: BracketMatch): boolean {
+  return !m.id.startsWith('__ph-');
+}
+
+/** Winner for placement: bracket row, decisive player match, or legal scores on the mapped row. */
+function placementBracketWinner(tournament: Tournament | undefined, m: BracketMatch): PlayerId | undefined {
+  if (tournament) {
+    const w = bracketEffectiveWinner(tournament, m);
+    if (w) return w;
+    const mid = bracketPlayerMatchId(m.id);
+    const pm = tournament.matches[mid];
+    if (pm && !pm.groupId && pm.winner && isMatchScoreLegal(pm.scores)) return pm.winner;
+  }
+  if (m.winner && !isBracketStructuralEmptyAdvanceWinner(m.winner)) return m.winner;
+  return undefined;
+}
+
+/** Pick the championship match when several rows share the deepest round (e.g. duplicate materialization). */
+export function resolveBracketFinalMatch(
+  bracketMatches: BracketMatch[],
+  tournament?: Tournament,
+): BracketMatch | null {
+  const real = bracketMatches.filter(isRealBracketMatch);
+  if (real.length === 0) return null;
+  const roundOf = (m: BracketMatch) => bracketMatchRound(m);
+  const maxRound = Math.max(...real.map(roundOf).filter((r) => Number.isFinite(r)));
+  const atMax = real.filter((m) => roundOf(m) === maxRound);
+  if (atMax.length === 0) return null;
+  if (atMax.length === 1) return atMax[0]!;
+  const sorted = [...atMax].sort(compareBracketMatchId);
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const m = sorted[i]!;
+    if (!m.seedA || !m.seedB) continue;
+    if (placementBracketWinner(tournament, m)) return m;
+  }
+  return sorted[sorted.length - 1]!;
+}
+
+function runnerUpFromFinal(
+  tournament: Tournament | undefined,
+  fm: BracketMatch,
+  winner: PlayerId,
+): PlayerId | undefined {
+  const fromSeeds = winner === fm.seedA ? fm.seedB : fm.seedA;
+  if (fromSeeds) return fromSeeds;
+  if (!tournament) return undefined;
+  const pm = tournament.matches[bracketPlayerMatchId(fm.id)];
+  if (!pm || pm.groupId || !pm.winner) return undefined;
+  return pm.winner === winner ? pm.playerB : pm.playerA;
+}
+
 /**
  * Single-elimination final ranking: places 1–2 from the final; for each earlier round, losers are
  * ordered by the finishing rank of the opponent who beat them (place 3 = semi loser to the champion,
@@ -2298,25 +2349,46 @@ export function bracketMatchLoser(m: BracketMatch): PlayerId | undefined {
  * Returns `null` if there is no single final or the final has no winner yet. Participants without a
  * computable rank (e.g. open matches) are appended with consecutive places after the last assigned rank.
  */
-export function singleEliminationPlacementRows(bracketMatches: BracketMatch[]): BracketPlacementRow[] | null {
+export function singleEliminationPlacementRows(
+  bracketMatches: BracketMatch[],
+  tournament?: Tournament,
+): BracketPlacementRow[] | null {
   if (bracketMatches.length === 0) return null;
-  const maxRound = Math.max(...bracketMatches.map((m) => m.round));
-  const finals = bracketMatches.filter((m) => m.round === maxRound);
-  if (finals.length !== 1) return null;
-  const fm = finals[0]!;
-  if (!fm.winner || !fm.seedA || !fm.seedB) return null;
+
+  let ms = bracketMatches.filter(isRealBracketMatch);
+  if (ms.length === 0) return null;
+
+  if (tournament) {
+    ms = ms.map((m) => ({ ...m }));
+    propagateBracketSeedsFromChildWinners(ms);
+    settleBracketWinnersIn(tournament, ms);
+  }
+
+  const roundOf = (m: BracketMatch) => bracketMatchRound(m);
+  const rounds = ms.map(roundOf).filter((r) => Number.isFinite(r));
+  if (rounds.length === 0) return null;
+  const maxRound = Math.max(...rounds);
+
+  const fm = resolveBracketFinalMatch(ms, tournament);
+  if (!fm || bracketMatchRound(fm) !== maxRound) return null;
+
+  const finalWinner = placementBracketWinner(tournament, fm);
+  const runnerUp = finalWinner ? runnerUpFromFinal(tournament, fm, finalWinner) : undefined;
+  if (!finalWinner || !runnerUp) return null;
 
   const places = new Map<PlayerId, number>();
-  places.set(fm.winner, 1);
-  places.set(fm.winner === fm.seedA ? fm.seedB! : fm.seedA!, 2);
+  places.set(finalWinner, 1);
+  places.set(runnerUp, 2);
 
   for (let r = maxRound - 1; r >= 1; r--) {
-    const roundMs = bracketMatches.filter((m) => m.round === r && m.winner).sort(compareBracketMatchId);
+    const roundMs = ms.filter((m) => roundOf(m) === r && placementBracketWinner(tournament, m)).sort(compareBracketMatchId);
     const rows: Array<{ loser: PlayerId; wp: number }> = [];
     for (const m of roundMs) {
-      const loser = bracketMatchLoser(m);
+      const w = placementBracketWinner(tournament, m);
+      if (!w) continue;
+      const loser = w === m.seedA ? m.seedB : m.seedA;
       if (!loser) continue;
-      const wp = places.get(m.winner!);
+      const wp = places.get(w);
       if (wp === undefined) continue;
       rows.push({ loser, wp });
     }
@@ -2328,7 +2400,7 @@ export function singleEliminationPlacementRows(bracketMatches: BracketMatch[]): 
   }
 
   const participants = new Set<PlayerId>();
-  for (const m of bracketMatches) {
+  for (const m of ms) {
     if (m.seedA) participants.add(m.seedA);
     if (m.seedB) participants.add(m.seedB);
   }

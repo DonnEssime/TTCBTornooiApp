@@ -834,6 +834,23 @@ describe('Single-elimination placement order', () => {
     ]);
   });
 
+  it('returns placements when duplicate rows exist at the final round (materialize + advance)', () => {
+    const bm = [
+      { id: 'm1', seedA: 'p1', seedB: 'p2', round: 1, winner: 'p1' },
+      { id: 'm2', seedA: 'p3', seedB: 'p4', round: 1, winner: 'p3' },
+      { id: 'm3', seedA: 'p1', seedB: 'p3', round: 2, winner: 'p1' },
+      { id: 'm4', seedA: 'p1', seedB: 'p3', round: 3, winner: 'p1' },
+      { id: 'm5', seedA: 'p1', seedB: 'p3', round: 3, winner: 'p1' },
+    ];
+    const rows = singleEliminationPlacementRows(bm)!;
+    expect(rows?.map((r) => [r.place, r.playerId])).toEqual([
+      [1, 'p1'],
+      [2, 'p3'],
+      [3, 'p2'],
+      [4, 'p4'],
+    ]);
+  });
+
   it('orders eight players so quarter losers map to places 5–8 by opponent rank', () => {
     const bm = [
       { id: 'm1', seedA: 'p1', seedB: 'p8', round: 1, winner: 'p1' },

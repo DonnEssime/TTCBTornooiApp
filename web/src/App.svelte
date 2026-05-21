@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import type {
     BracketMatch,
     BracketSeedingMode,
@@ -55,6 +56,16 @@
   import PlayerName from './PlayerName.svelte';
   import TournamentOverview from './TournamentOverview.svelte';
   import { bracketTreeFromColumns, type BracketBNode } from './bracketStream/buildTree';
+  import {
+    importTournamentJsonl,
+    isTournamentStorageSupported,
+    listRecentTournaments,
+    loadTournamentJsonl,
+    newTournamentFileId,
+    saveTournament,
+    type TournamentMeta,
+  } from './tournamentStorage';
+  import { downloadTournamentPdf } from './tournamentPdf';
 
   /** When true, show developer shortcuts (bulk players, simulated group scores). */
   const DEBUG_UI = true;
@@ -81,6 +92,8 @@
 
   interface TournamentSession {
     id: string;
+    /** OPFS file key for auto-save and recent list (stable for this tournament file). */
+    storageFileId: string;
     /** Workspace tab label; edited by the user (not overwritten on data refresh). */
     tournamentName: string;
     controller: TournamentController;
@@ -191,8 +204,9 @@
   function showError(message: string): void {
     showStatus(message, 'error');
   }
-  /** Export/import activity lines for the Settings “Recent activity” list. */
-  let recentTournamentNotes = $state<string[]>([]);
+  const storageAvailable = isTournamentStorageSupported();
+  let recentTournaments = $state<TournamentMeta[]>([]);
+  let recentListLoading = $state(false);
 
   let newName = $state('');
   let newHc = $state(0);
@@ -238,6 +252,125 @@
 
   function getActiveSession(): TournamentSession | undefined {
     return sessions.find((s) => s.id === activeSessionId);
+  }
+
+  function findSessionByStorageFileId(fileId: string): TournamentSession | undefined {
+    return sessions.find((s) => s.storageFileId === fileId);
+  }
+
+  function formatRecentDate(iso: string): string {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+  }
+
+  async function refreshRecentTournaments(): Promise<void> {
+    if (!storageAvailable) {
+      recentTournaments = [];
+      return;
+    }
+    recentListLoading = true;
+    try {
+      recentTournaments = await listRecentTournaments();
+    } catch (e) {
+      console.error('refreshRecentTournaments failed', e);
+    } finally {
+      recentListLoading = false;
+    }
+  }
+
+  let persistSnapshotByFile = new Map<string, string>();
+
+  async function persistActiveSession(): Promise<void> {
+    if (!storageAvailable) return;
+    const s = getActiveSession();
+    if (!s) return;
+    const text = exportCommandsAsJsonLines(s.controller.getCommandLog());
+    const snapshot = `${s.tournamentName}\n${text}`;
+    if (persistSnapshotByFile.get(s.storageFileId) === snapshot) return;
+    try {
+      await saveTournament(s.storageFileId, s.tournamentName, text);
+      persistSnapshotByFile.set(s.storageFileId, snapshot);
+      await refreshRecentTournaments();
+    } catch (e) {
+      console.error('persistActiveSession failed', e);
+    }
+  }
+
+  function sessionFromController(
+    storageFileId: string,
+    tournamentName: string,
+    controller: TournamentController,
+  ): TournamentSession {
+    const t0 = controller.getTournament();
+    const playerOrder =
+      t0.seedings.length > 0 ? [...t0.seedings] : Object.keys(t0.players);
+    const log = controller.getCommandLog();
+    const id = `session-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
+    return {
+      id,
+      storageFileId,
+      tournamentName,
+      controller,
+      playerOrder,
+      lastSeedingCommandId: lastSetSeedingsCommandId(log),
+      lastSetGroupsCommandId: lastCommandIdOfType(log, 'SetGroups'),
+      lastSetClassGroupsCommandIdByClass: lastSetClassGroupsCommandIdsFromLog(log),
+      nav: normalizeSessionNav(t0, { kind: 'single', inner: 'players' }),
+      classEditorRows:
+        t0.classDefinitions.length > 0
+          ? t0.classDefinitions.map((d) => ({ id: d.id, name: d.name }))
+          : [{ id: newCompetitionClassId(), name: '' }],
+      groupTargetSize: CLOSED_FORM_PLAYERS_PER_GROUP,
+      groupTargetCount: closedFormGroupCountForPlayerCount(playerOrder.length),
+      classGroupTargetSizeByClassId: {},
+      classGroupTargetCountByClassId: {},
+      tournamentFormat: 'group-bracket',
+    };
+  }
+
+  function activateSession(session: TournamentSession): void {
+    if (!sessions.some((s) => s.id === session.id)) {
+      sessions = [...sessions, session];
+      scoreDraftsBySession = { ...scoreDraftsBySession, [session.id]: {} };
+    }
+    activeSessionId = session.id;
+    workspaceTab = session.id;
+    nameDraft = session.tournamentName;
+    setScoreDrafts({});
+    pull();
+  }
+
+  async function openStoredTournament(fileId: string): Promise<void> {
+    clearStatus();
+    const existing = findSessionByStorageFileId(fileId);
+    if (existing) {
+      activateSession(existing);
+      showInfo(`Opened “${existing.tournamentName}”.`);
+      return;
+    }
+    if (!storageAvailable) {
+      showError('Local tournament storage is not available in this browser.');
+      return;
+    }
+    try {
+      const text = await loadTournamentJsonl(fileId);
+      const { controller: next, replay } = tournamentControllerFromCommandLog(text);
+      if (!replay.success) {
+        const reason = replay.results.find((r) => !r.success)?.reason ?? 'Replay failed';
+        showError(`Could not open tournament: ${reason}`);
+        return;
+      }
+      const meta = recentTournaments.find((m) => m.fileId === fileId);
+      const session = sessionFromController(
+        fileId,
+        meta?.tournamentName ?? 'Tournament',
+        next,
+      );
+      activateSession(session);
+      showInfo(`Opened “${session.tournamentName}”.`);
+    } catch (e) {
+      showError(`Could not load tournament: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   function draftHandicapConfigFromWizard() {
@@ -1143,6 +1276,7 @@
     const next = nameDraft.trim() || 'Untitled tournament';
     if (next !== s.tournamentName) {
       patchActiveSession({ tournamentName: next });
+      void persistActiveSession();
     }
     nameDraft = next;
   }
@@ -1452,6 +1586,7 @@
         if (!po.includes(k)) delete hd[k];
       }
       handicapDrafts = hd;
+      void persistActiveSession();
     } catch (e) {
       // Avoid hard-locking the UI on a render-triggering exception; surface it.
       console.error('pull() failed', e);
@@ -1467,7 +1602,9 @@
 
   function selectWorkspaceTab(tab: string): void {
     workspaceTab = tab;
-    if (tab !== 'settings' && sessions.some((s) => s.id === tab)) {
+    if (tab === 'settings') {
+      void refreshRecentTournaments();
+    } else if (sessions.some((s) => s.id === tab)) {
       activeSessionId = tab;
     }
     pull();
@@ -1566,9 +1703,11 @@
       t0.classDefinitions.length > 0
         ? t0.classDefinitions.map((d) => ({ id: d.id, name: d.name }))
         : [{ id: newCompetitionClassId(), name: '' }];
-    const id = `tournament-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
+    const storageFileId = newTournamentFileId();
+    const id = `session-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
     const session: TournamentSession = {
       id,
+      storageFileId,
       tournamentName: draftTournamentName.trim() || 'Tournament',
       controller,
       playerOrder: [],
@@ -1583,11 +1722,7 @@
       lastSetClassGroupsCommandIdByClass: {},
       tournamentFormat: draftTournamentFormat,
     };
-    sessions = [...sessions, session];
-    activeSessionId = id;
-    workspaceTab = id;
-    scoreDraftsBySession = { ...scoreDraftsBySession, [id]: {} };
-    nameDraft = session.tournamentName;
+    activateSession(session);
     draftTournamentName = 'Tournament';
     draftHandicapEnabled = false;
     draftHandicapMin = DEFAULT_NUMERICAL_HANDICAP_CONFIG.minValue;
@@ -1934,7 +2069,20 @@
     a.click();
     URL.revokeObjectURL(a.href);
     showInfo('Downloaded command log (.jsonl).');
-    recentTournamentNotes = [`Exported command log · ${new Date().toLocaleString()}`, ...recentTournamentNotes].slice(0, 8);
+  }
+
+  function exportTournamentPdf(): void {
+    const s = getActiveSession();
+    if (!s) {
+      showWarn('Create or import a tournament before exporting.');
+      return;
+    }
+    try {
+      downloadTournamentPdf(s.tournamentName, s.controller.getTournament());
+      showInfo('Downloaded tournament summary (.pdf).');
+    } catch (e) {
+      showError(`PDF export failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   async function onImportFile(ev: Event): Promise<void> {
@@ -1950,39 +2098,25 @@
       showError(`Import failed: ${reason}`);
       return;
     }
-    const t0 = next.getTournament();
-    const playerOrder =
-      t0.seedings.length > 0 ? [...t0.seedings] : Object.keys(t0.players);
-    const nav = normalizeSessionNav(t0, { kind: 'single', inner: 'players' });
-    const id = `tournament-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
-    const session: TournamentSession = {
-      id,
-      tournamentName: titleFromImportFilename(file.name),
-      controller: next,
-      playerOrder,
-      lastSeedingCommandId: lastSetSeedingsCommandId(next.getCommandLog()),
-      lastSetGroupsCommandId: lastCommandIdOfType(next.getCommandLog(), 'SetGroups'),
-      lastSetClassGroupsCommandIdByClass: lastSetClassGroupsCommandIdsFromLog(next.getCommandLog()),
-      nav,
-      classEditorRows:
-        t0.classDefinitions.length > 0
-          ? t0.classDefinitions.map((d) => ({ id: d.id, name: d.name }))
-          : [{ id: newCompetitionClassId(), name: '' }],
-      groupTargetSize: CLOSED_FORM_PLAYERS_PER_GROUP,
-      groupTargetCount: closedFormGroupCountForPlayerCount(playerOrder.length),
-      classGroupTargetSizeByClassId: {},
-      classGroupTargetCountByClassId: {},
-      tournamentFormat: 'group-bracket',
-    };
-    sessions = [...sessions, session];
-    activeSessionId = id;
-    workspaceTab = id;
-    scoreDraftsBySession = { ...scoreDraftsBySession, [id]: {} };
-    nameDraft = session.tournamentName;
-    setScoreDrafts({});
+    const tournamentName = titleFromImportFilename(file.name);
+    let storageFileId: string;
+    if (storageAvailable) {
+      try {
+        storageFileId = await importTournamentJsonl(
+          exportCommandsAsJsonLines(next.getCommandLog()),
+          tournamentName,
+        );
+        await refreshRecentTournaments();
+      } catch (e) {
+        showError(`Import failed while saving locally: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+    } else {
+      storageFileId = newTournamentFileId();
+    }
+    const session = sessionFromController(storageFileId, tournamentName, next);
+    activateSession(session);
     showInfo(`Imported ${file.name} (${replay.results.length} commands).`);
-    recentTournamentNotes = [`Imported “${file.name}” · ${new Date().toLocaleString()}`, ...recentTournamentNotes].slice(0, 8);
-    pull();
   }
 
   function submitScores(match: Match): void {
@@ -2245,6 +2379,10 @@
   }
 
   pull();
+
+  onMount(() => {
+    void refreshRecentTournaments();
+  });
 </script>
 
 <div class="app" class:app-with-footer={Boolean(activeSess)}>
@@ -2293,28 +2431,22 @@
       <section class="card settings-card">
         <h1 class="h1">Tournament settings</h1>
         <p class="lead">
-          Create a tournament, import a command log (JSONL), or export the active tournament. Open tournaments appear as tabs in
-          the header.
+          Create a new tournament or import a saved command log (JSONL). Tournaments auto-save in this browser and appear under
+          Recent activity. Use Export Tournament File on a tournament tab to download a copy.
         </p>
 
         <div class="settings-grid">
           <div class="settings-block">
             <h2 class="h2">Data</h2>
             <div class="btn-row">
-              <button
-                type="button"
-                class="btn primary"
-                disabled={!getActiveSession()}
-                title={getActiveSession() ? 'Export command log (JSONL)' : 'Create or import a tournament first'}
-                onclick={downloadJsonl}
-              >
-                Export JSONL
-              </button>
               <label class="file-btn">
-                Import JSONL
+                Import tournament
                 <input type="file" accept=".jsonl,.txt,application/json,text/plain" class="sr" onchange={onImportFile} />
               </label>
             </div>
+            {#if !storageAvailable}
+              <p class="muted small">Local auto-save is unavailable in this browser; import still opens the tournament for this session.</p>
+            {/if}
           </div>
 
           <div class="settings-block new-tournament-block">
@@ -2451,13 +2583,25 @@
 
           <div class="settings-block">
             <h2 class="h2">Recent activity</h2>
-            <p class="muted small">Persistent “recent tournaments” is not wired yet; this list only reflects exports and imports in this session.</p>
-            {#if recentTournamentNotes.length === 0}
-              <p class="muted">No recent entries.</p>
+            {#if !storageAvailable}
+              <p class="muted small">Recent tournaments require a browser with Origin Private File System support (e.g. Chrome or Edge).</p>
+            {:else if recentListLoading && recentTournaments.length === 0}
+              <p class="muted">Loading…</p>
+            {:else if recentTournaments.length === 0}
+              <p class="muted">No saved tournaments yet. Create or import one — it will appear here after the first change.</p>
             {:else}
               <ul class="recent-list">
-                {#each recentTournamentNotes as line, i (i)}
-                  <li>{line}</li>
+                {#each recentTournaments as entry (entry.fileId)}
+                  <li>
+                    <button
+                      type="button"
+                      class="recent-entry-btn"
+                      onclick={() => openStoredTournament(entry.fileId)}
+                    >
+                      <span class="recent-entry-name">{entry.tournamentName}</span>
+                      <span class="recent-entry-date muted small">{formatRecentDate(entry.lastModified)}</span>
+                    </button>
+                  </li>
                 {/each}
               </ul>
             {/if}
@@ -2504,6 +2648,22 @@
                   }
                 }}
               />
+              <button
+                type="button"
+                class="btn ghost title-export-btn"
+                title="Download command log (.jsonl)"
+                onclick={downloadJsonl}
+              >
+                Export Tournament File
+              </button>
+              <button
+                type="button"
+                class="btn ghost title-export-btn"
+                title="Download groups, bracket, and results summary (.pdf)"
+                onclick={exportTournamentPdf}
+              >
+                Export Tournament PDF
+              </button>
             </div>
           </div>
         </div>
@@ -2985,7 +3145,7 @@
             <section class="card">
               <h2 class="h2">Results</h2>
               {#if tournament.bracketMatches.length > 0}
-                {@const placementRows = singleEliminationPlacementRows(tournament.bracketMatches)}
+                {@const placementRows = singleEliminationPlacementRows(tournament.bracketMatches, tournament)}
                 {#if placementRows}
                   <ol class="plain-list placement-ol">
                     {#each placementRows as row (row.playerId)}
@@ -3229,7 +3389,7 @@
               <section class="card">
                 <h2 class="h2">Results · {def?.name ?? cid}</h2>
                 {#if slice.bracketMatches.length > 0}
-                  {@const classPlacementRows = singleEliminationPlacementRows(slice.bracketMatches)}
+                  {@const classPlacementRows = singleEliminationPlacementRows(slice.bracketMatches, tournament)}
                   {#if classPlacementRows}
                     <ol class="plain-list placement-ol">
                       {#each classPlacementRows as row (row.playerId)}
@@ -3586,9 +3746,43 @@
 
   .recent-list {
     margin: 0.35rem 0 0;
-    padding-left: 1.2rem;
-    color: #475569;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .recent-entry-btn {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.35rem 1rem;
+    width: 100%;
+    text-align: left;
+    font: inherit;
     font-size: 0.88rem;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: #f8fafc;
+    color: #334155;
+    cursor: pointer;
+  }
+
+  .recent-entry-btn:hover {
+    background: #f1f5f9;
+    border-color: #cbd5e1;
+  }
+
+  .recent-entry-name {
+    font-weight: 600;
+  }
+
+  .title-export-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
 
   .new-tournament-block {
