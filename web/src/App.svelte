@@ -57,6 +57,7 @@
   import TournamentOverview from './TournamentOverview.svelte';
   import { bracketTreeFromColumns, type BracketBNode } from './bracketStream/buildTree';
   import {
+    deleteTournament,
     importTournamentJsonl,
     isTournamentStorageSupported,
     listRecentTournaments,
@@ -207,6 +208,11 @@
   const storageAvailable = isTournamentStorageSupported();
   let recentTournaments = $state<TournamentMeta[]>([]);
   let recentListLoading = $state(false);
+  let deleteTournamentTarget = $state<TournamentMeta | null>(null);
+  let deleteConfirmPhrase = $state('');
+  let deleteTournamentBusy = $state(false);
+  let deleteTournamentError = $state<string | null>(null);
+  const deleteConfirmOk = $derived(deleteConfirmPhrase === 'I understand');
 
   let newName = $state('');
   let newHc = $state(0);
@@ -338,6 +344,60 @@
     nameDraft = session.tournamentName;
     setScoreDrafts({});
     pull();
+  }
+
+  function openDeleteTournamentModal(entry: TournamentMeta): void {
+    deleteTournamentTarget = entry;
+    deleteConfirmPhrase = '';
+    deleteTournamentError = null;
+    deleteTournamentBusy = false;
+  }
+
+  function cancelDeleteTournamentModal(): void {
+    if (deleteTournamentBusy) return;
+    deleteTournamentTarget = null;
+    deleteConfirmPhrase = '';
+    deleteTournamentError = null;
+  }
+
+  function closeSessionsForStorageFile(fileId: string): void {
+    const removeIds = new Set(
+      sessions.filter((s) => s.storageFileId === fileId).map((s) => s.id),
+    );
+    if (removeIds.size === 0) return;
+    sessions = sessions.filter((s) => s.storageFileId !== fileId);
+    const nextDrafts = { ...scoreDraftsBySession };
+    for (const id of removeIds) delete nextDrafts[id];
+    scoreDraftsBySession = nextDrafts;
+    persistSnapshotByFile.delete(fileId);
+    if (removeIds.has(workspaceTab) || (activeSessionId && removeIds.has(activeSessionId))) {
+      activeSessionId = sessions[0]?.id ?? '';
+      workspaceTab = activeSessionId || 'settings';
+    }
+  }
+
+  async function confirmDeleteTournament(): Promise<void> {
+    const entry = deleteTournamentTarget;
+    if (!entry || !deleteConfirmOk || deleteTournamentBusy) return;
+    if (!storageAvailable) {
+      deleteTournamentError = 'Local tournament storage is not available in this browser.';
+      return;
+    }
+    deleteTournamentBusy = true;
+    deleteTournamentError = null;
+    try {
+      await deleteTournament(entry.fileId);
+      closeSessionsForStorageFile(entry.fileId);
+      const name = entry.tournamentName;
+      deleteTournamentTarget = null;
+      deleteConfirmPhrase = '';
+      await refreshRecentTournaments();
+      showInfo(`Deleted “${name}”.`);
+    } catch (e) {
+      deleteTournamentError = e instanceof Error ? e.message : String(e);
+    } finally {
+      deleteTournamentBusy = false;
+    }
   }
 
   async function openStoredTournament(fileId: string): Promise<void> {
@@ -2429,11 +2489,7 @@
   <main class="main" class:main--tournament={workspaceTab !== 'settings'}>
     {#if workspaceTab === 'settings'}
       <section class="card settings-card">
-        <h1 class="h1">Tournament settings</h1>
-        <p class="lead">
-          Create a new tournament or import a saved command log (JSONL). Tournaments auto-save in this browser and appear under
-          Recent activity. Use Export Tournament File on a tournament tab to download a copy.
-        </p>
+        <h1 class="h1">Tournament Management</h1>
 
         <div class="settings-grid">
           <div class="settings-block">
@@ -2524,10 +2580,6 @@
                     <input type="number" min="0" step="1" bind:value={draftHandicapMaxStart} title="Maximum absolute headstart or negative start" />
                   </label>
                 </div>
-                <p class="muted small">
-                  Defaults: ratings 0–9, headstart for the weaker player, max adjustment 7. Starting criteria affects
-                  score entry later (not applied in this build).
-                </p>
               </fieldset>
             {/if}
 
@@ -2539,7 +2591,6 @@
             {#if draftClassesEnabled}
               <div class="sub-card draft-classes">
                 <h3 class="h3">Competition classes</h3>
-                <p class="muted small">Enter a display name per row. Empty rows are ignored when you create the tournament.</p>
                 <table class="grid class-grid">
                   <thead>
                     <tr>
@@ -2592,7 +2643,7 @@
             {:else}
               <ul class="recent-list">
                 {#each recentTournaments as entry (entry.fileId)}
-                  <li>
+                  <li class="recent-entry-row">
                     <button
                       type="button"
                       class="recent-entry-btn"
@@ -2601,15 +2652,19 @@
                       <span class="recent-entry-name">{entry.tournamentName}</span>
                       <span class="recent-entry-date muted small">{formatRecentDate(entry.lastModified)}</span>
                     </button>
+                    <button
+                      type="button"
+                      class="recent-delete-btn"
+                      title="Delete saved tournament"
+                      aria-label="Delete {entry.tournamentName}"
+                      onclick={() => openDeleteTournamentModal(entry)}
+                    >
+                      <span aria-hidden="true">×</span>
+                    </button>
                   </li>
                 {/each}
               </ul>
             {/if}
-          </div>
-
-          <div class="settings-block muted small">
-            <h2 class="h2">Multiple tournaments</h2>
-            <p>The tab row is ready for more tournament tabs; opening several files at once will be added later.</p>
           </div>
         </div>
       </section>
@@ -2729,10 +2784,6 @@
           {#if showOverviewPanel}
             <section class="card">
               <h2 class="h2">Overview</h2>
-              <p class="muted small">
-                Snapshot of player count, phase completion, and matches ready to play. Drag matches onto tables to start
-                them; drag back to Ready to play to unassign.
-              </p>
               <TournamentOverview
                 {tournament}
                 useClassTabs={useClassTabs}
@@ -2792,14 +2843,6 @@
                   <button type="button" class="btn subtle" onclick={debugFillPlayers}>[DEBUG] Fill players</button>
                 </div>
               {/if}
-              <p class="muted small">
-                Bracket seeding follows the order players are added (saved automatically).
-                {#if useClassTabs}
-                  Open a <strong>class tab</strong> for group phase, bracket, and results for that track.
-                {:else}
-                  When you are ready, open the <strong>Bracket</strong> tab to generate the draw and round‑1 matches.
-                {/if}
-              </p>
               <ol class="seed-list">
                 {#each activeSess.playerOrder as pid (pid)}
                   <li class="player-row">
@@ -2858,11 +2901,6 @@
                 </p>
               {/if}
               {#if Object.keys(tournament.groups).length === 0}
-                <p class="muted small">
-                  Groups are named <strong>Group 1</strong>, <strong>Group 2</strong>, … in seeding order. Targets use
-                  closed-form bracket sizes (4 players per group; 2, 4, or 8 groups). Creating groups also creates all
-                  round‑robin matches.
-                </p>
                 <p class="muted small">
                   {#if globalGroupPlayerCount === 0}
                     Add players on the Players tab first.
@@ -2935,11 +2973,6 @@
                   </div>
                 {/if}
                 <h3 class="h3">Groups</h3>
-                <p class="muted small group-matrix-hint">
-                  Click a head-to-head cell to enter or edit games. Row and column order is fixed when groups are created;
-                  W and L still follow current standings. Results stay editable until a knockout match in this track has
-                  recorded play.
-                </p>
                 {#each sortGroupsForDisplay(tournament.groups) as g (g.id)}
                   {@const matrixPids = groupMatrixPlayerOrder(g)}
                   {@const standingsWl = groupStandingsWlByPid(tournament, g, undefined)}
@@ -3005,12 +3038,9 @@
           {:else if !useClassTabs && singleTrackInner === 'bracket'}
             <section class="card">
               <h2 class="h2">Bracket</h2>
-              <p class="muted small">
-                Create the knockout draw after groups exist. Round locks and scores apply once the bracket is generated.
-              </p>
               {#if tournament.bracketMatches.length === 0}
                 <fieldset class="bracket-seed-fieldset">
-                  <legend class="muted small">Bracket seeding (byes are always used to reach the next power of two)</legend>
+                  <legend class="muted small">Bracket seeding</legend>
                   <label class="radio-line">
                     <input type="radio" bind:group={bracketSeedingChoice} value="closed_form" disabled={!canPickClosedFormSeeding} />
                     <span>
@@ -3056,12 +3086,6 @@
                   </button>
                 </div>
                 <h3 class="h3">Knockout bracket</h3>
-                <p class="muted small">
-                  Single view: round&nbsp;1 on the outside, each round a step toward the final in the middle. Player names
-                  appear once their group is fully played; until then slots show
-                  <span class="mono">group … place …</span> from current standings order.
-                  <span class="mono">--empty--</span> is a bye slot; “—” is a structural placeholder.
-                </p>
                 <BracketStreamView
                   cols={previewBracketColumns(
                     tournament,
@@ -3263,11 +3287,6 @@
                     </div>
                   {/if}
                   <h3 class="h3">Groups</h3>
-                  <p class="muted small group-matrix-hint">
-                    Click a head-to-head cell to enter or edit games. Row and column order is fixed when groups are created;
-                    W and L still follow current standings. Results stay editable until a knockout match in this track has
-                    recorded play.
-                  </p>
                   {#each sortGroupsForDisplay(slice.groups) as g (g.id)}
                     {@const matrixPids = groupMatrixPlayerOrder(g)}
                     {@const standingsWl = groupStandingsWlByPid(tournament, g, cid)}
@@ -3438,6 +3457,73 @@
         </button>
       </div>
     </footer>
+  {/if}
+
+  {#if deleteTournamentTarget}
+    {@const deleteTarget = deleteTournamentTarget}
+    <div class="modal-root">
+      <button
+        type="button"
+        class="modal-scrim"
+        aria-label="Close delete dialog"
+        disabled={deleteTournamentBusy}
+        onclick={() => cancelDeleteTournamentModal()}
+      ></button>
+      <div
+        class="modal-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-tournament-title"
+        tabindex="-1"
+      >
+        <header class="modal-head">
+          <h3 id="delete-tournament-title" class="modal-title">Delete tournament?</h3>
+          <button
+            type="button"
+            class="btn subtle small-inline"
+            disabled={deleteTournamentBusy}
+            onclick={() => cancelDeleteTournamentModal()}
+          >
+            Close
+          </button>
+        </header>
+        <p class="muted small modal-lead">
+          This permanently removes the saved copy of <strong>{deleteTarget.tournamentName}</strong> from this
+          browser (local tournament files). Export a tournament file first if you need a backup.
+        </p>
+        <label class="field-label" for="delete-confirm-input">Type <strong>I understand</strong> to confirm</label>
+        <input
+          id="delete-confirm-input"
+          type="text"
+          class="grow delete-confirm-input"
+          bind:value={deleteConfirmPhrase}
+          autocomplete="off"
+          spellcheck={false}
+          disabled={deleteTournamentBusy}
+        />
+        {#if deleteTournamentError}
+          <p class="modal-error">{deleteTournamentError}</p>
+        {/if}
+        <div class="row modal-actions">
+          <button
+            type="button"
+            class="btn"
+            disabled={deleteTournamentBusy}
+            onclick={() => cancelDeleteTournamentModal()}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="btn danger-ghost"
+            disabled={!deleteConfirmOk || deleteTournamentBusy}
+            onclick={() => confirmDeleteTournament()}
+          >
+            {deleteTournamentBusy ? 'Deleting…' : 'Delete permanently'}
+          </button>
+        </div>
+      </div>
+    </div>
   {/if}
 
   {#if scoreModalMatchId}
@@ -3753,13 +3839,46 @@
     gap: 0.35rem;
   }
 
+  .recent-entry-row {
+    display: flex;
+    align-items: stretch;
+    gap: 0.35rem;
+  }
+
+  .recent-entry-row .recent-entry-btn {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .recent-delete-btn {
+    flex: 0 0 auto;
+    align-self: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    padding: 0;
+    border: 1px solid #fecaca;
+    border-radius: 6px;
+    background: #fef2f2;
+    color: #dc2626;
+    font-size: 1.15rem;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .recent-delete-btn:hover {
+    background: #fee2e2;
+    border-color: #f87171;
+  }
+
   .recent-entry-btn {
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
     justify-content: space-between;
     gap: 0.35rem 1rem;
-    width: 100%;
     text-align: left;
     font: inherit;
     font-size: 0.88rem;
@@ -4715,6 +4834,12 @@
   .modal-actions {
     margin-top: 0.85rem;
     justify-content: flex-end;
+  }
+
+  .delete-confirm-input {
+    width: 100%;
+    margin-top: 0.35rem;
+    box-sizing: border-box;
   }
 
   .score-modal-table-readout {

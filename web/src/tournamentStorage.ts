@@ -101,3 +101,17 @@ export async function importTournamentJsonl(
 export function newTournamentFileId(): string {
   return `tournament-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
 }
+
+/** Remove stored JSONL and meta for a tournament (no-op if files are already gone). */
+export async function deleteTournament(fileId: string): Promise<void> {
+  const dir = await tournamentsDirectory();
+  for (const name of [logFileName(fileId), metaFileName(fileId)]) {
+    try {
+      await dir.removeEntry(name);
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === 'NotFoundError')) {
+        throw e;
+      }
+    }
+  }
+}
