@@ -21,6 +21,9 @@ import {
   SetClassGroupsCommand,
   GenerateGroupRoundRobinCommand,
   type AssignTablesCommand,
+  type SetTournamentTablesCommand,
+  type AssignMatchToTableCommand,
+  type ClearMatchTableAssignmentCommand,
   type AdvanceBracketRoundCommand,
   type PlayerForfeitCommand,
   type TeamForfeitCommand,
@@ -447,6 +450,48 @@ export class TournamentController {
     } else {
       this.view?.renderMessage(`AssignTables failed: ${result.reason ?? ''}`);
     }
+    this.view?.renderTournament(this.getTournament());
+    return result;
+  }
+
+  setTournamentTables(tableIds: string[], dependsOn: string[] = [], commandId?: string): CommandResult {
+    const command: SetTournamentTablesCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'SetTournamentTables',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: { tableIds },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`SetTournamentTables: ${JSON.stringify(result)}`);
+    this.view?.renderTournament(this.getTournament());
+    return result;
+  }
+
+  assignMatchToTable(matchId: string, tableId: string, dependsOn: string[] = [], commandId?: string): CommandResult {
+    const command: AssignMatchToTableCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'AssignMatchToTable',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: { matchId, tableId },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`AssignMatchToTable: ${JSON.stringify(result)}`);
+    this.view?.renderTournament(this.getTournament());
+    return result;
+  }
+
+  clearMatchTableAssignment(matchId: string, dependsOn: string[] = [], commandId?: string): CommandResult {
+    const command: ClearMatchTableAssignmentCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'ClearMatchTableAssignment',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: { matchId },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`ClearMatchTableAssignment: ${JSON.stringify(result)}`);
     this.view?.renderTournament(this.getTournament());
     return result;
   }

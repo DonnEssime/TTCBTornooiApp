@@ -22,7 +22,11 @@ import {
   propagateBracketSeedsFromChildWinners,
   recomputeClassTournamentSlices,
   roundRobinPairs,
+  assignMatchToTable,
+  clearMatchTableAssignment,
+  releaseTableForFinishedOrClearedMatch,
   scheduleRound,
+  setTournamentTables,
   settleBracketWinnersIn,
   shuffleDeterministic,
   syncBracketMatchPlayerRows,
@@ -62,6 +66,9 @@ export type CommandType =
   | 'ClearBracket'
   | 'EliminateLowestBracketRound'
   | 'AssignTables'
+  | 'SetTournamentTables'
+  | 'AssignMatchToTable'
+  | 'ClearMatchTableAssignment'
   | 'AdvanceBracketRound'
   | 'RenamePlayer'
   | 'Undo';
@@ -200,6 +207,21 @@ export interface AssignTablesCommand extends CommandBase {
   payload: { tableIds: string[]; round: number };
 }
 
+export interface SetTournamentTablesCommand extends CommandBase {
+  type: 'SetTournamentTables';
+  payload: { tableIds: string[] };
+}
+
+export interface AssignMatchToTableCommand extends CommandBase {
+  type: 'AssignMatchToTable';
+  payload: { matchId: string; tableId: string };
+}
+
+export interface ClearMatchTableAssignmentCommand extends CommandBase {
+  type: 'ClearMatchTableAssignment';
+  payload: { matchId: string };
+}
+
 export interface AdvanceBracketRoundCommand extends CommandBase {
   type: 'AdvanceBracketRound';
   payload: Record<string, never>;
@@ -237,6 +259,9 @@ export type Command =
   | ClearBracketCommand
   | EliminateLowestBracketRoundCommand
   | AssignTablesCommand
+  | SetTournamentTablesCommand
+  | AssignMatchToTableCommand
+  | ClearMatchTableAssignmentCommand
   | AdvanceBracketRoundCommand
   | RenamePlayerCommand
   | UndoCommand;
@@ -672,6 +697,7 @@ export class CommandRunner {
         match.scores = scores;
         match.status = 'finished';
         match.winner = playerMatchWinner(match);
+        releaseTableForFinishedOrClearedMatch(tournament, matchId);
         this.reconcileBracketAfterScore(tournament);
         return { success: true };
       }
@@ -695,6 +721,7 @@ export class CommandRunner {
           match.scores = [];
           match.status = 'scheduled';
           delete match.winner;
+          releaseTableForFinishedOrClearedMatch(tournament, matchId);
           this.reconcileBracketAfterScore(tournament);
           return { success: true };
         }
@@ -717,6 +744,7 @@ export class CommandRunner {
         match.scores = [];
         match.status = 'scheduled';
         delete match.winner;
+        releaseTableForFinishedOrClearedMatch(tournament, matchId);
         this.reconcileBracketAfterScore(tournament);
         return { success: true };
       }
@@ -1165,6 +1193,40 @@ export class CommandRunner {
           return { success: false, reason: 'At least one table id is required' };
         }
         scheduleRound(tournament, tableIds, round);
+        return { success: true };
+      }
+      case 'SetTournamentTables': {
+        const { tableIds } = command.payload;
+        if (!Array.isArray(tableIds)) {
+          return { success: false, reason: 'tableIds must be an array' };
+        }
+        setTournamentTables(tournament, tableIds);
+        return { success: true };
+      }
+      case 'AssignMatchToTable': {
+        const { matchId, tableId } = command.payload;
+        if (!matchId?.trim() || !tableId?.trim()) {
+          return { success: false, reason: 'matchId and tableId are required' };
+        }
+        try {
+          assignMatchToTable(tournament, matchId, tableId);
+        } catch (e) {
+          return { success: false, reason: e instanceof Error ? e.message : String(e) };
+        }
+        return { success: true };
+      }
+      case 'ClearMatchTableAssignment': {
+        const { matchId } = command.payload;
+        if (!matchId?.trim()) {
+          return { success: false, reason: 'matchId is required' };
+        }
+        if (!tournament.matches[matchId]) {
+          return { success: false, reason: 'Match not found' };
+        }
+        if (!tournament.tableAssignments.some((a) => a.matchId === matchId)) {
+          return { success: false, reason: 'Match is not assigned to a table' };
+        }
+        clearMatchTableAssignment(tournament, matchId);
         return { success: true };
       }
       case 'AdvanceBracketRound': {

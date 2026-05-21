@@ -6,6 +6,7 @@
     bracketPlayerMatchId,
     bracketRoundAggregatesIncludingFutureRounds,
     compareBracketMatchId,
+    matchIdOnTable,
     matchPlayersResolvedForBracketPhaseList,
   } from 'ttc-tornooiapp';
   import PlayerName from './PlayerName.svelte';
@@ -16,12 +17,20 @@
     groupDisplayLabel,
     onOpenGroupMatch,
     onOpenBracketSlot,
+    onOpenTableMatch,
+    tableCount,
+    onIncrementTables,
+    onDecrementTables,
   }: {
     tournament: Tournament;
     useClassTabs: boolean;
     groupDisplayLabel: (g: GroupDefinition) => string;
+    tableCount: number;
+    onIncrementTables: () => void;
+    onDecrementTables: () => void;
     onOpenGroupMatch: (m: Match) => void;
     onOpenBracketSlot: (bm: BracketMatch) => void;
+    onOpenTableMatch: (m: Match) => void;
   } = $props();
 
   function sortGroupsForDisplay(groups: Record<string, GroupDefinition>): GroupDefinition[] {
@@ -258,6 +267,11 @@
     return simulatedStaggeredGroupReadyOrder(tournament, list);
   });
 
+  function matchOnTable(tableId: string): Match | undefined {
+    const mid = matchIdOnTable(tournament, tableId);
+    return mid ? tournament.matches[mid] : undefined;
+  }
+
   const readyBracketsAll = $derived.by(() => {
     const list: Array<{ bm: BracketMatch; meta: string; classId: string | undefined }> = [];
     for (const tr of tracks) {
@@ -285,6 +299,33 @@
 
 <div class="ov">
   <div class="ov-main">
+    <section class="ov-card ov-tables-card">
+      <h3 class="ov-h">Tables</h3>
+      {#if tournament.tables.length === 0}
+        <p class="muted small">No tables configured yet. Use #Tables in the sidebar to add tables.</p>
+      {:else}
+        <div class="ov-table-grid" role="list" aria-label="Tournament tables">
+          {#each tournament.tables as tableId (tableId)}
+            {@const tm = matchOnTable(tableId)}
+            <div class="ov-table-tile" class:ov-table-busy={Boolean(tm)} role="listitem">
+              <div class="ov-table-num">Table {tableId}</div>
+              {#if tm}
+                <button type="button" class="ov-table-match-btn" onclick={() => onOpenTableMatch(tm)}>
+                  <span class="ov-table-match-pair">
+                    <PlayerName {tournament} playerId={tm.playerA} tag="strong" /> vs
+                    <PlayerName {tournament} playerId={tm.playerB} tag="strong" />
+                  </span>
+                  <span class="muted small">In progress</span>
+                </button>
+              {:else}
+                <p class="ov-table-free muted small">Free</p>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </section>
+
     <section class="ov-card ov-card-main">
       <h3 class="ov-h">Ready to play</h3>
       {#if readyGroupsAll.length === 0 && readyBracketsAll.length === 0}
@@ -333,10 +374,40 @@
   </div>
 
   <aside class="ov-sidebar" aria-label="Tournament progress">
-    <section class="ov-card ov-sidebar-card">
-      <h3 class="ov-h">Players</h3>
-      <p class="ov-count">{Object.keys(tournament.players).length}</p>
-      <p class="ov-count-caption muted small">in this tournament</p>
+    <section class="ov-card ov-sidebar-card ov-players-tables-card">
+      <div class="ov-players-tables-split">
+        <div class="ov-split-metric">
+          <h3 class="ov-h">Players</h3>
+          <p class="ov-count">{Object.keys(tournament.players).length}</p>
+          <p class="ov-count-caption muted small">in this tournament</p>
+        </div>
+        <div class="ov-split-metric ov-split-tables">
+          <h3 class="ov-h">#Tables</h3>
+          <div class="ov-table-stepper" role="group" aria-label="Number of tables">
+            <p class="ov-count" aria-live="polite">{tableCount}</p>
+            <div class="ov-stepper-btns">
+              <button
+                type="button"
+                class="ov-stepper-btn"
+                aria-label="Increase number of tables"
+                disabled={tableCount >= 32}
+                onclick={() => onIncrementTables()}
+              >
+                ▲
+              </button>
+              <button
+                type="button"
+                class="ov-stepper-btn"
+                aria-label="Decrease number of tables"
+                disabled={tableCount <= 1}
+                onclick={() => onDecrementTables()}
+              >
+                ▼
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section class="ov-card ov-sidebar-card">
@@ -497,12 +568,145 @@
     background: #fff;
   }
 
+  .ov-tables-card {
+    margin-bottom: 0.75rem;
+  }
+
+  .ov-tables-card .ov-h {
+    margin-bottom: 0.65rem;
+  }
+
+  .ov-table-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+    gap: 0.55rem;
+  }
+
+  .ov-table-tile {
+    border: 2px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 0.55rem 0.6rem;
+    background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+    min-height: 5.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .ov-table-tile.ov-table-busy {
+    border-color: #0d9488;
+    background: linear-gradient(180deg, #f0fdfa 0%, #ccfbf1 40%, #f0fdfa 100%);
+    box-shadow: 0 0 0 1px rgba(13, 148, 136, 0.15);
+  }
+
+  .ov-table-num {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #64748b;
+  }
+
+  .ov-table-busy .ov-table-num {
+    color: #0f766e;
+  }
+
+  .ov-table-free {
+    margin: auto 0 0;
+    text-align: center;
+  }
+
+  .ov-table-match-btn {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.2rem;
+    margin: 0;
+    padding: 0.35rem 0.25rem;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    font: inherit;
+    text-align: center;
+    cursor: pointer;
+    color: inherit;
+  }
+
+  .ov-table-match-btn:hover {
+    background: rgba(255, 255, 255, 0.65);
+  }
+
+  .ov-table-match-pair {
+    font-size: 0.78rem;
+    line-height: 1.25;
+  }
+
   .ov-card-main {
     min-height: 4rem;
   }
 
   .ov-sidebar-card {
     padding: 0.75rem 0.85rem;
+  }
+
+  .ov-players-tables-split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.65rem 0.5rem;
+    align-items: start;
+  }
+
+  .ov-split-metric {
+    min-width: 0;
+  }
+
+  .ov-split-metric .ov-h {
+    margin-bottom: 0.35rem;
+  }
+
+  .ov-table-stepper {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .ov-table-stepper .ov-count {
+    margin: 0;
+    min-width: 1.5ch;
+  }
+
+  .ov-stepper-btns {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .ov-stepper-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.65rem;
+    height: 1.35rem;
+    padding: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 5px;
+    background: #fff;
+    font-size: 0.62rem;
+    line-height: 1;
+    color: #334155;
+    cursor: pointer;
+  }
+
+  .ov-stepper-btn:hover:not(:disabled) {
+    border-color: #0d9488;
+    background: #f0fdfa;
+    color: #0f766e;
+  }
+
+  .ov-stepper-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
 
   .ov-h {

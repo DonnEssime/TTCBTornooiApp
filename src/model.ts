@@ -45,7 +45,8 @@ export interface TeamMatch {
 export interface TableAssignment {
   tableId: string;
   matchId: string;
-  round: number;
+  /** Set by legacy `scheduleRound` batch assignment; omitted for live table use. */
+  round?: number;
 }
 
 export type ForfeitPhase = 'group' | 'bracket';
@@ -178,6 +179,9 @@ export interface Tournament {
   matches: Record<string, Match>;
   teamMatches: Record<string, TeamMatch>;
   bracketMatches: BracketMatch[];
+  /** Physical tables at the venue (e.g. "1", "2", …). */
+  tables: string[];
+  /** Live and legacy assignments of matches to tables. */
   tableAssignments: TableAssignment[];
   seedings: string[];
   groups: Record<string, GroupDefinition>;
@@ -203,6 +207,7 @@ export function createTournament(): Tournament {
     matches: {},
     teamMatches: {},
     bracketMatches: [],
+    tables: [],
     tableAssignments: [],
     seedings: [],
     groups: {},
@@ -2266,6 +2271,94 @@ export function singleEliminationPlacementRows(bracketMatches: BracketMatch[]): 
   }
   out.sort((a, b) => a.place - b.place || a.playerId.localeCompare(b.playerId));
   return out;
+}
+
+/** Build default table ids `1` … `n` (at least 0, capped at 32). */
+export function buildDefaultTableIds(count: number): string[] {
+  const n = Math.min(32, Math.max(0, Math.floor(Number(count))));
+  return Array.from({ length: n }, (_, i) => String(i + 1));
+}
+
+export function normalizeTournamentTableIds(tableIds: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of tableIds) {
+    const id = String(raw ?? '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+export function matchAssignedTableId(tournament: Tournament, matchId: string): string | undefined {
+  return tournament.tableAssignments.find((a) => a.matchId === matchId)?.tableId;
+}
+
+/** Player match currently occupying a table (live assignment), if any. */
+export function matchIdOnTable(tournament: Tournament, tableId: string): string | undefined {
+  for (const a of tournament.tableAssignments) {
+    if (a.tableId !== tableId) continue;
+    const m = tournament.matches[a.matchId];
+    if (m && m.status === 'in-progress') return a.matchId;
+  }
+  return undefined;
+}
+
+export function isTableOccupiedByOtherMatch(tournament: Tournament, tableId: string, matchId: string): boolean {
+  const other = matchIdOnTable(tournament, tableId);
+  return other !== undefined && other !== matchId;
+}
+
+function releaseLiveTableForMatch(tournament: Tournament, matchId: string): void {
+  tournament.tableAssignments = tournament.tableAssignments.filter((a) => a.matchId !== matchId);
+  const m = tournament.matches[matchId];
+  if (m && m.status === 'in-progress') {
+    m.status = 'scheduled';
+  }
+}
+
+export function setTournamentTables(tournament: Tournament, tableIds: string[]): Tournament {
+  const next = normalizeTournamentTableIds(tableIds);
+  const allowed = new Set(next);
+  tournament.tables = next;
+  const removedTableIds = new Set<string>();
+  for (const a of tournament.tableAssignments) {
+    if (!allowed.has(a.tableId)) removedTableIds.add(a.tableId);
+  }
+  if (removedTableIds.size > 0) {
+    const toRelease = tournament.tableAssignments
+      .filter((a) => removedTableIds.has(a.tableId))
+      .map((a) => a.matchId);
+    for (const mid of toRelease) {
+      releaseLiveTableForMatch(tournament, mid);
+    }
+  }
+  return tournament;
+}
+
+export function assignMatchToTable(tournament: Tournament, matchId: string, tableId: string): void {
+  const match = tournament.matches[matchId];
+  if (!match) throw new Error('Match not found');
+  if (!tournament.tables.includes(tableId)) throw new Error('Table not configured for this tournament');
+  if (match.status === 'finished' || match.status === 'forfeit' || match.status === 'eliminated') {
+    throw new Error('Cannot assign a completed match to a table');
+  }
+  if (isTableOccupiedByOtherMatch(tournament, tableId, matchId)) {
+    throw new Error('That table already has a match in progress');
+  }
+  tournament.tableAssignments = tournament.tableAssignments.filter((a) => a.matchId !== matchId);
+  tournament.tableAssignments.push({ tableId, matchId });
+  match.status = 'in-progress';
+}
+
+export function clearMatchTableAssignment(tournament: Tournament, matchId: string): void {
+  releaseLiveTableForMatch(tournament, matchId);
+}
+
+/** Called when a match is fully scored or cleared — frees the table for other matches. */
+export function releaseTableForFinishedOrClearedMatch(tournament: Tournament, matchId: string): void {
+  releaseLiveTableForMatch(tournament, matchId);
 }
 
 export function scheduleRound(tournament: Tournament, tableIds: string[], round: number): Tournament {

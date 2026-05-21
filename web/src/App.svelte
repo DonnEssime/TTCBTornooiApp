@@ -44,6 +44,9 @@
     matchWinner,
     shuffleDeterministic,
     DEFAULT_NUMERICAL_HANDICAP_CONFIG,
+    buildDefaultTableIds,
+    matchAssignedTableId,
+    isTableOccupiedByOtherMatch,
   } from 'ttc-tornooiapp';
   import BracketStreamView from './BracketStreamView.svelte';
   import PlayerName from './PlayerName.svelte';
@@ -143,6 +146,7 @@
   let draftClassEditorRows = $state<Array<{ id: string; name: string }>>([
     { id: newCompetitionClassId(), name: '' },
   ]);
+  let draftTableCount = $state(4);
 
   /** Score drafts keyed by match id, scoped per session. */
   let scoreDraftsBySession = $state<Record<string, Record<string, ScoreRow[]>>>({});
@@ -1446,6 +1450,15 @@
         return;
       }
     }
+    {
+      const cmdId = `cmd-tables-init-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
+      const tableIds = buildDefaultTableIds(Math.max(1, Math.floor(Number(draftTableCount) || 1)));
+      const rTables = controller.setTournamentTables(tableIds, [], cmdId);
+      if (!rTables.success) {
+        status = rTables.reason ?? 'Could not configure tables';
+        return;
+      }
+    }
     const t0 = controller.getTournament();
     const nav = normalizeSessionNav(t0, { kind: 'single', inner: 'players' });
     const classEditorRowsForSession =
@@ -1481,8 +1494,73 @@
     draftClassesEnabled = false;
     draftClassEditorRows = [{ id: newCompetitionClassId(), name: '' }];
     draftTournamentFormat = 'group-bracket';
+    draftTableCount = 4;
     pull();
     status = 'Tournament created. Add players on the Players tab.';
+  }
+
+  function applyOverviewTableCount(count: number): void {
+    status = null;
+    const s = getActiveSession();
+    if (!s) return;
+    const clamped = Math.min(32, Math.max(1, Math.floor(count)));
+    const tableIds = buildDefaultTableIds(clamped);
+    const r = s.controller.setTournamentTables(tableIds, [], `cmd-tables-${Date.now()}`);
+    if (!r.success) {
+      status = r.reason ?? 'Could not update tables';
+    }
+    pull();
+  }
+
+  function incrementOverviewTableCount(): void {
+    applyOverviewTableCount(overviewTableCount + 1);
+  }
+
+  function decrementOverviewTableCount(): void {
+    if (overviewTableCount <= 1) return;
+    applyOverviewTableCount(overviewTableCount - 1);
+  }
+
+  function openTableMatch(m: Match): void {
+    openScoreModal(m);
+  }
+
+  function scoreModalCanAssignTable(): boolean {
+    const m = scoreModalTargetMatch();
+    if (!m) return false;
+    return m.status === 'scheduled' || m.status === 'in-progress';
+  }
+
+  function scoreModalSelectedTableId(): string {
+    const m = scoreModalTargetMatch();
+    if (!m) return '';
+    return matchAssignedTableId(tournament, m.id) ?? '';
+  }
+
+  function scoreModalTableOptionDisabled(tableId: string): boolean {
+    const m = scoreModalTargetMatch();
+    if (!m) return true;
+    return isTableOccupiedByOtherMatch(tournament, tableId, m.id);
+  }
+
+  function changeScoreModalTable(tableId: string): void {
+    status = null;
+    scoreModalHint = null;
+    const sm = scoreModalTargetMatch();
+    const s = getActiveSession();
+    if (!sm || !s) return;
+    const current = matchAssignedTableId(tournament, sm.id);
+    if (tableId === '') {
+      if (!current) return;
+      const r = s.controller.clearMatchTableAssignment(sm.id, [], `cmd-table-clear-${sm.id}-${Date.now()}`);
+      if (!r.success) scoreModalHint = r.reason ?? 'Could not clear table';
+      pull();
+      return;
+    }
+    if (tableId === current) return;
+    const r = s.controller.assignMatchToTable(sm.id, tableId, [], `cmd-table-assign-${sm.id}-${Date.now()}`);
+    if (!r.success) scoreModalHint = r.reason ?? 'Could not assign table';
+    pull();
   }
 
   function doUndo(): void {
@@ -1930,6 +2008,19 @@
           : `Unlocked bracket round ${cmd.payload.bracketRound}.`;
       case 'AssignTables':
         return 'Assigned tables.';
+      case 'SetTournamentTables':
+        return `Set up ${cmd.payload.tableIds.length} table${cmd.payload.tableIds.length === 1 ? '' : 's'}.`;
+      case 'AssignMatchToTable': {
+        const m = t.matches[cmd.payload.matchId];
+        const table = cmd.payload.tableId;
+        return m
+          ? `Started on table ${table} · ${pn(m.playerA)} vs ${pn(m.playerB)}`
+          : `Assigned match to table ${table}.`;
+      }
+      case 'ClearMatchTableAssignment': {
+        const m = t.matches[cmd.payload.matchId];
+        return m ? `Cleared table · ${pn(m.playerA)} vs ${pn(m.playerB)}` : 'Cleared table assignment.';
+      }
       case 'AdvanceBracketRound':
         return 'Advanced bracket round.';
       case 'PlayerForfeit':
@@ -1942,6 +2033,8 @@
   }
 
   const useClassTabs = $derived(tournamentUsesClassTabs(tournament));
+
+  const overviewTableCount = $derived(tournament.tables.length);
 
   const activeSess = $derived(getActiveSession());
   const showFormatStub = $derived(Boolean(activeSess && activeSess.tournamentFormat !== 'group-bracket'));
@@ -2091,16 +2184,22 @@
 
           <div class="settings-block new-tournament-block">
             <h2 class="h2">New tournament</h2>
-            <label class="field-block">
-              <span class="field-label">Name</span>
-              <input
-                class="draft-tournament-name-input"
-                type="text"
-                bind:value={draftTournamentName}
-                maxlength="120"
-                autocomplete="off"
-              />
-            </label>
+            <div class="draft-top-fields">
+              <label class="field-block draft-name-field">
+                <span class="field-label">Name</span>
+                <input
+                  class="draft-tournament-name-input"
+                  type="text"
+                  bind:value={draftTournamentName}
+                  maxlength="120"
+                  autocomplete="off"
+                />
+              </label>
+              <label class="field-block draft-tables-field">
+                <span class="field-label">#Tables</span>
+                <input type="number" min="1" max="32" step="1" bind:value={draftTableCount} />
+              </label>
+            </div>
 
             <fieldset class="type-fieldset">
               <legend class="field-label">Tournament type</legend>
@@ -2342,8 +2441,12 @@
                 {tournament}
                 useClassTabs={useClassTabs}
                 groupDisplayLabel={groupDisplayLabel}
+                tableCount={overviewTableCount}
+                onIncrementTables={incrementOverviewTableCount}
+                onDecrementTables={decrementOverviewTableCount}
                 onOpenGroupMatch={openScoreModal}
                 onOpenBracketSlot={openBracketPairingModal}
+                onOpenTableMatch={openTableMatch}
               />
             </section>
           {:else if showPlayersPanel}
@@ -3059,6 +3162,22 @@
               {/if}
             </p>
           {/if}
+          {#if scoreModalCanAssignTable() && tournament.tables.length > 0}
+            <label class="score-modal-table-field">
+              <span class="field-label">Playing on table</span>
+              <select
+                value={scoreModalSelectedTableId()}
+                onchange={(e) => changeScoreModalTable((e.currentTarget as HTMLSelectElement).value)}
+              >
+                <option value="">— Not on a table —</option>
+                {#each tournament.tables as tableId (tableId)}
+                  <option value={tableId} disabled={scoreModalTableOptionDisabled(tableId)}>
+                    Table {tableId}{scoreModalTableOptionDisabled(tableId) ? ' (in use)' : ''}
+                  </option>
+                {/each}
+              </select>
+            </label>
+          {/if}
           <table class="mini score-modal-table">
             <thead>
               <tr>
@@ -3504,6 +3623,37 @@
   .title-block {
     flex: 1 1 16rem;
     min-width: 12rem;
+  }
+
+  .draft-top-fields {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.75rem 1.25rem;
+  }
+
+  .draft-name-field {
+    flex: 1 1 14rem;
+    min-width: 10rem;
+  }
+
+  .draft-tables-field {
+    flex: 0 0 auto;
+  }
+
+  .draft-tables-field input[type='number'] {
+    width: 4.25rem;
+    font: inherit;
+    font-size: 0.95rem;
+    padding: 0 0.55rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background: #fff;
+    color: inherit;
+    --draft-name-line: calc(0.95rem * 1.35);
+    height: calc(var(--draft-name-line) * 1.5);
+    line-height: calc(var(--draft-name-line) * 1.5 - 2px);
+    font-variant-numeric: tabular-nums;
   }
 
   .title-label {
@@ -4182,6 +4332,21 @@
   .modal-actions {
     margin-top: 0.85rem;
     justify-content: flex-end;
+  }
+
+  .score-modal-table-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin: 0.5rem 0 0.65rem;
+  }
+
+  .score-modal-table-field select {
+    max-width: 16rem;
+    padding: 0.35rem 0.5rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    font: inherit;
   }
 
   .score-modal-table {
