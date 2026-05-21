@@ -50,7 +50,7 @@
 >
   <span class="bracket-slot-label">
     {#if showPlayerName}
-      <PlayerName {tournament} playerId={playerId!} classId={bracketClassId} />
+      <PlayerName {tournament} playerId={playerId!} classId={bracketClassId} labelMode="bracket-slot" />
     {:else}
       {label}
     {/if}

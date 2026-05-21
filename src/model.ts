@@ -339,6 +339,56 @@ export function applyBracketToTournament(tournament: Tournament, bracketMatches:
   return tournament;
 }
 
+/**
+ * Drop knockout bracket structure and all derived bracket state (player match rows without
+ * `groupId`, bracket table assignments, bracket-phase forfeits). Group phase is unchanged.
+ */
+export function clearBracketFromTournament(tournament: Tournament, classId?: string): string | undefined {
+  if (classId && !tournament.classTournaments[classId]) {
+    return 'Unknown class id.';
+  }
+  if (tournamentUsesClassTabs(tournament) && classId === undefined) {
+    return 'Clear the bracket from each class track when multiple competition classes are defined.';
+  }
+
+  const slice = classId ? tournament.classTournaments[classId]! : undefined;
+  const bracketMatches = slice?.bracketMatches ?? tournament.bracketMatches;
+  if (bracketMatches.length === 0) {
+    return 'No knockout bracket to remove.';
+  }
+
+  const matchIdsToRemove = new Set<string>();
+  for (const bm of bracketMatches) {
+    matchIdsToRemove.add(bracketPlayerMatchId(bm.id));
+  }
+  for (const [id, m] of Object.entries(tournament.matches)) {
+    if (!m.groupId) {
+      matchIdsToRemove.add(id);
+    }
+  }
+
+  for (const id of matchIdsToRemove) {
+    delete tournament.matches[id];
+  }
+  tournament.tableAssignments = tournament.tableAssignments.filter((a) => !matchIdsToRemove.has(a.matchId));
+
+  for (const [pid, entry] of Object.entries(tournament.forfeits.players)) {
+    if (entry.phase === 'bracket') {
+      delete tournament.forfeits.players[pid];
+    }
+  }
+
+  if (slice) {
+    slice.bracketMatches = [];
+    slice.lockedBracketRounds = [];
+  } else {
+    tournament.bracketMatches = [];
+    tournament.lockedBracketRounds = [];
+  }
+
+  return undefined;
+}
+
 export const defaultPointTarget = 11;
 
 function validateNonNegative(score: GameScore): boolean {

@@ -33,6 +33,7 @@ import {
   bracketMatchRound,
   canMutateExistingGroupPhaseMatchScores,
   eliminateLowestRankedPlayersInBracketRound,
+  clearBracketFromTournament,
   clampPlayerHandicapValue,
   normalizeHandicapConfig,
   validatePlayerHandicapForTournament,
@@ -58,6 +59,7 @@ export type CommandType =
   | 'SetClassGroups'
   | 'GenerateGroupRoundRobin'
   | 'GenerateBracket'
+  | 'ClearBracket'
   | 'EliminateLowestBracketRound'
   | 'AssignTables'
   | 'AdvanceBracketRound'
@@ -177,6 +179,11 @@ export interface GenerateBracketCommand extends CommandBase {
   };
 }
 
+export interface ClearBracketCommand extends CommandBase {
+  type: 'ClearBracket';
+  payload: { classId?: string };
+}
+
 export interface EliminateLowestBracketRoundCommand extends CommandBase {
   type: 'EliminateLowestBracketRound';
   payload: {
@@ -227,6 +234,7 @@ export type Command =
   | SetClassGroupsCommand
   | GenerateGroupRoundRobinCommand
   | GenerateBracketCommand
+  | ClearBracketCommand
   | EliminateLowestBracketRoundCommand
   | AssignTablesCommand
   | AdvanceBracketRoundCommand
@@ -1115,6 +1123,16 @@ export class CommandRunner {
           applyBracketToTournament(tournament, bm);
         } catch (e) {
           return { success: false, reason: e instanceof Error ? e.message : String(e) };
+        }
+        return { success: true };
+      }
+      case 'ClearBracket': {
+        if (Object.keys(tournament.teamMatches).length > 0) {
+          return { success: false, reason: 'Cannot clear bracket while a team vs team match exists' };
+        }
+        const err = clearBracketFromTournament(tournament, command.payload.classId);
+        if (err) {
+          return { success: false, reason: err };
         }
         return { success: true };
       }

@@ -10,6 +10,7 @@ import {
   ClearMatchScoresCommand,
   EnterTeamScoreCommand,
   GenerateBracketCommand,
+  ClearBracketCommand,
   type EliminateLowestBracketRoundCommand,
   SetRoundLockCommand,
   SetSeedingsCommand,
@@ -354,6 +355,24 @@ export class TournamentController {
       return result;
     }
     this.view?.renderBracket(this.getTournament());
+    return result;
+  }
+
+  clearBracket(dependsOn: string[] = [], commandId?: string, classId?: string): CommandResult {
+    const command: ClearBracketCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'ClearBracket',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: classId !== undefined ? { classId } : {},
+    };
+    const result = this.runner.execute(command);
+    if (!result.success) {
+      this.view?.renderMessage(`clearBracket failed: ${result.reason ?? ''}`);
+      return result;
+    }
+    this.view?.renderBracket(this.getTournament());
+    this.view?.renderTournament(this.getTournament());
     return result;
   }
 

@@ -13,15 +13,12 @@
   let {
     tournament,
     useClassTabs,
-    playerOrder,
     groupDisplayLabel,
     onOpenGroupMatch,
     onOpenBracketSlot,
   }: {
     tournament: Tournament;
     useClassTabs: boolean;
-    /** Global seeding order for the player roster on the overview. */
-    playerOrder: string[];
     groupDisplayLabel: (g: GroupDefinition) => string;
     onOpenGroupMatch: (m: Match) => void;
     onOpenBracketSlot: (bm: BracketMatch) => void;
@@ -340,15 +337,6 @@
       <h3 class="ov-h">Players</h3>
       <p class="ov-count">{Object.keys(tournament.players).length}</p>
       <p class="ov-count-caption muted small">in this tournament</p>
-      {#if playerOrder.length > 0}
-        <ul class="ov-player-roster muted small">
-          {#each playerOrder as pid (pid)}
-            {#if tournament.players[pid]}
-              <li><PlayerName {tournament} playerId={pid} /></li>
-            {/if}
-          {/each}
-        </ul>
-      {/if}
     </section>
 
     <section class="ov-card ov-sidebar-card">
@@ -554,19 +542,6 @@
 
   .ov-count-caption {
     margin: 0.15rem 0 0;
-  }
-
-  .ov-player-roster {
-    list-style: none;
-    margin: 0.5rem 0 0;
-    padding: 0;
-    max-height: 10rem;
-    overflow-y: auto;
-    line-height: 1.45;
-  }
-
-  .ov-player-roster li + li {
-    margin-top: 0.15rem;
   }
 
   .ov-metric {

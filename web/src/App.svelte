@@ -1610,6 +1610,37 @@
     pull();
   }
 
+  function removeKnockoutBracket(): void {
+    status = null;
+    const s = getActiveSession();
+    if (!s) return;
+    if (tournament.bracketMatches.length === 0) {
+      status = 'No knockout bracket to remove.';
+      return;
+    }
+    if (
+      !confirm(
+        'Remove the knockout bracket? All bracket pairings, scores, round locks, and related data will be forgotten. The group phase is not changed.',
+      )
+    ) {
+      return;
+    }
+    const deps: string[] = s.playerOrder.map((pid) => `cmd-${pid}`);
+    if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
+    if (s.lastSetGroupsCommandId) deps.push(s.lastSetGroupsCommandId);
+    const gen = [...s.controller.getCommandLog()].reverse().find((c) => c.type === 'GenerateBracket');
+    if (gen) deps.push(gen.id);
+    const cmdId = `cmd-clear-bracket-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
+    const r = s.controller.clearBracket(deps, cmdId);
+    if (!r.success) {
+      status = r.reason ?? 'Could not remove bracket';
+      pull();
+      return;
+    }
+    status = 'Knockout bracket removed. You can create a new bracket when ready.';
+    pull();
+  }
+
   function eliminateBracketRoundByRanking(round: number): void {
     status = null;
     const s = getActiveSession();
@@ -1868,6 +1899,8 @@
               : 'heuristic seeding';
         return `Generated bracket (${label}, byes filled).`;
       }
+      case 'ClearBracket':
+        return 'Removed knockout bracket.';
       case 'EliminateLowestBracketRound':
         return `Eliminated lower-ranked players in round ${cmd.payload.round} (bureaucratic outcome).`;
       case 'GenerateGroupRoundRobin':
@@ -2027,7 +2060,7 @@
     {/if}
   </div>
 
-  <main class="main">
+  <main class="main" class:main--tournament={workspaceTab !== 'settings'}>
     {#if workspaceTab === 'settings'}
       <section class="card settings-card">
         <h1 class="h1">Tournament settings</h1>
@@ -2308,7 +2341,6 @@
               <TournamentOverview
                 {tournament}
                 useClassTabs={useClassTabs}
-                playerOrder={activeSess.playerOrder}
                 groupDisplayLabel={groupDisplayLabel}
                 onOpenGroupMatch={openScoreModal}
                 onOpenBracketSlot={openBracketPairingModal}
@@ -2612,6 +2644,11 @@
               {/if}
 
               {#if tournament.bracketMatches.length > 0}
+                <div class="row align-end bracket-remove-row" style="margin-bottom: 0.75rem;">
+                  <button type="button" class="btn danger-ghost" onclick={removeKnockoutBracket}>
+                    Remove bracket
+                  </button>
+                </div>
                 <h3 class="h3">Knockout bracket</h3>
                 <p class="muted small">
                   Single view: round&nbsp;1 on the outside, each round a step toward the final in the middle. Player names
@@ -3209,6 +3246,17 @@
     max-width: 58rem;
     margin: 0 auto;
     padding: 1.25rem 1.25rem 2.5rem;
+  }
+
+  /** Use horizontal space on wide screens (e.g. knockout bracket tree). */
+  .main.main--tournament {
+    max-width: min(112rem, calc(100% - 2.5rem));
+  }
+
+  @media (min-width: 90rem) {
+    .main.main--tournament {
+      max-width: min(112rem, calc(100vw - 2.5rem));
+    }
   }
 
   .app-with-footer .main {

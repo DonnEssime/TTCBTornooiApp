@@ -809,6 +809,30 @@ describe('EnterScore', () => {
   });
 });
 
+describe('ClearBracket', () => {
+  it('removes bracket structure, knockout matches, locks, and bracket forfeits', () => {
+    const c = new TournamentController();
+    expect(c.createPlayer('p1', 'A', 0, 'cmd-p1')).toEqual({ success: true });
+    expect(c.createPlayer('p2', 'B', 0, 'cmd-p2')).toEqual({ success: true });
+    expect(c.setSeedings(['p1', 'p2'], ['cmd-p1', 'cmd-p2'], 'cmd-seed')).toEqual({ success: true });
+    expect(c.generateBracket(true, false, ['cmd-seed'], 'cmd-gen')).toEqual({ success: true });
+    expect(c.createMatch('match-m1', 'p1', 'p2', ['cmd-gen', 'cmd-p1', 'cmd-p2'], 'cmd-pair')).toEqual({
+      success: true,
+    });
+    expect(c.setRoundLock(1, true, ['cmd-gen'], 'cmd-lock')).toEqual({ success: true });
+    expect(c.clearBracket(['cmd-gen'], 'cmd-clear')).toEqual({ success: true });
+    const t = c.getTournament();
+    expect(t.bracketMatches).toEqual([]);
+    expect(t.lockedBracketRounds).toEqual([]);
+    expect(t.matches['match-m1']).toBeUndefined();
+  });
+
+  it('fails when no bracket exists', () => {
+    const c = new TournamentController();
+    expect(c.clearBracket([], 'cmd-clear')).toEqual({ success: false, reason: 'No knockout bracket to remove.' });
+  });
+});
+
 describe('Bracket undoLast coalescing', () => {
   it('undoLast on a round-1 CreateMatch that depends on GenerateBracket undoes the whole bracket batch', () => {
     const c = new TournamentController();
