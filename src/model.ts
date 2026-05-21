@@ -89,6 +89,84 @@ export interface ForfeitResults {
   playerWins: Record<PlayerId, number>;
 }
 
+export type HandicapSystem = 'numerical' | 'classification';
+export type HandicapStartingCriteria = 'headstart' | 'minus_points';
+
+/** Per-tournament handicap rules (v1: numerical only; classification is reserved). */
+export interface HandicapConfig {
+  system: HandicapSystem;
+  /** Inclusive player handicap rating bounds (numerical system). */
+  minValue: number;
+  maxValue: number;
+  /** How handicap difference maps to game-one start (product detail TBD). */
+  startingCriteria: HandicapStartingCriteria;
+  /** Max absolute headstart or negative start applied from the handicap gap. */
+  maxStartAdjustment: number;
+}
+
+export const DEFAULT_NUMERICAL_HANDICAP_CONFIG: HandicapConfig = {
+  system: 'numerical',
+  minValue: 0,
+  maxValue: 9,
+  startingCriteria: 'headstart',
+  maxStartAdjustment: 7,
+};
+
+export function isHandicapActive(tournament: Tournament): boolean {
+  return Boolean(tournament.handicapConfig);
+}
+
+export function normalizeHandicapConfig(raw: Partial<HandicapConfig> | null | undefined): HandicapConfig | undefined {
+  if (!raw) return undefined;
+  const system: HandicapSystem = raw.system === 'classification' ? 'classification' : 'numerical';
+  const minValue = Math.max(0, Math.floor(Number(raw.minValue ?? DEFAULT_NUMERICAL_HANDICAP_CONFIG.minValue)));
+  const maxValue = Math.max(0, Math.floor(Number(raw.maxValue ?? DEFAULT_NUMERICAL_HANDICAP_CONFIG.maxValue)));
+  const lo = Math.min(minValue, maxValue);
+  const hi = Math.max(minValue, maxValue);
+  const startingCriteria: HandicapStartingCriteria =
+    raw.startingCriteria === 'minus_points' ? 'minus_points' : 'headstart';
+  const maxStartAdjustment = Math.max(
+    0,
+    Math.floor(Number(raw.maxStartAdjustment ?? DEFAULT_NUMERICAL_HANDICAP_CONFIG.maxStartAdjustment)),
+  );
+  return {
+    system,
+    minValue: lo,
+    maxValue: hi,
+    startingCriteria,
+    maxStartAdjustment,
+  };
+}
+
+export function handicapValueBounds(config: HandicapConfig): { min: number; max: number } {
+  return { min: Math.min(config.minValue, config.maxValue), max: Math.max(config.minValue, config.maxValue) };
+}
+
+export function clampPlayerHandicapValue(config: HandicapConfig, value: number): number {
+  const { min, max } = handicapValueBounds(config);
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+export function randomPlayerHandicapValue(config: HandicapConfig, rng: () => number = Math.random): number {
+  const { min, max } = handicapValueBounds(config);
+  const span = max - min + 1;
+  return min + Math.floor(rng() * span);
+}
+
+export function validatePlayerHandicapForTournament(tournament: Tournament, handicap: number): string | undefined {
+  const config = tournament.handicapConfig;
+  if (!config) return undefined;
+  if (config.system === 'classification') {
+    return 'Classification handicaps are not implemented yet';
+  }
+  const next = clampPlayerHandicapValue(config, handicap);
+  if (!Number.isFinite(handicap) || Math.floor(handicap) !== next) {
+    const { min, max } = handicapValueBounds(config);
+    return `Handicap must be an integer from ${min} to ${max}`;
+  }
+  return undefined;
+}
+
 /**
  * Supported modes (for now): (1) individual player tournaments — brackets/matches among players;
  * (2) optionally a single team-vs-team match (two teams, aggregate games), mutually exclusive with a player bracket.
@@ -114,6 +192,8 @@ export interface Tournament {
   playerClassFlags: Record<PlayerId, Record<string, boolean>>;
   /** Per class id: derived seedings plus future group/bracket state for that track. */
   classTournaments: Record<string, ClassTournamentSlice>;
+  /** When set, player handicaps are tracked and validated for this tournament. */
+  handicapConfig?: HandicapConfig;
 }
 
 export function createTournament(): Tournament {
@@ -1950,6 +2030,44 @@ function pickBracketEliminationLoser(
   return shuffleDeterministic([pidA, pidB], salt)[0]!;
 }
 
+/** True when {@link eliminateLowestRankedPlayersInBracketRound} could still affect this slot. */
+function bracketMatchOpenForElimination(
+  tournament: Tournament,
+  bm: BracketMatch,
+  classId: string | undefined,
+): boolean {
+  if (bm.winner) return false;
+  const a = bm.seedA;
+  const b = bm.seedB;
+  if (!a || !b) return false;
+  if (!tournament.players[a] || !tournament.players[b]) return false;
+
+  const mid = bracketPlayerMatchId(bm.id);
+  const existing = tournament.matches[mid];
+  if (existing) {
+    if (existing.groupId) return false;
+    if (existing.scores.length > 0) return false;
+    if (existing.status === 'finished' || existing.status === 'forfeit' || existing.status === 'eliminated') {
+      return false;
+    }
+  }
+
+  const ra = bracketFinishRankMeta(tournament, a, classId);
+  const rb = bracketFinishRankMeta(tournament, b, classId);
+  return Boolean(ra && rb);
+}
+
+/** Whether any pairing in `round` can still be resolved by bureaucratic elimination. */
+export function bracketRoundHasOpenEliminationPairings(
+  tournament: Tournament,
+  bracketMatches: BracketMatch[],
+  round: number,
+  classId?: string,
+): boolean {
+  const sorted = bracketMatchesSortedForRound(bracketMatches, round);
+  return sorted.some((bm) => bracketMatchOpenForElimination(tournament, bm, classId));
+}
+
 /**
  * Bureaucratic bracket outcome (distinct from forfeit): in each open two-player slot of `round`,
  * the worse group finisher is eliminated and the better finisher advances without entering game scores.
@@ -1979,27 +2097,14 @@ export function eliminateLowestRankedPlayersInBracketRound(
   const sorted = bracketMatchesSortedForRound(bracketMatches, round);
   let changed = 0;
   for (const bm of sorted) {
-    if (bm.winner) continue;
-    const a = bm.seedA;
-    const b = bm.seedB;
-    if (!a || !b) continue;
-    if (!tournament.players[a] || !tournament.players[b]) continue;
+    if (!bracketMatchOpenForElimination(tournament, bm, classId)) continue;
 
+    const a = bm.seedA!;
+    const b = bm.seedB!;
+    const ra = bracketFinishRankMeta(tournament, a, classId)!;
+    const rb = bracketFinishRankMeta(tournament, b, classId)!;
     const mid = bracketPlayerMatchId(bm.id);
     const existing = tournament.matches[mid];
-    if (existing) {
-      if (existing.groupId) continue;
-      if (existing.scores.length > 0) continue;
-      if (existing.status === 'finished' || existing.status === 'forfeit' || existing.status === 'eliminated') {
-        continue;
-      }
-    }
-
-    const ra = bracketFinishRankMeta(tournament, a, classId);
-    const rb = bracketFinishRankMeta(tournament, b, classId);
-    if (!ra || !rb) {
-      return `Cannot rank players for elimination in ${bm.id} (missing finished group results).`;
-    }
 
     const loser = pickBracketEliminationLoser(a, ra, b, rb, `${salt}:${bm.id}`);
     const winner = loser === a ? b : a;

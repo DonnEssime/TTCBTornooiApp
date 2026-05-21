@@ -13,6 +13,7 @@ import {
   type EliminateLowestBracketRoundCommand,
   SetRoundLockCommand,
   SetSeedingsCommand,
+  SetHandicapConfigCommand,
   SetTournamentClassesCommand,
   SetPlayerClassFlagsCommand,
   SetGroupsCommand,
@@ -25,7 +26,7 @@ import {
   type RenamePlayerCommand,
   type UndoCommand,
 } from './command';
-import { Tournament, type BracketSeedingMode } from './model';
+import { Tournament, type BracketSeedingMode, type HandicapConfig } from './model';
 import { replayCommandsFromJsonLines } from './storage';
 import { TournamentView } from './view';
 
@@ -199,6 +200,20 @@ export class TournamentController {
     };
     const result = this.runner.execute(command);
     this.view?.renderMessage(`SetSeedings: ${JSON.stringify(result)}`);
+    this.view?.renderTournament(this.getTournament());
+    return result;
+  }
+
+  setHandicapConfig(config: HandicapConfig | null, dependsOn: string[] = [], commandId?: string): CommandResult {
+    const command: SetHandicapConfigCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'SetHandicapConfig',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: { config },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`SetHandicapConfig: ${JSON.stringify(result)}`);
     this.view?.renderTournament(this.getTournament());
     return result;
   }

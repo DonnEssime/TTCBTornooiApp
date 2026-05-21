@@ -21,6 +21,8 @@ import {
   singleEliminationPlacementRows,
   bracketMatchLoser,
   bracketPlayerMatchId,
+  bracketRoundHasOpenEliminationPairings,
+  eliminateLowestRankedPlayersInBracketRound,
   matchPlayersResolvedForBracketPhaseList,
   settleBracketWinners,
   settleBracketWinnersIn,
@@ -925,5 +927,73 @@ describe('Group → bracket placeholders', () => {
     };
     expect(formatBracketSlotPlayerLabel(t, 'p1', 'jun')).toBe('Pool A place 1');
     expect(formatBracketSlotPlayerLabel(t, 'p1', undefined)).toBe('Ann');
+  });
+});
+
+describe('bracketRoundHasOpenEliminationPairings', () => {
+  function finishGroupRR4(
+    t: ReturnType<typeof createTournament>,
+    gid: string,
+    pids: [string, string, string, string],
+  ): void {
+    const [a, b, c, d] = pids;
+    t.groups[gid] = { id: gid, playerIds: [...pids] };
+    const add = (pa: string, pb: string, w: string) => {
+      const id = `m-${gid}-${pa}-${pb}`;
+      t.matches[id] = {
+        id,
+        playerA: pa,
+        playerB: pb,
+        scores: [],
+        status: 'finished',
+        winner: w,
+        groupId: gid,
+      };
+    };
+    add(a, b, a);
+    add(a, c, a);
+    add(a, d, a);
+    add(b, c, b);
+    add(b, d, b);
+    add(c, d, c);
+  }
+
+  it('is false when every two-player slot in the round already has a decisive outcome', () => {
+    const t = createTournament();
+    for (let i = 1; i <= 4; i++) {
+      const id = `p${i}`;
+      t.players[id] = { id, name: `P${i}`, handicap: 0 };
+    }
+    finishGroupRR4(t, 'g1', ['p1', 'p2', 'p3', 'p4']);
+    t.bracketMatches = generateBracket(['p1', 'p2', 'p3', 'p4'], { fillByes: false, cullToPowerOfTwo: false });
+    for (const bm of t.bracketMatches.filter((m) => bracketMatchRound(m) === 1)) {
+      const mid = bracketPlayerMatchId(bm.id);
+      t.matches[mid] = {
+        id: mid,
+        playerA: bm.seedA!,
+        playerB: bm.seedB!,
+        scores: [
+          { playerA: 11, playerB: 0 },
+          { playerA: 11, playerB: 0 },
+          { playerA: 11, playerB: 0 },
+        ],
+        status: 'finished',
+        winner: bm.seedA!,
+      };
+      bm.winner = bm.seedA!;
+    }
+    expect(bracketRoundHasOpenEliminationPairings(t, t.bracketMatches, 1)).toBe(false);
+    expect(eliminateLowestRankedPlayersInBracketRound(t, 1, undefined, 'salt')).toMatch(/No open pairings/);
+  });
+
+  it('is true while at least one open two-player slot lacks a played outcome', () => {
+    const t = createTournament();
+    for (let i = 1; i <= 4; i++) {
+      const id = `p${i}`;
+      t.players[id] = { id, name: `P${i}`, handicap: 0 };
+    }
+    finishGroupRR4(t, 'g1', ['p1', 'p2', 'p3', 'p4']);
+    t.bracketMatches = generateBracket(['p1', 'p2', 'p3', 'p4'], { fillByes: false, cullToPowerOfTwo: false });
+    expect(bracketRoundHasOpenEliminationPairings(t, t.bracketMatches, 1)).toBe(true);
   });
 });

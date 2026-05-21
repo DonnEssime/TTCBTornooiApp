@@ -2,17 +2,22 @@
   import type { BracketMatch, Tournament } from 'ttc-tornooiapp';
   import { bracketPlayerMatchId, gameWinner } from 'ttc-tornooiapp';
   import { bracketSlotOutcome } from './bracketStream/slotOutcome';
+  import PlayerName from './PlayerName.svelte';
 
   let {
     tournament,
     bm,
     side,
     label,
+    playerId = undefined,
+    bracketClassId = undefined,
   }: {
     tournament: Tournament;
     bm: BracketMatch;
     side: 'a' | 'b';
     label: string;
+    playerId?: string;
+    bracketClassId?: string;
   } = $props();
 
   function gamesWonForBracketSlot(t: Tournament, match: BracketMatch, s: 'a' | 'b'): number | null {
@@ -35,6 +40,7 @@
 
   const outcome = $derived(bracketSlotOutcome(bm, side));
   const games = $derived(gamesWonForBracketSlot(tournament, bm, side));
+  const showPlayerName = $derived(Boolean(playerId && tournament.players[playerId]));
 </script>
 
 <div
@@ -42,7 +48,13 @@
   class:bracket-slot--winner={outcome === 'winner'}
   class:bracket-slot--loser={outcome === 'loser'}
 >
-  <span class="bracket-slot-label">{label}</span>
+  <span class="bracket-slot-label">
+    {#if showPlayerName}
+      <PlayerName {tournament} playerId={playerId!} classId={bracketClassId} />
+    {:else}
+      {label}
+    {/if}
+  </span>
   {#if games !== null}
     <span class="bracket-slot-games" class:bracket-slot-games--winner={outcome === 'winner'}>{games}</span>
   {/if}
@@ -78,13 +90,14 @@
     color: #0f172a;
   }
 
-  .bracket-slot-games--winner {
-    font-weight: 800;
+  .bracket-slot--winner .bracket-slot-games--winner {
     color: #0f172a;
+    font-weight: 700;
   }
 
-  .bracket-slot--loser .bracket-slot-label {
+  .bracket-slot--loser .bracket-slot-label,
+  .bracket-slot--loser .bracket-slot-games {
+    color: #94a3b8;
     font-weight: 500;
-    color: #64748b;
   }
 </style>

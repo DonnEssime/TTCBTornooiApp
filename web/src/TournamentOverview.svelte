@@ -8,18 +8,20 @@
     compareBracketMatchId,
     matchPlayersResolvedForBracketPhaseList,
   } from 'ttc-tornooiapp';
+  import PlayerName from './PlayerName.svelte';
 
   let {
     tournament,
     useClassTabs,
-    playerLabel,
+    playerOrder,
     groupDisplayLabel,
     onOpenGroupMatch,
     onOpenBracketSlot,
   }: {
     tournament: Tournament;
     useClassTabs: boolean;
-    playerLabel: (id: string) => string;
+    /** Global seeding order for the player roster on the overview. */
+    playerOrder: string[];
     groupDisplayLabel: (g: GroupDefinition) => string;
     onOpenGroupMatch: (m: Match) => void;
     onOpenBracketSlot: (bm: BracketMatch) => void;
@@ -298,7 +300,11 @@
               <li>
                 <button type="button" class="ov-ready-btn" onclick={() => onOpenGroupMatch(m)}>
                   <span class="ov-ready-pair"
-                    ><strong>{playerLabel(m.playerA)}</strong> vs <strong>{playerLabel(m.playerB)}</strong></span
+                    ><PlayerName {tournament} playerId={m.playerA} tag="strong" /> vs <PlayerName
+                      {tournament}
+                      playerId={m.playerB}
+                      tag="strong"
+                    /></span
                   >
                   <span class="muted small ov-ready-meta">{readyGroupMatchMeta(tournament, m)}</span>
                 </button>
@@ -313,7 +319,11 @@
               <li>
                 <button type="button" class="ov-ready-btn" onclick={() => onOpenBracketSlot(item.bm)}>
                   <span class="ov-ready-pair"
-                    ><strong>{playerLabel(item.bm.seedA!)}</strong> vs <strong>{playerLabel(item.bm.seedB!)}</strong></span
+                    ><PlayerName {tournament} playerId={item.bm.seedA!} tag="strong" /> vs <PlayerName
+                      {tournament}
+                      playerId={item.bm.seedB!}
+                      tag="strong"
+                    /></span
                   >
                   <span class="muted small ov-ready-meta">{item.meta}</span>
                 </button>
@@ -330,6 +340,15 @@
       <h3 class="ov-h">Players</h3>
       <p class="ov-count">{Object.keys(tournament.players).length}</p>
       <p class="ov-count-caption muted small">in this tournament</p>
+      {#if playerOrder.length > 0}
+        <ul class="ov-player-roster muted small">
+          {#each playerOrder as pid (pid)}
+            {#if tournament.players[pid]}
+              <li><PlayerName {tournament} playerId={pid} /></li>
+            {/if}
+          {/each}
+        </ul>
+      {/if}
     </section>
 
     <section class="ov-card ov-sidebar-card">
@@ -535,6 +554,19 @@
 
   .ov-count-caption {
     margin: 0.15rem 0 0;
+  }
+
+  .ov-player-roster {
+    list-style: none;
+    margin: 0.5rem 0 0;
+    padding: 0;
+    max-height: 10rem;
+    overflow-y: auto;
+    line-height: 1.45;
+  }
+
+  .ov-player-roster li + li {
+    margin-top: 0.15rem;
   }
 
   .ov-metric {

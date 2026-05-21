@@ -6,6 +6,7 @@
     Command,
     GameScore,
     GroupDefinition,
+    HandicapStartingCriteria,
     Match,
     Tournament,
   } from 'ttc-tornooiapp';
@@ -21,14 +22,20 @@
     bracketPlayerMatchId,
     canMutateBracketPlayerMatch,
     canMutateExistingGroupPhaseMatchScores,
+    clampPlayerHandicapValue,
     equalSizedGroupBracketMeta,
     formatBracketSlotPlayerLabel,
+    handicapValueBounds,
     isExactClosedFormBracketGrid,
+    isHandicapActive,
     supportsExtendedClosedFormBracketGrid,
     matchPlayersResolvedForBracketPhaseList,
+    normalizeHandicapConfig,
+    randomPlayerHandicapValue,
     singleEliminationPlacementRows,
     gameWinner,
     generateBracket,
+    bracketRoundHasOpenEliminationPairings,
     groupNumberedTitle,
     tournamentUsesClassTabs,
     isGameScoreLegal,
@@ -36,8 +43,10 @@
     isPlayerDisplayNameTaken,
     matchWinner,
     shuffleDeterministic,
+    DEFAULT_NUMERICAL_HANDICAP_CONFIG,
   } from 'ttc-tornooiapp';
   import BracketStreamView from './BracketStreamView.svelte';
+  import PlayerName from './PlayerName.svelte';
   import TournamentOverview from './TournamentOverview.svelte';
   import { bracketTreeFromColumns, type BracketBNode } from './bracketStream/buildTree';
 
@@ -84,8 +93,6 @@
     classGroupTargetSizeByClassId: Record<string, number>;
     /** Latest `SetClassGroups` command id per class. */
     lastSetClassGroupsCommandIdByClass: Record<string, string>;
-    /** When false, new players use handicap 0 and handicap controls are hidden. */
-    handicapEnabled: boolean;
     /** Planned flow; only `group-bracket` is implemented end-to-end. */
     tournamentFormat: TournamentFormat;
   }
@@ -102,6 +109,10 @@
   let handicapFocusPid = $state<string | null>(null);
 
   let tournament = $state<Tournament>(createTournament());
+  const handicapEnabled = $derived(isHandicapActive(tournament));
+  const handicapBounds = $derived(
+    tournament.handicapConfig ? handicapValueBounds(tournament.handicapConfig) : { min: 0, max: 0 },
+  );
   const bracketGroupShapeMeta = $derived.by(() => equalSizedGroupBracketMeta(tournament, undefined));
   const canPickClosedFormSeeding = $derived(
     Boolean(bracketGroupShapeMeta && isExactClosedFormBracketGrid(bracketGroupShapeMeta.G, bracketGroupShapeMeta.S)),
@@ -121,8 +132,14 @@
   /** New tournament wizard (Settings). */
   let draftTournamentName = $state('Tournament');
   let draftHandicapEnabled = $state(false);
+  let draftHandicapMin = $state(DEFAULT_NUMERICAL_HANDICAP_CONFIG.minValue);
+  let draftHandicapMax = $state(DEFAULT_NUMERICAL_HANDICAP_CONFIG.maxValue);
+  let draftHandicapStartingCriteria = $state<HandicapStartingCriteria>(
+    DEFAULT_NUMERICAL_HANDICAP_CONFIG.startingCriteria,
+  );
+  let draftHandicapMaxStart = $state(DEFAULT_NUMERICAL_HANDICAP_CONFIG.maxStartAdjustment);
   let draftTournamentFormat = $state<TournamentFormat>('group-bracket');
-  let draftClassSectionOpen = $state(false);
+  let draftClassesEnabled = $state(false);
   let draftClassEditorRows = $state<Array<{ id: string; name: string }>>([
     { id: newCompetitionClassId(), name: '' },
   ]);
@@ -140,12 +157,36 @@
     nameDraft = s.tournamentName;
   });
 
+  $effect(() => {
+    if (!draftClassesEnabled) {
+      draftClassEditorRows = [{ id: newCompetitionClassId(), name: '' }];
+    }
+  });
+
   function defaultRows(n: number): ScoreRow[] {
     return Array.from({ length: n }, () => ({ a: '', b: '' }));
   }
 
   function getActiveSession(): TournamentSession | undefined {
     return sessions.find((s) => s.id === activeSessionId);
+  }
+
+  function draftHandicapConfigFromWizard() {
+    if (!draftHandicapEnabled) return null;
+    return (
+      normalizeHandicapConfig({
+        system: 'numerical',
+        minValue: draftHandicapMin,
+        maxValue: draftHandicapMax,
+        startingCriteria: draftHandicapStartingCriteria,
+        maxStartAdjustment: draftHandicapMaxStart,
+      }) ?? null
+    );
+  }
+
+  function randomHandicapForTournament(rng: () => number = Math.random): number {
+    const cfg = tournament.handicapConfig;
+    return cfg ? randomPlayerHandicapValue(cfg, rng) : 0;
   }
 
   function scoreDrafts(): Record<string, ScoreRow[]> {
@@ -807,7 +848,7 @@
     for (let i = 0; i < n; i++) {
       const id = newId();
       const cmdId = `cmd-${id}`;
-      const hc = s.handicapEnabled ? Math.max(0, Math.floor(Number(newHc) || 0)) : 0;
+      const hc = randomHandicapForTournament(rng);
       const r = c.createPlayer(id, pool[i]!, hc, cmdId);
       if (!r.success) {
         status = r.reason ?? `Stopped after ${addedIds.length} player(s).`;
@@ -1380,12 +1421,23 @@
   function createTournamentFromWizard(): void {
     status = null;
     const controller = new TournamentController();
-    const namedClasses = draftClassEditorRows
-      .map((r) => ({
-        id: r.id.trim() || newCompetitionClassId(),
-        name: r.name.trim(),
-      }))
-      .filter((r) => r.name.length > 0);
+    const handicapConfig = draftHandicapConfigFromWizard();
+    if (handicapConfig) {
+      const cmdId = `cmd-hc-init-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
+      const rHc = controller.setHandicapConfig(handicapConfig, [], cmdId);
+      if (!rHc.success) {
+        status = rHc.reason ?? 'Could not apply handicap settings';
+        return;
+      }
+    }
+    const namedClasses = draftClassesEnabled
+      ? draftClassEditorRows
+          .map((r) => ({
+            id: r.id.trim() || newCompetitionClassId(),
+            name: r.name.trim(),
+          }))
+          .filter((r) => r.name.length > 0)
+      : [];
     if (namedClasses.length > 0) {
       const cmdId = `cmd-classes-init-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
       const r = controller.setTournamentClasses(namedClasses, [], cmdId);
@@ -1413,7 +1465,6 @@
       lastSetGroupsCommandId: '',
       classGroupTargetSizeByClassId: {},
       lastSetClassGroupsCommandIdByClass: {},
-      handicapEnabled: draftHandicapEnabled,
       tournamentFormat: draftTournamentFormat,
     };
     sessions = [...sessions, session];
@@ -1421,10 +1472,14 @@
     workspaceTab = id;
     scoreDraftsBySession = { ...scoreDraftsBySession, [id]: {} };
     nameDraft = session.tournamentName;
-    draftClassSectionOpen = false;
-    draftClassEditorRows = [{ id: newCompetitionClassId(), name: '' }];
     draftTournamentName = 'Tournament';
     draftHandicapEnabled = false;
+    draftHandicapMin = DEFAULT_NUMERICAL_HANDICAP_CONFIG.minValue;
+    draftHandicapMax = DEFAULT_NUMERICAL_HANDICAP_CONFIG.maxValue;
+    draftHandicapStartingCriteria = DEFAULT_NUMERICAL_HANDICAP_CONFIG.startingCriteria;
+    draftHandicapMaxStart = DEFAULT_NUMERICAL_HANDICAP_CONFIG.maxStartAdjustment;
+    draftClassesEnabled = false;
+    draftClassEditorRows = [{ id: newCompetitionClassId(), name: '' }];
     draftTournamentFormat = 'group-bracket';
     pull();
     status = 'Tournament created. Add players on the Players tab.';
@@ -1468,7 +1523,8 @@
     const id = newId();
     const cmdId = `cmd-${id}`;
     const c = s0.controller;
-    const hc = s0.handicapEnabled ? Math.max(0, Math.floor(Number(newHc) || 0)) : 0;
+    const cfg = s0.controller.getTournament().handicapConfig;
+    const hc = cfg ? clampPlayerHandicapValue(cfg, Number(newHc) || 0) : 0;
     const r = c.createPlayer(id, name, hc, cmdId);
     if (!r.success) {
       status = r.reason ?? 'Could not add player';
@@ -1579,12 +1635,14 @@
   function commitPlayerHandicap(playerId: string): void {
     status = null;
     const s = getActiveSession();
-    if (!s?.handicapEnabled) return;
+    if (!s) return;
+    const cfg = tournament.handicapConfig;
+    if (!cfg) return;
     const c = s.controller;
     const p = c.getTournament().players[playerId];
     if (!p) return;
     const raw = Number(handicapDrafts[playerId]);
-    const next = Math.max(0, Math.floor(Number.isFinite(raw) ? raw : 0));
+    const next = clampPlayerHandicapValue(cfg, Number.isFinite(raw) ? raw : 0);
     if (next === p.handicap) return;
     const cmdId = `cmd-hc-${playerId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
     const r = c.renamePlayer(playerId, p.name, next, [`cmd-${playerId}`], cmdId);
@@ -1677,7 +1735,6 @@
           : [{ id: newCompetitionClassId(), name: '' }],
       groupTargetSize: 4,
       classGroupTargetSizeByClassId: {},
-      handicapEnabled: true,
       tournamentFormat: 'group-bracket',
     };
     sessions = [...sessions, session];
@@ -1777,6 +1834,12 @@
         return `Updated player “${pn(cmd.payload.playerId)}”.`;
       case 'SetSeedings':
         return `Set seeding order (${cmd.payload.playerIds.length} players).`;
+      case 'SetHandicapConfig': {
+        const cfg = cmd.payload.config;
+        if (!cfg) return 'Disabled handicap tracking.';
+        const crit = cfg.startingCriteria === 'minus_points' ? 'minus points' : 'headstart';
+        return `Handicap: numerical ${cfg.minValue}–${cfg.maxValue}, ${crit}, max adjustment ${cfg.maxStartAdjustment}.`;
+      }
       case 'EnterScore': {
         const m = t.matches[cmd.payload.matchId];
         return m ? `Entered scores · ${pn(m.playerA)} vs ${pn(m.playerB)}` : 'Entered match scores.';
@@ -2027,12 +2090,54 @@
               <span>Include handicap for players</span>
             </label>
 
-            {#if !draftClassSectionOpen}
-              <p class="muted small">Competition classes are optional (separate tracks, e.g. junior / senior).</p>
-              <button type="button" class="btn subtle" onclick={() => (draftClassSectionOpen = true)}>
-                Add competition classes
-              </button>
-            {:else}
+            {#if draftHandicapEnabled}
+              <fieldset class="type-fieldset handicap-config-fieldset">
+                <legend class="field-label">Handicap system</legend>
+                <label class="radio-line">
+                  <input type="radio" name="draft-handicap-system" value="numerical" checked disabled={false} />
+                  <span><strong>Numerical</strong> — player rating from min to max (active)</span>
+                </label>
+                <label class="radio-line radio-line-disabled">
+                  <input type="radio" name="draft-handicap-system" value="classification" disabled />
+                  <span
+                    ><strong>Classification-based</strong>
+                    <span class="muted small">(mock — coming soon)</span></span
+                  >
+                </label>
+                <div class="handicap-config-grid">
+                  <label>
+                    <span class="field-label">Min rating</span>
+                    <input type="number" min="0" step="1" bind:value={draftHandicapMin} />
+                  </label>
+                  <label>
+                    <span class="field-label">Max rating</span>
+                    <input type="number" min="0" step="1" bind:value={draftHandicapMax} />
+                  </label>
+                  <label class="handicap-config-span">
+                    <span class="field-label">Starting criteria</span>
+                    <select bind:value={draftHandicapStartingCriteria}>
+                      <option value="headstart">Headstart for weaker player</option>
+                      <option value="minus_points">Minus points for stronger player</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span class="field-label">Max start adjustment</span>
+                    <input type="number" min="0" step="1" bind:value={draftHandicapMaxStart} title="Maximum absolute headstart or negative start" />
+                  </label>
+                </div>
+                <p class="muted small">
+                  Defaults: ratings 0–9, headstart for the weaker player, max adjustment 7. Starting criteria affects
+                  score entry later (not applied in this build).
+                </p>
+              </fieldset>
+            {/if}
+
+            <label class="checkbox-line">
+              <input type="checkbox" bind:checked={draftClassesEnabled} />
+              <span>Use competition classes</span>
+            </label>
+
+            {#if draftClassesEnabled}
               <div class="sub-card draft-classes">
                 <h3 class="h3">Competition classes</h3>
                 <p class="muted small">Enter a display name per row. Empty rows are ignored when you create the tournament.</p>
@@ -2068,16 +2173,6 @@
                 </table>
                 <div class="btn-row">
                   <button type="button" class="btn" onclick={addDraftClassRow}>Add class row</button>
-                  <button
-                    type="button"
-                    class="btn ghost"
-                    onclick={() => {
-                      draftClassSectionOpen = false;
-                      draftClassEditorRows = [{ id: newCompetitionClassId(), name: '' }];
-                    }}
-                  >
-                    Clear classes
-                  </button>
                 </div>
               </div>
             {/if}
@@ -2213,7 +2308,7 @@
               <TournamentOverview
                 {tournament}
                 useClassTabs={useClassTabs}
-                playerLabel={playerLabel}
+                playerOrder={activeSess.playerOrder}
                 groupDisplayLabel={groupDisplayLabel}
                 onOpenGroupMatch={openScoreModal}
                 onOpenBracketSlot={openBracketPairingModal}
@@ -2231,7 +2326,7 @@
                 }}
               >
                 <input class="grow" placeholder="Name" bind:value={newName} autocomplete="off" />
-                {#if activeSess.handicapEnabled}
+                {#if handicapEnabled}
                   <label class="hc-add-wrap" for="new-player-hc">
                     <span class="hc-label">Handicap</span>
                     <input
@@ -2239,9 +2334,10 @@
                       class="hc"
                       type="number"
                       bind:value={newHc}
-                      min="0"
+                      min={handicapBounds.min}
+                      max={handicapBounds.max}
                       step="1"
-                      title="Handicap"
+                      title="Handicap ({handicapBounds.min}–{handicapBounds.max})"
                     />
                   </label>
                 {/if}
@@ -2276,14 +2372,15 @@
                   <li class="player-row">
                     <div class="player-main">
                       <span class="name">{playerLabel(pid)}</span>
-                      {#if activeSess.handicapEnabled}
+                      {#if handicapEnabled}
                         <span class="hc-wrap">
                           <label class="hc-label" for={`hc-${pid}`}>Handicap</label>
                           <input
                             id={`hc-${pid}`}
                             class="hc-inline"
                             type="number"
-                            min="0"
+                            min={handicapBounds.min}
+                            max={handicapBounds.max}
                             step="1"
                             aria-label={`Handicap for ${playerLabel(pid)}`}
                             bind:value={handicapDrafts[pid]}
@@ -2417,7 +2514,7 @@
                             <th>Player</th>
                             {#each matrixPids as colPid (colPid)}
                               <th class="h2h-th" title={playerLabel(colPid)}>
-                                <span class="h2h-th-inner">{playerLabel(colPid)}</span>
+                                <span class="h2h-th-inner"><PlayerName {tournament} playerId={colPid} /></span>
                               </th>
                             {/each}
                             <th>W</th>
@@ -2427,7 +2524,7 @@
                         <tbody>
                           {#each matrixPids as rowPid (rowPid)}
                             <tr>
-                              <td>{playerLabel(rowPid)}</td>
+                              <td><PlayerName {tournament} playerId={rowPid} /></td>
                               {#each matrixPids as colPid (colPid)}
                                 <td class="h2h-cell">
                                   {#if rowPid === colPid}
@@ -2534,24 +2631,50 @@
                   onPairingClick={openBracketPairingModal}
                   ariaLabel="Knockout bracket"
                 />
-                <div class="row align-end bracket-elim-row" style="flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem;">
-                  <span class="muted small">Bureaucratic elimination (distinct from forfeit):</span>
-                  {#each uniqueSortedRounds(tournament.bracketMatches) as elimRound (elimRound)}
-                    <button
-                      type="button"
-                      class="btn subtle"
-                      disabled={useClassTabs || (tournament.lockedBracketRounds ?? []).includes(elimRound)}
-                      title={useClassTabs
-                        ? 'Use per-class controls when multiple classes are defined.'
-                        : (tournament.lockedBracketRounds ?? []).includes(elimRound)
-                          ? 'This round is locked.'
-                          : `In round ${elimRound}, eliminate the worse group finisher in each open pairing (ties favour larger groups, then a random pick).`}
-                      onclick={() => eliminateBracketRoundByRanking(elimRound)}
-                    >
-                      Eliminate lowest in round {elimRound}
-                    </button>
-                  {/each}
-                </div>
+                {#if DEBUG_UI}
+                  {@const debugElimRounds = uniqueSortedRounds(tournament.bracketMatches).filter((elimRound) =>
+                    bracketRoundHasOpenEliminationPairings(tournament, tournament.bracketMatches, elimRound),
+                  )}
+                  {#if debugElimRounds.length > 0}
+                    <div class="row align-end bracket-elim-row" style="flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem;">
+                      <span class="muted small">Bureaucratic elimination (distinct from forfeit):</span>
+                      {#each debugElimRounds as elimRound (elimRound)}
+                        <button
+                          type="button"
+                          class="btn subtle"
+                          disabled={useClassTabs || (tournament.lockedBracketRounds ?? []).includes(elimRound)}
+                          title={useClassTabs
+                            ? 'Use per-class controls when multiple classes are defined.'
+                            : (tournament.lockedBracketRounds ?? []).includes(elimRound)
+                              ? 'This round is locked.'
+                              : `In round ${elimRound}, eliminate the worse group finisher in each open pairing (ties favour larger groups, then a random pick).`}
+                          onclick={() => eliminateBracketRoundByRanking(elimRound)}
+                        >
+                          Eliminate lowest in round {elimRound}
+                        </button>
+                      {/each}
+                    </div>
+                  {/if}
+                {:else}
+                  <div class="row align-end bracket-elim-row" style="flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem;">
+                    <span class="muted small">Bureaucratic elimination (distinct from forfeit):</span>
+                    {#each uniqueSortedRounds(tournament.bracketMatches) as elimRound (elimRound)}
+                      <button
+                        type="button"
+                        class="btn subtle"
+                        disabled={useClassTabs || (tournament.lockedBracketRounds ?? []).includes(elimRound)}
+                        title={useClassTabs
+                          ? 'Use per-class controls when multiple classes are defined.'
+                          : (tournament.lockedBracketRounds ?? []).includes(elimRound)
+                            ? 'This round is locked.'
+                            : `In round ${elimRound}, eliminate the worse group finisher in each open pairing (ties favour larger groups, then a random pick).`}
+                        onclick={() => eliminateBracketRoundByRanking(elimRound)}
+                      >
+                        Eliminate lowest in round {elimRound}
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
                 {#if DEBUG_UI}
                   <div class="row align-end">
                     <button
@@ -2585,7 +2708,7 @@
                     {#each placementRows as row (row.playerId)}
                       <li>
                         <span class="placement-num">{row.place}.</span>
-                        {playerLabel(row.playerId)}
+                        <PlayerName {tournament} playerId={row.playerId} />
                       </li>
                     {/each}
                   </ol>
@@ -2701,7 +2824,7 @@
                               <th>Player</th>
                               {#each matrixPids as colPid (colPid)}
                                 <th class="h2h-th" title={playerLabel(colPid)}>
-                                  <span class="h2h-th-inner">{playerLabel(colPid)}</span>
+                                  <span class="h2h-th-inner"><PlayerName {tournament} playerId={colPid} classId={cid} /></span>
                                 </th>
                               {/each}
                               <th>W</th>
@@ -2711,7 +2834,7 @@
                           <tbody>
                             {#each matrixPids as rowPid (rowPid)}
                               <tr>
-                                <td>{playerLabel(rowPid)}</td>
+                                <td><PlayerName {tournament} playerId={rowPid} /></td>
                                 {#each matrixPids as colPid (colPid)}
                                   <td class="h2h-cell">
                                     {#if rowPid === colPid}
@@ -2816,7 +2939,7 @@
                       {#each classPlacementRows as row (row.playerId)}
                         <li>
                           <span class="placement-num">{row.place}.</span>
-                          {playerLabel(row.playerId)}
+                          <PlayerName {tournament} playerId={row.playerId} />
                         </li>
                       {/each}
                     </ol>
@@ -3223,6 +3346,34 @@
 
   .type-fieldset legend {
     padding: 0 0.25rem;
+  }
+
+  .handicap-config-fieldset {
+    margin-top: 0.5rem;
+  }
+
+  .handicap-config-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.65rem 0.85rem;
+    margin-top: 0.5rem;
+  }
+
+  .handicap-config-grid label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.88rem;
+  }
+
+  .handicap-config-grid input,
+  .handicap-config-grid select {
+    width: 100%;
+    max-width: 12rem;
+  }
+
+  .handicap-config-span {
+    grid-column: 1 / -1;
   }
 
   .radio-line {

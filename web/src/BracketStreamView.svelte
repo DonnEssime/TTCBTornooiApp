@@ -30,6 +30,11 @@
     return slotTitle(m, side, tournament, bracketClassId);
   }
 
+  function slotPlayerId(m: BracketMatch, side: 'a' | 'b'): string | undefined {
+    const id = side === 'a' ? m.seedA : m.seedB;
+    return id && tournament.players[id] ? id : undefined;
+  }
+
   function activate(m: BracketMatch): void {
     onPairingClick?.(m);
   }
@@ -47,22 +52,57 @@
           class:match-done={Boolean(root.match.winner)}
           onclick={() => activate(root.match)}
         >
-          <BracketSlotRow {tournament} bm={root.match} side="a" label={slot(root.match, 'a')} />
+          <BracketSlotRow
+            {tournament}
+            {bracketClassId}
+            bm={root.match}
+            side="a"
+            label={slot(root.match, 'a')}
+            playerId={slotPlayerId(root.match, 'a')}
+          />
           <div class="bracket-vs muted">vs</div>
-          <BracketSlotRow {tournament} bm={root.match} side="b" label={slot(root.match, 'b')} />
+          <BracketSlotRow
+            {tournament}
+            {bracketClassId}
+            bm={root.match}
+            side="b"
+            label={slot(root.match, 'b')}
+            playerId={slotPlayerId(root.match, 'b')}
+          />
         </button>
       {:else}
         <div class="match-box final-only" class:match-done={Boolean(root.match.winner)}>
-          <BracketSlotRow {tournament} bm={root.match} side="a" label={slot(root.match, 'a')} />
+          <BracketSlotRow
+            {tournament}
+            {bracketClassId}
+            bm={root.match}
+            side="a"
+            label={slot(root.match, 'a')}
+            playerId={slotPlayerId(root.match, 'a')}
+          />
           <div class="bracket-vs muted">vs</div>
-          <BracketSlotRow {tournament} bm={root.match} side="b" label={slot(root.match, 'b')} />
+          <BracketSlotRow
+            {tournament}
+            {bracketClassId}
+            bm={root.match}
+            side="b"
+            label={slot(root.match, 'b')}
+            playerId={slotPlayerId(root.match, 'b')}
+          />
         </div>
       {/if}
     </div>
   {:else}
     <div class="stream-inner">
       <div class="wing left">
-        <BracketSubtree node={root.left} wing="left" {tournament} slotTitle={slot} {onPairingClick} />
+        <BracketSubtree
+          node={root.left}
+          wing="left"
+          {tournament}
+          {bracketClassId}
+          slotTitle={slot}
+          {onPairingClick}
+        />
       </div>
       <div class="join-to-final" aria-hidden="true">
         <svg viewBox="0 0 18 100" preserveAspectRatio="none" class="join-svg">
@@ -81,15 +121,43 @@
             class:match-done={Boolean(root.match.winner)}
             onclick={() => activate(root.match)}
           >
-            <BracketSlotRow {tournament} bm={root.match} side="a" label={slot(root.match, 'a')} />
+            <BracketSlotRow
+              {tournament}
+              {bracketClassId}
+              bm={root.match}
+              side="a"
+              label={slot(root.match, 'a')}
+              playerId={slotPlayerId(root.match, 'a')}
+            />
             <div class="bracket-vs muted">vs</div>
-            <BracketSlotRow {tournament} bm={root.match} side="b" label={slot(root.match, 'b')} />
+            <BracketSlotRow
+              {tournament}
+              {bracketClassId}
+              bm={root.match}
+              side="b"
+              label={slot(root.match, 'b')}
+              playerId={slotPlayerId(root.match, 'b')}
+            />
           </button>
         {:else}
           <div class="match-box final" class:match-done={Boolean(root.match.winner)}>
-            <BracketSlotRow {tournament} bm={root.match} side="a" label={slot(root.match, 'a')} />
+            <BracketSlotRow
+              {tournament}
+              {bracketClassId}
+              bm={root.match}
+              side="a"
+              label={slot(root.match, 'a')}
+              playerId={slotPlayerId(root.match, 'a')}
+            />
             <div class="bracket-vs muted">vs</div>
-            <BracketSlotRow {tournament} bm={root.match} side="b" label={slot(root.match, 'b')} />
+            <BracketSlotRow
+              {tournament}
+              {bracketClassId}
+              bm={root.match}
+              side="b"
+              label={slot(root.match, 'b')}
+              playerId={slotPlayerId(root.match, 'b')}
+            />
           </div>
         {/if}
       </div>
@@ -99,7 +167,14 @@
         </svg>
       </div>
       <div class="wing right">
-        <BracketSubtree node={root.right} wing="right" {tournament} slotTitle={slot} {onPairingClick} />
+        <BracketSubtree
+          node={root.right}
+          wing="right"
+          {tournament}
+          {bracketClassId}
+          slotTitle={slot}
+          {onPairingClick}
+        />
       </div>
     </div>
   {/if}

@@ -33,6 +33,10 @@ import {
   bracketMatchRound,
   canMutateExistingGroupPhaseMatchScores,
   eliminateLowestRankedPlayersInBracketRound,
+  clampPlayerHandicapValue,
+  normalizeHandicapConfig,
+  validatePlayerHandicapForTournament,
+  type HandicapConfig,
 } from './model';
 
 export type CommandType =
@@ -47,6 +51,7 @@ export type CommandType =
   | 'TeamForfeit'
   | 'SetRoundLock'
   | 'SetSeedings'
+  | 'SetHandicapConfig'
   | 'SetTournamentClasses'
   | 'SetPlayerClassFlags'
   | 'SetGroups'
@@ -119,6 +124,11 @@ export interface SetRoundLockCommand extends CommandBase {
 export interface SetSeedingsCommand extends CommandBase {
   type: 'SetSeedings';
   payload: { playerIds: string[] };
+}
+
+export interface SetHandicapConfigCommand extends CommandBase {
+  type: 'SetHandicapConfig';
+  payload: { config: HandicapConfig | null };
 }
 
 export interface SetTournamentClassesCommand extends CommandBase {
@@ -210,6 +220,7 @@ export type Command =
   | TeamForfeitCommand
   | SetRoundLockCommand
   | SetSeedingsCommand
+  | SetHandicapConfigCommand
   | SetTournamentClassesCommand
   | SetPlayerClassFlagsCommand
   | SetGroupsCommand
@@ -527,7 +538,16 @@ export class CommandRunner {
         if (isPlayerDisplayNameTaken(tournament, name)) {
           return { success: false, reason: 'A player with this name already exists' };
         }
-        tournament.players[playerId] = { id: playerId, name, handicap };
+        const hcErr = tournament.handicapConfig
+          ? validatePlayerHandicapForTournament(tournament, handicap)
+          : undefined;
+        if (hcErr) {
+          return { success: false, reason: hcErr };
+        }
+        const hc = tournament.handicapConfig
+          ? clampPlayerHandicapValue(tournament.handicapConfig, handicap)
+          : Math.max(0, Math.floor(handicap));
+        tournament.players[playerId] = { id: playerId, name, handicap: hc };
         tournament.playerClassFlags[playerId] = {};
         for (const c of tournament.classDefinitions) {
           tournament.playerClassFlags[playerId][c.id] = false;
@@ -756,6 +776,21 @@ export class CommandRunner {
         }
         tournament.seedings = [...playerIds];
         recomputeClassTournamentSlices(tournament);
+        return { success: true };
+      }
+      case 'SetHandicapConfig': {
+        const normalized = normalizeHandicapConfig(command.payload.config ?? undefined);
+        if (command.payload.config != null && !normalized) {
+          return { success: false, reason: 'Invalid handicap configuration' };
+        }
+        if (normalized?.system === 'classification') {
+          return { success: false, reason: 'Classification handicaps are not implemented yet' };
+        }
+        if (normalized) {
+          tournament.handicapConfig = normalized;
+        } else {
+          delete tournament.handicapConfig;
+        }
         return { success: true };
       }
       case 'SetTournamentClasses': {
@@ -1133,7 +1168,15 @@ export class CommandRunner {
         }
         p.name = name;
         if (handicap !== undefined) {
-          p.handicap = handicap;
+          const hcErr = tournament.handicapConfig
+            ? validatePlayerHandicapForTournament(tournament, handicap)
+            : undefined;
+          if (hcErr) {
+            return { success: false, reason: hcErr };
+          }
+          p.handicap = tournament.handicapConfig
+            ? clampPlayerHandicapValue(tournament.handicapConfig, handicap)
+            : Math.max(0, Math.floor(handicap));
         }
         return { success: true };
       }
