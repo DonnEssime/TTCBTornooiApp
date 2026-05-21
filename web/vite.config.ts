@@ -9,6 +9,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const wslWindowsMount = isWslWindowsDrvFsRepo();
 
 export default defineConfig({
+  base: '/TTCBTornooiApp/',
   plugins: [svelte(), wslDevHints()],
   /** Listen on all interfaces (required for LAN / Docker / WSL port forward), not loopback-only. */
   server: {
