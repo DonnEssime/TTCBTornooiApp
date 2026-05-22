@@ -38,6 +38,7 @@ function drawSlotLine(
 }
 
 function drawMatchBox(doc: jsPDF, box: BracketPdfBox, ox: number, oy: number, scale: number): void {
+  if (box.hidden) return;
   const x = ox + box.x * scale;
   const y = oy + box.y * scale;
   const w = box.w * scale;
@@ -89,6 +90,7 @@ function drawLines(doc: jsPDF, lines: BracketPdfLine[], ox: number, oy: number, 
   doc.setDrawColor(LINE_COLOR.r, LINE_COLOR.g, LINE_COLOR.b);
   doc.setLineWidth(0.25);
   for (const l of lines) {
+    if (l.hidden) continue;
     doc.line(ox + l.x1 * scale, oy + l.y1 * scale, ox + l.x2 * scale, oy + l.y2 * scale);
   }
 }

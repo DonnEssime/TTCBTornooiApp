@@ -3,6 +3,7 @@ import {
   bracketPlayerMatchId,
   gameWinner,
   inferBracketSlotCountFromRoundOne,
+  isBracketByeWalkoverMatch,
   isBracketStructuralEmptyAdvanceWinner,
 } from 'ttc-tornooiapp';
 import { bracketTreeFromColumns, type BracketBNode } from './buildTree';
@@ -22,6 +23,7 @@ export type BracketPdfBox = {
   gamesB: string | null;
   isFinal: boolean;
   done: boolean;
+  hidden: boolean;
 };
 
 export type BracketPdfLine = {
@@ -29,6 +31,7 @@ export type BracketPdfLine = {
   y1: number;
   x2: number;
   y2: number;
+  hidden?: boolean;
 };
 
 export type BracketStreamPdfLayout = {
@@ -75,45 +78,66 @@ function offsetLines(lines: BracketPdfLine[], dx: number, dy: number): BracketPd
     y1: l.y1 + dy,
     x2: l.x2 + dx,
     y2: l.y2 + dy,
+    hidden: l.hidden,
   }));
 }
 
 function connectorLinesLeft(
   feedersW: number,
-  topMidY: number,
-  botMidY: number,
-  parentMidY: number,
+  topSourceY: number,
+  botSourceY: number,
+  parentTopY: number,
+  parentBotY: number,
+  hideTop: boolean,
+  hideBot: boolean,
 ): BracketPdfLine[] {
   const x0 = feedersW;
   const xMid = feedersW + CONN_W * 0.5;
   const x1 = feedersW + CONN_W;
+  const hiddenTop = hideTop;
+  const hiddenBot = hideBot;
   return [
-    { x1: x0, y1: topMidY, x2: xMid, y2: topMidY },
-    { x1: x0, y1: botMidY, x2: xMid, y2: botMidY },
-    { x1: xMid, y1: topMidY, x2: xMid, y2: parentMidY },
-    { x1: xMid, y1: botMidY, x2: xMid, y2: parentMidY },
-    { x1: xMid, y1: parentMidY, x2: x1, y2: parentMidY },
+    { x1: x0, y1: topSourceY, x2: xMid, y2: topSourceY, hidden: hiddenTop },
+    { x1: x0, y1: botSourceY, x2: xMid, y2: botSourceY, hidden: hiddenBot },
+    { x1: xMid, y1: topSourceY, x2: xMid, y2: parentTopY, hidden: hiddenTop },
+    { x1: xMid, y1: botSourceY, x2: xMid, y2: parentBotY, hidden: hiddenBot },
+    { x1: xMid, y1: parentTopY, x2: x1, y2: parentTopY, hidden: hiddenTop },
+    { x1: xMid, y1: parentBotY, x2: x1, y2: parentBotY, hidden: hiddenBot },
   ];
 }
 
 /** Connector between feeders column and parent (right wing: parent on the left). */
 function connectorLinesRight(
   parentRightX: number,
-  topMidY: number,
-  botMidY: number,
-  parentMid: number,
+  topSourceY: number,
+  botSourceY: number,
+  parentTopY: number,
+  parentBotY: number,
+  hideTop: boolean,
+  hideBot: boolean,
 ): BracketPdfLine[] {
   const xParent = parentRightX;
   const xMid = parentRightX + CONN_W * 0.5;
   const xFeed = parentRightX + CONN_W;
+  const hiddenTop = hideTop;
+  const hiddenBot = hideBot;
   return [
-    { x1: xFeed, y1: topMidY, x2: xMid, y2: topMidY },
-    { x1: xFeed, y1: botMidY, x2: xMid, y2: botMidY },
-    { x1: xMid, y1: topMidY, x2: xMid, y2: parentMid },
-    { x1: xMid, y1: botMidY, x2: xMid, y2: parentMid },
-    { x1: xMid, y1: parentMid, x2: xParent, y2: parentMid },
+    { x1: xFeed, y1: topSourceY, x2: xMid, y2: topSourceY, hidden: hiddenTop },
+    { x1: xFeed, y1: botSourceY, x2: xMid, y2: botSourceY, hidden: hiddenBot },
+    { x1: xMid, y1: topSourceY, x2: xMid, y2: parentTopY, hidden: hiddenTop },
+    { x1: xMid, y1: botSourceY, x2: xMid, y2: parentBotY, hidden: hiddenBot },
+    { x1: xMid, y1: parentTopY, x2: xParent, y2: parentTopY, hidden: hiddenTop },
+    { x1: xMid, y1: parentBotY, x2: xParent, y2: parentBotY, hidden: hiddenBot },
   ];
 }
+
+type SubtreeLayout = {
+  width: number;
+  height: number;
+  boxes: BracketPdfBox[];
+  lines: BracketPdfLine[];
+  exitY: number;
+};
 
 function layoutSubtree(
   t: Tournament,
@@ -121,7 +145,7 @@ function layoutSubtree(
   wing: 'left' | 'right',
   labelA: (m: BracketMatch, side: 'a' | 'b') => string,
   labelB: (m: BracketMatch, side: 'a' | 'b') => string,
-): { width: number; height: number; boxes: BracketPdfBox[]; lines: BracketPdfLine[] } {
+): SubtreeLayout {
   const mkBox = (m: BracketMatch, x: number, y: number, isFinal: boolean): BracketPdfBox => ({
     x,
     y,
@@ -135,6 +159,7 @@ function layoutSubtree(
     gamesB: gamesWonForSlot(t, m, 'b'),
     isFinal,
     done: Boolean(m.winner),
+    hidden: isBracketByeWalkoverMatch(m),
   });
 
   if (!node.left || !node.right) {
@@ -143,6 +168,7 @@ function layoutSubtree(
       height: BOX_H,
       boxes: [mkBox(node.match, 0, 0, false)],
       lines: [],
+      exitY: BOX_H / 2,
     };
   }
 
@@ -152,9 +178,9 @@ function layoutSubtree(
   const feedersH = L.height + FEEDER_GAP + R.height;
   const totalH = Math.max(feedersH, BOX_H);
   const parentY = (totalH - BOX_H) / 2;
-  const parentMid = parentY + BOX_H / 2;
-  const topMid = L.height / 2;
-  const botMid = L.height + FEEDER_GAP + R.height / 2;
+  const parentTopY = parentY + BOX_H * 0.25;
+  const parentBotY = parentY + BOX_H * 0.75;
+  const exitY = parentY + BOX_H / 2;
 
   const boxes: BracketPdfBox[] = [];
   const lines: BracketPdfLine[] = [];
@@ -162,6 +188,8 @@ function layoutSubtree(
   if (wing === 'left') {
     const lDx = feedersW - L.width;
     const rDx = feedersW - R.width;
+    const topSourceY = L.exitY;
+    const botSourceY = R.exitY + L.height + FEEDER_GAP;
     boxes.push(
       ...offsetBoxes(L.boxes, lDx, 0),
       ...offsetBoxes(R.boxes, rDx, L.height + FEEDER_GAP),
@@ -170,13 +198,23 @@ function layoutSubtree(
     lines.push(
       ...offsetLines(L.lines, lDx, 0),
       ...offsetLines(R.lines, rDx, L.height + FEEDER_GAP),
-      ...connectorLinesLeft(feedersW, topMid, botMid, parentMid),
+      ...connectorLinesLeft(
+        feedersW,
+        topSourceY,
+        botSourceY,
+        parentTopY,
+        parentBotY,
+        isBracketByeWalkoverMatch(node.left.match),
+        isBracketByeWalkoverMatch(node.right.match),
+      ),
     );
-    return { width: feedersW + CONN_W + BOX_W, height: totalH, boxes, lines };
+    return { width: feedersW + CONN_W + BOX_W, height: totalH, boxes, lines, exitY };
   }
 
   // Right wing: parent | connector | feeders (mirrored)
   const feederX = BOX_W + CONN_W;
+  const topSourceY = L.exitY;
+  const botSourceY = R.exitY + L.height + FEEDER_GAP;
   boxes.push(
     mkBox(node.match, 0, parentY, false),
     ...offsetBoxes(L.boxes, feederX, 0),
@@ -185,9 +223,17 @@ function layoutSubtree(
   lines.push(
     ...offsetLines(L.lines, feederX, 0),
     ...offsetLines(R.lines, feederX, L.height + FEEDER_GAP),
-    ...connectorLinesRight(BOX_W, topMid, botMid, parentMid),
+    ...connectorLinesRight(
+      BOX_W,
+      topSourceY,
+      botSourceY,
+      parentTopY,
+      parentBotY,
+      isBracketByeWalkoverMatch(node.left.match),
+      isBracketByeWalkoverMatch(node.right.match),
+    ),
   );
-  return { width: BOX_W + CONN_W + feedersW, height: totalH, boxes, lines };
+  return { width: BOX_W + CONN_W + feedersW, height: totalH, boxes, lines, exitY };
 }
 
 function layoutStream(
@@ -209,6 +255,7 @@ function layoutStream(
     gamesB: gamesWonForSlot(t, m, 'b'),
     isFinal,
     done: Boolean(m.winner),
+    hidden: isBracketByeWalkoverMatch(m),
   });
 
   if (!root.left || !root.right) {
@@ -228,9 +275,12 @@ function layoutStream(
   const finalY = (streamH - BOX_H) / 2;
   const finalX = left.width + JOIN_W;
   const rightX = finalX + BOX_W + JOIN_W;
-  const finalMid = finalY + BOX_H / 2;
+  const finalTopY = finalY + BOX_H * 0.25;
+  const finalBotY = finalY + BOX_H * 0.75;
   const leftJoinX = left.width;
   const rightJoinX = rightX;
+  const leftSourceY = left.exitY + leftY;
+  const rightSourceY = right.exitY + rightY;
 
   const boxes = [
     ...offsetBoxes(left.boxes, 0, leftY),
@@ -240,8 +290,8 @@ function layoutStream(
   const lines = [
     ...offsetLines(left.lines, 0, leftY),
     ...offsetLines(right.lines, rightX, rightY),
-    { x1: leftJoinX, y1: finalMid, x2: finalX, y2: finalMid },
-    { x1: finalX + BOX_W, y1: finalMid, x2: rightJoinX, y2: finalMid },
+    { x1: leftJoinX, y1: leftSourceY, x2: finalX, y2: finalTopY },
+    { x1: finalX + BOX_W, y1: finalBotY, x2: rightJoinX, y2: rightSourceY },
   ];
 
   return {

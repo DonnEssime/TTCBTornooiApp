@@ -589,6 +589,12 @@ export function isBracketStructuralEmptyAdvanceWinner(w: string | undefined): bo
   return w === BRACKET_STRUCTURAL_EMPTY_ADVANCE;
 }
 
+/** One real seed vs an empty slot (`--empty--` in the UI); not a structural placeholder row. */
+export function isBracketByeWalkoverMatch(m: BracketMatch): boolean {
+  if (m.id.startsWith('__ph-')) return false;
+  return Boolean(m.seedA) !== Boolean(m.seedB);
+}
+
 /** Maps a feeder match’s `winner` into the next round’s seed field (`undefined` = empty / bye slot). */
 export function bracketWinnerToNextRoundSeed(w: string | undefined): string | undefined {
   if (w === undefined) return undefined;

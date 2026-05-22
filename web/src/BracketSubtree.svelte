@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { BracketMatch, Tournament } from 'ttc-tornooiapp';
   import type { BracketBNode } from './bracketStream/buildTree';
+  import { bracketMatchHiddenInStream } from './bracketStream/byeMatch';
   import BracketSlotRow from './BracketSlotRow.svelte';
   import Subtree from './BracketSubtree.svelte';
 
@@ -23,6 +24,18 @@
   } = $props();
 
   const isLeaf = $derived(!node.left && !node.right);
+  const hidden = $derived(bracketMatchHiddenInStream(node.match));
+  const topFeederHidden = $derived(node.left ? bracketMatchHiddenInStream(node.left.match) : false);
+  const botFeederHidden = $derived(node.right ? bracketMatchHiddenInStream(node.right.match) : false);
+
+  let subtreeEl: HTMLDivElement | undefined = $state();
+  let parentEl: HTMLElement | undefined = $state();
+  let feederTopEl: HTMLDivElement | undefined = $state();
+  let feederBotEl: HTMLDivElement | undefined = $state();
+  let topSrcPct = $state(25);
+  let botSrcPct = $state(75);
+  let parentTopPct = $state(25);
+  let parentBotPct = $state(75);
 
   function slotPlayerId(m: BracketMatch, side: 'a' | 'b'): string | undefined {
     const id = side === 'a' ? m.seedA : m.seedB;
@@ -32,6 +45,48 @@
   function activate(m: BracketMatch): void {
     onPairingClick?.(m);
   }
+
+  function measureConnector(): void {
+    if (!subtreeEl || !parentEl || !feederTopEl || !feederBotEl) return;
+    const sRect = subtreeEl.getBoundingClientRect();
+    const sH = sRect.height;
+    if (sH <= 0) return;
+    const sTop = sRect.top;
+    const centerPct = (el: Element) => {
+      const r = el.getBoundingClientRect();
+      return ((r.top + r.height / 2 - sTop) / sH) * 100;
+    };
+    topSrcPct = centerPct(feederTopEl);
+    botSrcPct = centerPct(feederBotEl);
+    const p = parentEl.getBoundingClientRect();
+    parentTopPct = ((p.top - sTop + p.height * 0.25) / sH) * 100;
+    parentBotPct = ((p.top - sTop + p.height * 0.75) / sH) * 100;
+  }
+
+  $effect(() => {
+    if (!subtreeEl || isLeaf) return;
+    const ro = new ResizeObserver(() => measureConnector());
+    ro.observe(subtreeEl);
+    for (const el of [parentEl, feederTopEl, feederBotEl]) {
+      if (el) ro.observe(el);
+    }
+    measureConnector();
+    return () => ro.disconnect();
+  });
+
+  const connectorPathTop = $derived.by(() => {
+    if (wing === 'right') {
+      return `M 18 ${topSrcPct} L 9 ${topSrcPct} L 9 ${parentTopPct} L 0 ${parentTopPct}`;
+    }
+    return `M 0 ${topSrcPct} L 9 ${topSrcPct} L 9 ${parentTopPct} L 18 ${parentTopPct}`;
+  });
+
+  const connectorPathBot = $derived.by(() => {
+    if (wing === 'right') {
+      return `M 18 ${botSrcPct} L 9 ${botSrcPct} L 9 ${parentBotPct} L 0 ${parentBotPct}`;
+    }
+    return `M 0 ${botSrcPct} L 9 ${botSrcPct} L 9 ${parentBotPct} L 18 ${parentBotPct}`;
+  });
 </script>
 
 {#if isLeaf}
@@ -39,6 +94,7 @@
     <button
       type="button"
       class="match-box leaf match-box--interactive"
+      class:match-box--hidden={hidden}
       class:match-done={Boolean(node.match.winner)}
       onclick={() => activate(node.match)}
     >
@@ -61,7 +117,7 @@
       />
     </button>
   {:else}
-    <div class="match-box leaf" class:match-done={Boolean(node.match.winner)}>
+    <div class="match-box leaf" class:match-box--hidden={hidden} class:match-done={Boolean(node.match.winner)}>
       <BracketSlotRow
         {tournament}
         {bracketClassId}
@@ -82,38 +138,38 @@
     </div>
   {/if}
 {:else}
-  <div class="subtree" class:mirror={wing === 'right'}>
+  <div class="subtree" class:mirror={wing === 'right'} bind:this={subtreeEl}>
     <div class="feeders">
-      <div class="feeder-cell">
+      <div class="feeder-cell" bind:this={feederTopEl}>
         <Subtree node={node.left!} {wing} {tournament} {bracketClassId} {slotTitle} {onPairingClick} />
       </div>
-      <div class="feeder-cell">
+      <div class="feeder-cell" bind:this={feederBotEl}>
         <Subtree node={node.right!} {wing} {tournament} {bracketClassId} {slotTitle} {onPairingClick} />
       </div>
     </div>
     <div class="connector" aria-hidden="true">
       <svg viewBox="0 0 18 100" preserveAspectRatio="none" class="connector-svg">
-        {#if wing === 'right'}
-          <!-- Feeders on the visual right after row-reverse; merge toward parent on the left -->
-          <path
-            class="connector-path"
-            d="M 18 25 L 9 25 L 9 50 L 0 50 M 18 75 L 9 75 L 9 50"
-            vector-effect="non-scaling-stroke"
-          />
-        {:else}
-          <path
-            class="connector-path"
-            d="M 0 25 L 9 25 L 9 50 L 18 50 M 0 75 L 9 75 L 9 50"
-            vector-effect="non-scaling-stroke"
-          />
-        {/if}
+        <path
+          class="connector-path"
+          class:connector-path--hidden={topFeederHidden}
+          d={connectorPathTop}
+          vector-effect="non-scaling-stroke"
+        />
+        <path
+          class="connector-path"
+          class:connector-path--hidden={botFeederHidden}
+          d={connectorPathBot}
+          vector-effect="non-scaling-stroke"
+        />
       </svg>
     </div>
     {#if onPairingClick}
       <button
         type="button"
         class="match-box parent match-box--interactive"
+        class:match-box--hidden={hidden}
         class:match-done={Boolean(node.match.winner)}
+        bind:this={parentEl}
         onclick={() => activate(node.match)}
       >
         <BracketSlotRow
@@ -135,7 +191,12 @@
         />
       </button>
     {:else}
-      <div class="match-box parent" class:match-done={Boolean(node.match.winner)}>
+      <div
+        class="match-box parent"
+        class:match-box--hidden={hidden}
+        class:match-done={Boolean(node.match.winner)}
+        bind:this={parentEl}
+      >
         <BracketSlotRow
           {tournament}
           {bracketClassId}
@@ -208,6 +269,15 @@
     stroke-width: 1.25;
     stroke-linecap: round;
     stroke-linejoin: round;
+  }
+
+  .connector-path--hidden {
+    opacity: 0;
+  }
+
+  .match-box--hidden {
+    opacity: 0;
+    pointer-events: none;
   }
 
   .match-box {

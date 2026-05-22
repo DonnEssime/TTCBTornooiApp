@@ -4,6 +4,7 @@
   import BracketSlotRow from './BracketSlotRow.svelte';
   import BracketSubtree from './BracketSubtree.svelte';
   import { bracketTreeFromColumns } from './bracketStream/buildTree';
+  import { bracketMatchHiddenInStream } from './bracketStream/byeMatch';
 
   let {
     cols,
@@ -52,7 +53,46 @@
   function activate(m: BracketMatch): void {
     onPairingClick?.(m);
   }
-</script>
+
+  let streamInnerEl: HTMLDivElement | undefined = $state();
+  let finalEl: HTMLElement | undefined = $state();
+  let leftWingEl: HTMLDivElement | undefined = $state();
+  let rightWingEl: HTMLDivElement | undefined = $state();
+  let leftJoinPct = $state(50);
+  let rightJoinPct = $state(50);
+  let finalTopPct = $state(25);
+  let finalBotPct = $state(75);
+
+  function measureJoins(): void {
+    if (!streamInnerEl || !finalEl || !leftWingEl || !rightWingEl) return;
+    const sRect = streamInnerEl.getBoundingClientRect();
+    const sH = sRect.height;
+    if (sH <= 0) return;
+    const sTop = sRect.top;
+    const centerPct = (el: Element) => {
+      const r = el.getBoundingClientRect();
+      return ((r.top + r.height / 2 - sTop) / sH) * 100;
+    };
+    leftJoinPct = centerPct(leftWingEl);
+    rightJoinPct = centerPct(rightWingEl);
+    const f = finalEl.getBoundingClientRect();
+    finalTopPct = ((f.top - sTop + f.height * 0.25) / sH) * 100;
+    finalBotPct = ((f.top - sTop + f.height * 0.75) / sH) * 100;
+  }
+
+  $effect(() => {
+    if (!streamInnerEl || !root?.left) return;
+    const ro = new ResizeObserver(() => measureJoins());
+    ro.observe(streamInnerEl);
+    for (const el of [finalEl, leftWingEl, rightWingEl]) {
+      if (el) ro.observe(el);
+    }
+    measureJoins();
+    return () => ro.disconnect();
+  });
+
+  const joinLeftPath = $derived(`M 0 ${leftJoinPct} L 18 ${finalTopPct}`);
+  const joinRightPath = $derived(`M 0 ${finalBotPct} L 18 ${rightJoinPct}`);
 
 <div class="bracket-stream" role="img" aria-label={ariaLabel}>
   {#if !root}
@@ -63,6 +103,7 @@
         <button
           type="button"
           class="match-box final-only match-box--interactive"
+          class:match-box--hidden={bracketMatchHiddenInStream(root.match)}
           class:match-done={Boolean(root.match.winner)}
           onclick={() => activate(root.match)}
         >
@@ -85,7 +126,11 @@
           />
         </button>
       {:else}
-        <div class="match-box final-only" class:match-done={Boolean(root.match.winner)}>
+        <div
+          class="match-box final-only"
+          class:match-box--hidden={bracketMatchHiddenInStream(root.match)}
+          class:match-done={Boolean(root.match.winner)}
+        >
           <BracketSlotRow
             {tournament}
             {bracketClassId}
@@ -107,7 +152,7 @@
       {/if}
     </div>
   {:else}
-    <div class="stream-inner">
+    <div class="stream-inner" bind:this={streamInnerEl}>
       {#each earlyCols as earlyCol, earlyIdx (earlyIdx)}
         <div class="early-round-col">
           <span class="early-round-label muted small"
@@ -119,6 +164,7 @@
                 <button
                   type="button"
                   class="match-box match-box--interactive early-match"
+                  class:match-box--hidden={bracketMatchHiddenInStream(bm)}
                   class:match-done={Boolean(bm.winner)}
                   onclick={() => activate(bm)}
                 >
@@ -141,7 +187,11 @@
                   />
                 </button>
               {:else}
-                <div class="match-box early-match" class:match-done={Boolean(bm.winner)}>
+                <div
+                  class="match-box early-match"
+                  class:match-box--hidden={bracketMatchHiddenInStream(bm)}
+                  class:match-done={Boolean(bm.winner)}
+                >
                   <BracketSlotRow
                     {tournament}
                     {bracketClassId}
@@ -165,7 +215,7 @@
           </div>
         </div>
       {/each}
-      <div class="wing left">
+      <div class="wing left" bind:this={leftWingEl}>
         <BracketSubtree
           node={root.left}
           wing="left"
@@ -177,11 +227,7 @@
       </div>
       <div class="join-to-final" aria-hidden="true">
         <svg viewBox="0 0 18 100" preserveAspectRatio="none" class="join-svg">
-          <path
-            class="join-path"
-            d="M 0 50 L 18 50"
-            vector-effect="non-scaling-stroke"
-          />
+          <path class="join-path" d={joinLeftPath} vector-effect="non-scaling-stroke" />
         </svg>
       </div>
       <div class="final-col">
@@ -189,7 +235,9 @@
           <button
             type="button"
             class="match-box final match-box--interactive"
+            class:match-box--hidden={bracketMatchHiddenInStream(root.match)}
             class:match-done={Boolean(root.match.winner)}
+            bind:this={finalEl}
             onclick={() => activate(root.match)}
           >
             <BracketSlotRow
@@ -211,7 +259,12 @@
             />
           </button>
         {:else}
-          <div class="match-box final" class:match-done={Boolean(root.match.winner)}>
+          <div
+            class="match-box final"
+            class:match-box--hidden={bracketMatchHiddenInStream(root.match)}
+            class:match-done={Boolean(root.match.winner)}
+            bind:this={finalEl}
+          >
             <BracketSlotRow
               {tournament}
               {bracketClassId}
@@ -234,10 +287,10 @@
       </div>
       <div class="join-to-final" aria-hidden="true">
         <svg viewBox="0 0 18 100" preserveAspectRatio="none" class="join-svg">
-          <path class="join-path" d="M 0 50 L 18 50" vector-effect="non-scaling-stroke" />
+          <path class="join-path" d={joinRightPath} vector-effect="non-scaling-stroke" />
         </svg>
       </div>
-      <div class="wing right">
+      <div class="wing right" bind:this={rightWingEl}>
         <BracketSubtree
           node={root.right}
           wing="right"
@@ -390,6 +443,11 @@
   .match-box.match-done {
     background: #f1f5f9;
     border-color: #cbd5e1;
+  }
+
+  .match-box--hidden {
+    opacity: 0;
+    pointer-events: none;
   }
 
   .bracket-vs {
