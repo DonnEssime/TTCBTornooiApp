@@ -24,8 +24,10 @@ import {
   orderParticipantsForGroupBalancedBracket,
   resolveClosedFormBracketSeedingKind,
   splitParticipantsTopFourPerGroup,
-  applyPlayInWinnersToRoundOne,
   propagateBracketSeedsFromChildWinners,
+  closedFormCropBracketSlotCount,
+  orderParticipantsForCropClosedFormBracket,
+  inferBracketSlotCountFromRoundOne,
   singleEliminationPlacementRows,
   bracketMatchLoser,
   bracketPlayerMatchId,
@@ -799,7 +801,33 @@ describe('Group-balanced bracket seeding', () => {
     add(d, e, d);
   }
 
-  it('closed_form with crop: top four per group in main draw, fifth places via cross-group play-in', () => {
+  it('closedFormCropBracketSlotCount is next power of two of qualifiers plus culled', () => {
+    expect(closedFormCropBracketSlotCount(8, 1)).toBe(16);
+    expect(closedFormCropBracketSlotCount(8, 2)).toBe(16);
+    expect(closedFormCropBracketSlotCount(16, 4)).toBe(32);
+  });
+
+  it('inferBracketSlotCountFromRoundOne uses deepest tier, not the first sparse top round', () => {
+    const t = createTournament();
+    for (let i = 1; i <= 11; i++) {
+      const id = `p${i}`;
+      t.players[id] = { id, name: `P${i}`, handicap: 0 };
+    }
+    addGroupRRn(t, 'ga', ['p1', 'p2', 'p3', 'p4', 'p5', 'p6']);
+    addGroupRRn(t, 'gb', ['p7', 'p8', 'p9', 'p10', 'p11']);
+    t.seedings = Array.from({ length: 11 }, (_, i) => `p${i + 1}`);
+    const bracket = generateBracket([...t.seedings], t, {
+      fillByes: true,
+      bracketSeedingMode: 'closed_form',
+    });
+    expect(inferBracketSlotCountFromRoundOne(bracket)).toBe(8);
+
+    const partial = bracket.filter((m) => bracketMatchRound(m) <= 2);
+    expect(inferBracketSlotCountFromRoundOne(partial)).toBe(8);
+    expect(inferBracketSlotCountFromRoundOne(partial)).not.toBe(2);
+  });
+
+  it('closed_form with culled groups: top four per group only, fifth places excluded', () => {
     const t = createTournament();
     for (let i = 1; i <= 20; i++) {
       const id = `p${i}`;
@@ -810,7 +838,7 @@ describe('Group-balanced bracket seeding', () => {
     addGroupRR5(t, 'gc', ['p11', 'p12', 'p13', 'p14', 'p15']);
     addGroupRR5(t, 'gd', ['p16', 'p17', 'p18', 'p19', 'p20']);
     t.seedings = Array.from({ length: 20 }, (_, i) => `p${i + 1}`);
-    expect(resolveClosedFormBracketSeedingKind(t, t.seedings, undefined)).toBe('crop');
+    expect(resolveClosedFormBracketSeedingKind(t, t.seedings, undefined)).toBe('culled');
     const split = splitParticipantsTopFourPerGroup(t, t.seedings, undefined);
     expect(split?.qualified.sort()).toEqual(
       ['p1', 'p2', 'p3', 'p4', 'p6', 'p7', 'p8', 'p9', 'p11', 'p12', 'p13', 'p14', 'p16', 'p17', 'p18', 'p19'].sort(),
@@ -819,29 +847,21 @@ describe('Group-balanced bracket seeding', () => {
 
     const bracket = generateBracket([...t.seedings], t, {
       fillByes: false,
-      shuffleKey: 'ignored',
       bracketSeedingMode: 'closed_form',
     });
     const r1 = bracket.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
-    const r2 = bracket.filter((m) => bracketMatchRound(m) === 2).sort(compareBracketMatchId);
-    const crosses = r1.filter((m) => m.seedA && m.seedB && !m.playInFor);
-    expect(crosses).toHaveLength(4);
-    expect(r2).toHaveLength(8);
+    expect(r1).toHaveLength(8);
+    expect(inferBracketSlotCountFromRoundOne(bracket)).toBe(16);
 
-    for (const m of crosses) {
-      const ga = findGroupForPlayer(t, m.seedA!, undefined)!.id;
-      const gb = findGroupForPlayer(t, m.seedB!, undefined)!.id;
-      expect(ga).not.toBe(gb);
+    const inBracket = new Set<string>();
+    for (const m of bracket) {
+      if (m.seedA) inBracket.add(m.seedA);
+      if (m.seedB) inBracket.add(m.seedB);
     }
-
-    const byeWalks = r1.filter((m) => m.winner && !m.seedB);
-    expect(byeWalks.length).toBeGreaterThanOrEqual(4);
-
-    crosses[0]!.winner = crosses[0]!.seedA;
-    applyPlayInWinnersToRoundOne(bracket);
-    propagateBracketSeedsFromChildWinners(bracket);
-    const host0 = r2.find((x) => x.seedA === crosses[0]!.winner || x.seedB === crosses[0]!.winner);
-    expect(host0).toBeDefined();
+    expect(inBracket.size).toBe(16);
+    for (const pid of ['p5', 'p10', 'p15', 'p20']) {
+      expect(inBracket.has(pid)).toBe(false);
+    }
   });
 
   function addGroupRRn(t: ReturnType<typeof createTournament>, gid: string, pids: string[]): void {
@@ -864,7 +884,7 @@ describe('Group-balanced bracket seeding', () => {
     }
   }
 
-  it('closed_form crop with 11 players in 2 groups (6+5): intra-group play-in, all 11 in bracket', () => {
+  it('closed_form with 11 players in 2 groups (6+5): top four per group, 8-player bracket', () => {
     const t = createTournament();
     for (let i = 1; i <= 11; i++) {
       const id = `p${i}`;
@@ -873,37 +893,80 @@ describe('Group-balanced bracket seeding', () => {
     addGroupRRn(t, 'ga', ['p1', 'p2', 'p3', 'p4', 'p5', 'p6']);
     addGroupRRn(t, 'gb', ['p7', 'p8', 'p9', 'p10', 'p11']);
     t.seedings = Array.from({ length: 11 }, (_, i) => `p${i + 1}`);
-    expect(resolveClosedFormBracketSeedingKind(t, t.seedings, undefined)).toBe('crop');
+    expect(resolveClosedFormBracketSeedingKind(t, t.seedings, undefined)).toBe('culled');
 
     const bracket = generateBracket([...t.seedings], t, {
       fillByes: true,
       bracketSeedingMode: 'closed_form',
     });
-    const r1 = bracket.filter((m) => bracketMatchRound(m) === 1);
-    const r2 = bracket.filter((m) => bracketMatchRound(m) === 2);
-    expect(r1.length).toBeGreaterThanOrEqual(7);
-    expect(r2).toHaveLength(4);
+    expect(bracket.filter((m) => bracketMatchRound(m) === 1)).toHaveLength(4);
+    expect(inferBracketSlotCountFromRoundOne(bracket)).toBe(8);
 
-    const allPids = new Set<string>();
-    for (const m of r1) {
-      if (m.seedA) allPids.add(m.seedA);
-      if (m.seedB) allPids.add(m.seedB);
+    const inBracket = new Set<string>();
+    for (const m of bracket) {
+      if (m.seedA) inBracket.add(m.seedA);
+      if (m.seedB) inBracket.add(m.seedB);
     }
-    expect(allPids.size).toBe(11);
-
-    const intra = r1.find((m) => {
-      const pair = new Set([m.seedA, m.seedB]);
-      return pair.has('p5') && pair.has('p6');
-    });
-    expect(intra).toBeDefined();
-    expect(intra!.playInFor).toBeDefined();
-    expect(intra!.playInFor!.side).toBe('a');
-
-    const byeWalks = r1.filter((m) => m.winner && !m.seedB);
-    expect(byeWalks.length).toBeGreaterThanOrEqual(2);
+    expect(inBracket.size).toBe(8);
+    expect(inBracket.has('p5')).toBe(false);
+    expect(inBracket.has('p6')).toBe(false);
+    expect(inBracket.has('p11')).toBe(false);
   });
 
-  it('closed_form crop when 21 players are split across 4 groups (uneven sizes)', () => {
+  it('crop_closed_form with 11 players in 2 groups (6+5): all players, extended draw', () => {
+    const t = createTournament();
+    for (let i = 1; i <= 11; i++) {
+      const id = `p${i}`;
+      t.players[id] = { id, name: `P${i}`, handicap: 0 };
+    }
+    addGroupRRn(t, 'ga', ['p1', 'p2', 'p3', 'p4', 'p5', 'p6']);
+    addGroupRRn(t, 'gb', ['p7', 'p8', 'p9', 'p10', 'p11']);
+    t.seedings = Array.from({ length: 11 }, (_, i) => `p${i + 1}`);
+    expect(defaultBracketSeedingModeForTournament(t, t.seedings, undefined)).toBe('crop_closed_form');
+
+    const leaves = orderParticipantsForCropClosedFormBracket(t, t.seedings, undefined);
+    expect(leaves).not.toBeNull();
+    expect(leaves!.filter((x) => x !== 'BYE')).toHaveLength(11);
+    expect(leaves!.length).toBe(16);
+
+    const bracket = generateBracket([...t.seedings], t, {
+      fillByes: true,
+      bracketSeedingMode: 'crop_closed_form',
+    });
+    expect(bracket.filter((m) => bracketMatchRound(m) === 1)).toHaveLength(8);
+    expect(inferBracketSlotCountFromRoundOne(bracket)).toBe(16);
+
+    const inBracket = new Set<string>();
+    for (const m of bracket) {
+      if (m.seedA) inBracket.add(m.seedA);
+      if (m.seedB) inBracket.add(m.seedB);
+    }
+    expect(inBracket.size).toBe(11);
+    for (const pid of t.seedings) {
+      expect(inBracket.has(pid)).toBe(true);
+    }
+
+    const r1 = bracket.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
+    const walkoverSides = r1.filter((m) => !m.seedA || !m.seedB);
+    expect(walkoverSides.length).toBeGreaterThanOrEqual(5);
+    expect(walkoverSides.some((m) => m.seedA === 'p6' || m.seedB === 'p6')).toBe(true);
+    expect(walkoverSides.some((m) => m.seedA === 'p5' || m.seedB === 'p5')).toBe(true);
+    expect(walkoverSides.some((m) => m.seedA === 'p11' || m.seedB === 'p11')).toBe(true);
+  });
+
+  it('prefers crop_closed_form when groups exceed four players per group', () => {
+    const t = createTournament();
+    for (let i = 1; i <= 10; i++) {
+      const id = `p${i}`;
+      t.players[id] = { id, name: `P${i}`, handicap: 0 };
+    }
+    addGroupRR5(t, 'ga', ['p1', 'p2', 'p3', 'p4', 'p5']);
+    addGroupRR5(t, 'gb', ['p6', 'p7', 'p8', 'p9', 'p10']);
+    t.seedings = Array.from({ length: 10 }, (_, i) => `p${i + 1}`);
+    expect(defaultBracketSeedingModeForTournament(t, t.seedings, undefined)).toBe('crop_closed_form');
+  });
+
+  it('closed_form culled when 21 players are split across 4 groups (uneven sizes)', () => {
     const t = createTournament();
     for (let i = 1; i <= 21; i++) {
       const id = `p${i}`;
@@ -935,13 +998,20 @@ describe('Group-balanced bracket seeding', () => {
       }
     }
     t.seedings = Array.from({ length: 21 }, (_, i) => `p${i + 1}`);
-    expect(resolveClosedFormBracketSeedingKind(t, t.seedings, undefined)).toBe('crop');
+    expect(resolveClosedFormBracketSeedingKind(t, t.seedings, undefined)).toBe('culled');
     const bracket = generateBracket([...t.seedings], t, {
       fillByes: false,
       bracketSeedingMode: 'closed_form',
     });
-    expect(bracket.filter((m) => bracketMatchRound(m) === 1 && m.playInFor).length).toBeGreaterThanOrEqual(1);
-    expect(bracket.filter((m) => bracketMatchRound(m) === 2).length).toBe(8);
+    expect(bracket.filter((m) => bracketMatchRound(m) === 1)).toHaveLength(8);
+    expect(inferBracketSlotCountFromRoundOne(bracket)).toBe(16);
+
+    const inBracket = new Set<string>();
+    for (const m of bracket) {
+      if (m.seedA) inBracket.add(m.seedA);
+      if (m.seedB) inBracket.add(m.seedB);
+    }
+    expect(inBracket.size).toBe(16);
   });
 
   it('16×4: hardcoded closed-form layout on 16 groups', () => {

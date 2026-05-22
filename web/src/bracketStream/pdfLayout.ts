@@ -2,6 +2,7 @@ import type { BracketMatch, Tournament } from 'ttc-tornooiapp';
 import {
   bracketPlayerMatchId,
   gameWinner,
+  inferBracketSlotCountFromRoundOne,
   isBracketStructuralEmptyAdvanceWinner,
 } from 'ttc-tornooiapp';
 import { bracketTreeFromColumns, type BracketBNode } from './buildTree';
@@ -257,7 +258,13 @@ export function bracketStreamPdfLayout(
   slotLabel: (m: BracketMatch, side: 'a' | 'b') => string,
 ): BracketStreamPdfLayout | null {
   const cols = displayBracketColumns(matches);
-  const root = bracketTreeFromColumns(cols);
+  const slotCount = inferBracketSlotCountFromRoundOne(matches);
+  const treeDepth =
+    slotCount !== undefined && slotCount >= 2
+      ? Math.trunc(Math.log2(slotCount))
+      : cols.length;
+  const treeCols = cols.slice(-treeDepth);
+  const root = bracketTreeFromColumns(treeCols);
   if (!root) return null;
   return layoutStream(t, root, slotLabel, slotLabel);
 }

@@ -1,7 +1,7 @@
 import type { BracketMatch } from 'ttc-tornooiapp';
 import {
+  bracketMainDrawEntryRound,
   bracketMatchRound,
-  bracketMatchesSortedForPairing,
   bracketWinnerToNextRoundSeed,
   compareBracketMatchId,
   inferBracketSlotCountFromRoundOne,
@@ -16,42 +16,62 @@ function syntheticBracketRound(round: number, count: number): BracketMatch[] {
 }
 
 function matchesInRoundForDisplay(matches: BracketMatch[], round: number): BracketMatch[] {
-  const all = matches.filter((m) => bracketMatchRound(m) === round).sort(compareBracketMatchId);
-  if (round === 1) {
-    const pairing = bracketMatchesSortedForPairing(matches, 1);
-    if (pairing.length > 0 && pairing.length < all.length) return pairing;
-  }
-  return all;
+  return matches.filter((m) => bracketMatchRound(m) === round).sort(compareBracketMatchId);
 }
 
-/** Full knockout column layout: real rounds plus synthetic later rounds until final. */
-export function buildBracketColumnsForDisplay(matches: BracketMatch[]): BracketMatch[][] {
-  const r1 = matchesInRoundForDisplay(matches, 1);
-  if (r1.length === 0) return [];
-  const leafSlots = inferBracketSlotCountFromRoundOne(matches);
-  if (!leafSlots) return [];
-  const depth = Math.trunc(Math.log2(leafSlots));
-  const cols: BracketMatch[][] = [];
-  for (let r = 1; r <= depth; r++) {
-    const expected = leafSlots / 2 ** r;
-    const real = matchesInRoundForDisplay(matches, r);
-    if (real.length === expected) {
-      cols.push(real);
-      continue;
-    }
-    if (real.length === 0) {
-      cols.push(syntheticBracketRound(r, expected));
-      continue;
-    }
-    if (real.length < expected) {
-      const ph = syntheticBracketRound(r, expected - real.length).map((m, i) => ({
-        ...m,
-        id: `__ph-${r}-${real.length + i}`,
-      }));
-      cols.push([...real, ...ph]);
-      continue;
-    }
+function pushRoundColumn(
+  cols: BracketMatch[][],
+  matches: BracketMatch[],
+  round: number,
+  expected: number,
+): void {
+  const real = matchesInRoundForDisplay(matches, round);
+  if (real.length === expected) {
     cols.push(real);
+    return;
+  }
+  if (real.length === 0) {
+    cols.push(syntheticBracketRound(round, expected));
+    return;
+  }
+  if (real.length < expected) {
+    const ph = syntheticBracketRound(round, expected - real.length).map((m, i) => ({
+      ...m,
+      id: `__ph-${round}-${real.length + i}`,
+    }));
+    cols.push([...real, ...ph]);
+    return;
+  }
+  cols.push(real.slice(0, expected));
+}
+
+/** Full knockout column layout (round 1 left, final right). */export function buildBracketColumnsForDisplay(matches: BracketMatch[]): BracketMatch[][] {
+  const slotCount = inferBracketSlotCountFromRoundOne(matches);
+  if (!slotCount) return [];
+
+  const depth = Math.trunc(Math.log2(slotCount));
+  if (!Number.isFinite(depth) || depth < 1) return [];
+
+  const mainTier = slotCount / 2;
+  const entryRound = bracketMainDrawEntryRound(matches, slotCount);
+  const cols: BracketMatch[][] = [];
+
+  if (entryRound !== undefined && entryRound > 1) {
+    for (let r = 1; r < entryRound; r++) {
+      const real = matchesInRoundForDisplay(matches, r);
+      if (real.length > 0) cols.push(real);
+    }
+    for (let i = 0; i < depth; i++) {
+      const r = entryRound + i;
+      const expected = mainTier >> i;
+      pushRoundColumn(cols, matches, r, expected);
+    }
+    return cols;
+  }
+
+  for (let r = 1; r <= depth; r++) {
+    const expected = slotCount / 2 ** r;
+    pushRoundColumn(cols, matches, r, expected);
   }
   return cols;
 }
@@ -76,7 +96,9 @@ export function displayBracketColumns(matches: BracketMatch[]): BracketMatch[][]
   const cols = buildBracketColumnsForDisplay(matches);
   if (cols.length === 0) return cols;
   const colsCopy = cols.map((c) => c.map((m) => ({ ...m })));
-  const root = bracketTreeFromColumns(colsCopy);
+  const depth = Math.trunc(Math.log2(inferBracketSlotCountFromRoundOne(matches) ?? 0));
+  const treeCols = depth > 0 ? colsCopy.slice(-depth) : colsCopy;
+  const root = bracketTreeFromColumns(treeCols);
   if (root) applyFeederWinners(root);
   return colsCopy;
 }

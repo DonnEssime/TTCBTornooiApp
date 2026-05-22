@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { BracketMatch, Tournament } from 'ttc-tornooiapp';
+  import { bracketMatchRound } from 'ttc-tornooiapp';
   import BracketSlotRow from './BracketSlotRow.svelte';
   import BracketSubtree from './BracketSubtree.svelte';
   import { bracketTreeFromColumns } from './bracketStream/buildTree';
@@ -8,6 +9,7 @@
     cols,
     tournament,
     slotTitle,
+    mainDrawSlotCount = undefined,
     bracketClassId = undefined,
     onPairingClick = undefined,
     ariaLabel = 'Knockout bracket',
@@ -16,6 +18,8 @@
     cols: BracketMatch[][];
     tournament: Tournament;
     slotTitle: (m: BracketMatch, side: 'a' | 'b', t: Tournament, classId?: string) => string;
+    /** Leaf slot count for the main knockout tree when it differs from inferred column depth. */
+    mainDrawSlotCount?: number;
     /** When set (multi-class track), group placeholders resolve against this class slice. */
     bracketClassId?: string;
     /** When set, match boxes are buttons and invoke this with the bracket slot. */
@@ -24,7 +28,17 @@
     emptyMessage?: string;
   } = $props();
 
-  const root = $derived(bracketTreeFromColumns(cols));
+  const treeDepth = $derived.by(() => {
+    if (mainDrawSlotCount !== undefined && mainDrawSlotCount >= 2) {
+      const d = Math.trunc(Math.log2(mainDrawSlotCount));
+      return Number.isFinite(d) && d >= 1 ? d : cols.length;
+    }
+    return cols.length;
+  });
+
+  const earlyCols = $derived(cols.length > treeDepth ? cols.slice(0, cols.length - treeDepth) : []);
+  const treeCols = $derived(cols.slice(-treeDepth));
+  const root = $derived(bracketTreeFromColumns(treeCols));
 
   function slot(m: BracketMatch, side: 'a' | 'b'): string {
     return slotTitle(m, side, tournament, bracketClassId);
@@ -94,6 +108,63 @@
     </div>
   {:else}
     <div class="stream-inner">
+      {#each earlyCols as earlyCol, earlyIdx (earlyIdx)}
+        <div class="early-round-col">
+          <span class="early-round-label muted small"
+            >R{earlyCol[0] ? bracketMatchRound(earlyCol[0]) : earlyIdx + 1}</span
+          >
+          <div class="early-round-matches">
+            {#each earlyCol as bm (bm.id)}
+              {#if onPairingClick}
+                <button
+                  type="button"
+                  class="match-box match-box--interactive early-match"
+                  class:match-done={Boolean(bm.winner)}
+                  onclick={() => activate(bm)}
+                >
+                  <BracketSlotRow
+                    {tournament}
+                    {bracketClassId}
+                    bm={bm}
+                    side="a"
+                    label={slot(bm, 'a')}
+                    playerId={slotPlayerId(bm, 'a')}
+                  />
+                  <div class="bracket-vs muted">vs</div>
+                  <BracketSlotRow
+                    {tournament}
+                    {bracketClassId}
+                    bm={bm}
+                    side="b"
+                    label={slot(bm, 'b')}
+                    playerId={slotPlayerId(bm, 'b')}
+                  />
+                </button>
+              {:else}
+                <div class="match-box early-match" class:match-done={Boolean(bm.winner)}>
+                  <BracketSlotRow
+                    {tournament}
+                    {bracketClassId}
+                    bm={bm}
+                    side="a"
+                    label={slot(bm, 'a')}
+                    playerId={slotPlayerId(bm, 'a')}
+                  />
+                  <div class="bracket-vs muted">vs</div>
+                  <BracketSlotRow
+                    {tournament}
+                    {bracketClassId}
+                    bm={bm}
+                    side="b"
+                    label={slot(bm, 'b')}
+                    playerId={slotPlayerId(bm, 'b')}
+                  />
+                </div>
+              {/if}
+            {/each}
+          </div>
+        </div>
+      {/each}
       <div class="wing left">
         <BracketSubtree
           node={root.left}
@@ -197,6 +268,31 @@
     justify-content: center;
     gap: 0;
     min-width: min-content;
+  }
+
+  .early-round-col {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.35rem;
+    padding: 0 0.5rem 0 0;
+    border-right: 1px dashed #cbd5e1;
+    margin-right: 0.35rem;
+  }
+
+  .early-round-label {
+    text-align: center;
+    margin: 0 0 0.15rem;
+  }
+
+  .early-round-matches {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .early-match {
+    min-width: 7.5rem;
   }
 
   .stream-single {

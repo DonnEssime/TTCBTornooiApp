@@ -15,6 +15,10 @@ import { bracketStreamPdfLayout } from './bracketStream/pdfLayout';
 
 const PAGE_MARGIN = 14;
 const SECTION_GAP = 8;
+const PORTRAIT_FORMAT = 'a4' as const;
+const PORTRAIT_ORIENTATION = 'portrait' as const;
+const BRACKET_FORMAT = 'a3' as const;
+const BRACKET_ORIENTATION = 'landscape' as const;
 
 function sortGroups(groups: Record<string, GroupDefinition>): GroupDefinition[] {
   return Object.values(groups).sort((a, b) => {
@@ -134,10 +138,18 @@ function collectTracks(t: Tournament): PdfTrack[] {
   }));
 }
 
+function addPortraitPage(doc: jsPDF): void {
+  doc.addPage(PORTRAIT_FORMAT, PORTRAIT_ORIENTATION);
+}
+
+function addBracketPage(doc: jsPDF): void {
+  doc.addPage(BRACKET_FORMAT, BRACKET_ORIENTATION);
+}
+
 function nextY(doc: jsPDF, y: number, need: number): number {
   const pageH = doc.internal.pageSize.getHeight();
   if (y + need > pageH - PAGE_MARGIN) {
-    doc.addPage();
+    addPortraitPage(doc);
     return PAGE_MARGIN;
   }
   return y;
@@ -189,33 +201,27 @@ function addGroupMatrix(
   return tableFinalY(doc) + SECTION_GAP;
 }
 
+/** Draw bracket on the current A3 landscape page; caller must add that page first. */
 function addBracketStreamView(
   doc: jsPDF,
   y: number,
   t: Tournament,
   matches: BracketMatch[],
   classId?: string,
-): number {
+): void {
   const prepared = prepareBracketMatchesForPdf(t, matches);
   const slotLabel = (m: BracketMatch, side: 'a' | 'b') => bracketSlotLabel(m, side, t, classId);
   const layout = bracketStreamPdfLayout(t, prepared, slotLabel);
-  if (!layout) return y;
+  if (!layout) return;
 
-  let availW = doc.internal.pageSize.getWidth() - PAGE_MARGIN * 2;
-  let availH = doc.internal.pageSize.getHeight() - y - PAGE_MARGIN;
-  let scale = Math.min(1, availW / layout.width, availH / layout.height);
-
-  if (layout.height * scale + 4 > availH || layout.width * scale > availW) {
-    doc.addPage('a4', 'landscape');
-    y = PAGE_MARGIN;
-    availW = doc.internal.pageSize.getWidth() - PAGE_MARGIN * 2;
-    availH = doc.internal.pageSize.getHeight() - PAGE_MARGIN * 2;
-    scale = Math.min(1, availW / layout.width, availH / layout.height);
-  }
-
-  y = nextY(doc, y, layout.height * scale + 6);
-  const originX = PAGE_MARGIN + Math.max(0, (availW - layout.width * scale) / 2);
-  return drawBracketStreamOnPdf(doc, layout, originX, y, scale) + SECTION_GAP;
+  const availW = doc.internal.pageSize.getWidth() - PAGE_MARGIN * 2;
+  const availH = doc.internal.pageSize.getHeight() - y - PAGE_MARGIN;
+  const scale = Math.min(1, availW / layout.width, availH / layout.height);
+  const scaledW = layout.width * scale;
+  const scaledH = layout.height * scale;
+  const originX = PAGE_MARGIN + (availW - scaledW) / 2;
+  const originY = y + (availH - scaledH) / 2;
+  drawBracketStreamOnPdf(doc, layout, originX, originY, scale);
 }
 
 function addPlacementList(
@@ -240,7 +246,11 @@ function addPlacementList(
 
 /** Build a PDF blob for the tournament (groups, bracket, placements). */
 export function buildTournamentPdfBlob(tournamentName: string, tournament: Tournament): Blob {
-  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const doc = new jsPDF({
+    unit: 'mm',
+    format: PORTRAIT_FORMAT,
+    orientation: PORTRAIT_ORIENTATION,
+  });
   let y = PAGE_MARGIN;
 
   doc.setFont('helvetica', 'bold');
@@ -259,24 +269,37 @@ export function buildTournamentPdfBlob(tournamentName: string, tournament: Tourn
 
   for (const track of tracks) {
     const groups = sortGroups(track.groups);
-    if (groups.length > 0) {
+    const hasGroups = groups.length > 0;
+    const hasBracket = track.bracketMatches.length > 0;
+
+    if (hasGroups) {
       anyContent = true;
       const groupsTitle = track.heading ? `Groups · ${track.heading}` : 'Groups';
       y = sectionHeading(doc, y, groupsTitle, 13);
       for (const g of groups) {
         y = addGroupMatrix(doc, y, tournament, g, track.classId);
       }
+      if (hasBracket) {
+        addBracketPage(doc);
+        y = PAGE_MARGIN;
+      }
     }
 
-    if (track.bracketMatches.length > 0) {
+    if (hasBracket) {
       anyContent = true;
       const preparedBracket = prepareBracketMatchesForPdf(tournament, track.bracketMatches);
+      if (!hasGroups) {
+        addBracketPage(doc);
+        y = PAGE_MARGIN;
+      }
       const bracketTitle = track.heading ? `Knockout bracket · ${track.heading}` : 'Knockout bracket';
       y = sectionHeading(doc, y, bracketTitle, 13);
-      y = addBracketStreamView(doc, y, tournament, preparedBracket, track.classId);
+      addBracketStreamView(doc, y, tournament, preparedBracket, track.classId);
 
       const placements = singleEliminationPlacementRows(preparedBracket, tournament);
       if (placements) {
+        addPortraitPage(doc);
+        y = PAGE_MARGIN;
         const resultsTitle = track.heading ? `Results · ${track.heading}` : 'Results';
         y = sectionHeading(doc, y, resultsTitle, 13);
         y = addPlacementList(doc, y, tournament, placements);

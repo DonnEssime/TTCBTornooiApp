@@ -19,6 +19,7 @@
     compareBracketMatchId,
     compareBracketMatchIdString,
     bracketMatchRound,
+    inferBracketSlotCountFromRoundOne,
     bracketPlayerMatchId,
     canMutateBracketPlayerMatch,
     canMutateExistingGroupPhaseMatchScores,
@@ -3029,12 +3030,12 @@
                 <fieldset class="bracket-seed-fieldset">
                   <legend class="muted small">Bracket seeding</legend>
                   <label class="radio-line">
-                    <input type="radio" bind:group={bracketSeedingChoice} value="closed_form" disabled={!canPickClosedFormSeeding} />
+                    <input type="radio" bind:group={bracketSeedingChoice} value="crop_closed_form" disabled={!canPickClosedFormSeeding} />
                     <span>
                       <strong>Closed-form</strong>
                       — built-in 2×4 / 4×4 / 8×4 / 16×4 layout when you have 2, 4, 8, or 16 groups (≥4 players each).
-                      {#if closedFormSeedingKind === 'crop'}
-                        Top four per group in the main draw; lower places enter via a preliminary round (play-in) against the lowest available cross-group finisher. Direct opponents receive a bye in that round.
+                      {#if closedFormSeedingKind === 'culled'}
+                        Top four per group use the closed layout; 5th place and lower join via an extra preliminary round (selected by default).
                       {:else if closedFormSeedingKind === 'exact'}
                         Exact G×4 grid (every group has four players).
                       {/if}
@@ -3085,6 +3086,7 @@
                     activeSess.tournamentName,
                     tournament.bracketMatches,
                   )}
+                  mainDrawSlotCount={inferBracketSlotCountFromRoundOne(tournament.bracketMatches)}
                   {tournament}
                   slotTitle={bracketSlotTitle}
                   onPairingClick={openBracketPairingModal}
@@ -3360,12 +3362,8 @@
                     <span class="mono">--empty--</span> is a bye; “—” is a structural placeholder.
                   </p>
                   <BracketStreamView
-                    cols={previewBracketColumns(
-                      tournament,
-                      slice.seedings,
-                      activeSess.tournamentName,
-                      slice.bracketMatches,
-                    )}
+                    cols={displayBracketColumns(slice.bracketMatches)}
+                    mainDrawSlotCount={inferBracketSlotCountFromRoundOne(slice.bracketMatches)}
                     {tournament}
                     slotTitle={bracketSlotTitle}
                     bracketClassId={cid}
