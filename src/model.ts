@@ -1,3 +1,7 @@
+import type { Locale } from './i18n/types';
+import { txt } from './i18n';
+import type { ModelReason } from './i18n';
+
 export type PlayerId = string;
 export type TeamId = string;
 
@@ -154,16 +158,19 @@ export function randomPlayerHandicapValue(config: HandicapConfig, rng: () => num
   return min + Math.floor(rng() * span);
 }
 
-export function validatePlayerHandicapForTournament(tournament: Tournament, handicap: number): string | undefined {
+export function validatePlayerHandicapForTournament(
+  tournament: Tournament,
+  handicap: number,
+): ModelReason | undefined {
   const config = tournament.handicapConfig;
   if (!config) return undefined;
   if (config.system === 'classification') {
-    return 'Classification handicaps are not implemented yet';
+    return { key: 'model.classificationHandicapsNotImplemented' };
   }
   const next = clampPlayerHandicapValue(config, handicap);
   if (!Number.isFinite(handicap) || Math.floor(handicap) !== next) {
     const { min, max } = handicapValueBounds(config);
-    return `Handicap must be an integer from ${min} to ${max}`;
+    return { key: 'model.handicapMustBeIntegerInRange', params: { min: String(min), max: String(max) } };
   }
   return undefined;
 }
@@ -369,7 +376,8 @@ function buildNumberedGroupsFromSizes(ids: PlayerId[], sizes: number[]): GroupDe
     const chunk = ids.slice(offset, offset + sz);
     offset += sz;
     const num = String(gi + 1);
-    out.push({ id: num, label: `Group ${num}`, playerIds: chunk });
+    /** Omit `label`; {@link groupNumberedTitle} derives `model.groupNumberedTitle` from numeric id. */
+    out.push({ id: num, playerIds: chunk });
   }
   return out;
 }
@@ -387,18 +395,18 @@ export function applyBracketToTournament(tournament: Tournament, bracketMatches:
  * Drop knockout bracket structure and all derived bracket state (player match rows without
  * `groupId`, bracket table assignments, bracket-phase forfeits). Group phase is unchanged.
  */
-export function clearBracketFromTournament(tournament: Tournament, classId?: string): string | undefined {
+export function clearBracketFromTournament(tournament: Tournament, classId?: string): ModelReason | undefined {
   if (classId && !tournament.classTournaments[classId]) {
-    return 'Unknown class id.';
+    return { key: 'model.unknownClassId' };
   }
   if (tournamentUsesClassTabs(tournament) && classId === undefined) {
-    return 'Clear the bracket from each class track when multiple competition classes are defined.';
+    return { key: 'model.clearBracketPerClassTrack' };
   }
 
   const slice = classId ? tournament.classTournaments[classId]! : undefined;
   const bracketMatches = slice?.bracketMatches ?? tournament.bracketMatches;
   if (bracketMatches.length === 0) {
-    return 'No knockout bracket to remove.';
+    return { key: 'model.noKnockoutBracketToRemove' };
   }
 
   const matchIdsToRemove = new Set<string>();
@@ -856,24 +864,24 @@ export function groupStandingsRowsForBracket(
  * label as-is (e.g. `Pool A` even when `id` is numeric); otherwise derive `Group N` from a numeric
  * id, else fall back to the trimmed id.
  */
-export function groupNumberedTitle(g: GroupDefinition): string {
+export function groupNumberedTitle(g: GroupDefinition, locale: Locale = 'en'): string {
   const idTrim = g.id.trim();
   const lab = g.label?.trim();
   if (lab) {
     const mNum = /^group\s*(\d+)$/i.exec(lab);
-    if (mNum) return `Group ${mNum[1]}`;
+    if (mNum) return txt('model.groupNumberedTitle', locale, { n: mNum[1]! });
     return lab;
   }
   const asNum = Number(idTrim);
   if (Number.isInteger(asNum) && asNum >= 0 && String(asNum) === idTrim) {
-    return `Group ${asNum}`;
+    return txt('model.groupNumberedTitle', locale, { n: String(asNum) });
   }
   return idTrim;
 }
 
 /** Label shown in lists (group headings, overview, bracket placeholders). */
-export function displayLabelForGroup(g: GroupDefinition): string {
-  return groupNumberedTitle(g);
+export function displayLabelForGroup(g: GroupDefinition, locale: Locale = 'en'): string {
+  return groupNumberedTitle(g, locale);
 }
 
 export function groupRecordForBracketScope(
@@ -2277,13 +2285,18 @@ export function formatBracketSlotPlayerLabel(
   tournament: Tournament,
   playerId: PlayerId,
   classId: string | undefined,
+  locale: Locale = 'en',
 ): string {
   const g = findGroupForPlayer(tournament, playerId, classId);
   if (!g || groupAllMatchesFinished(tournament, g, classId)) {
     return tournament.players[playerId]?.name ?? playerId;
   }
   const place = currentGroupPlace1Based(tournament, g, playerId, classId);
-  return `${displayLabelForGroup(g)} place ${place}`;
+  return txt('model.bracketSlotPlaceLabel', locale, {
+    group: displayLabelForGroup(g, locale),
+    placeWord: txt('model.placeWord', locale),
+    place: String(place),
+  });
 }
 
 /** Whether a knockout-phase player match should appear in “matches this round” while groups may still be open. */
@@ -3258,12 +3271,12 @@ export function eliminateLowestRankedPlayersInBracketRound(
   round: number,
   classId: string | undefined,
   tieBreakSalt: string,
-): string | undefined {
+): ModelReason | undefined {
   const salt = tieBreakSalt.trim();
-  if (!salt) return 'tieBreakSalt is required.';
+  if (!salt) return { key: 'model.tieBreakSaltRequired' };
 
   if (classId && !tournament.classTournaments[classId]) {
-    return 'Unknown class id.';
+    return { key: 'model.unknownClassId' };
   }
 
   const slice = classId ? tournament.classTournaments[classId]! : undefined;
@@ -3271,7 +3284,7 @@ export function eliminateLowestRankedPlayersInBracketRound(
   const locks = slice?.lockedBracketRounds ?? tournament.lockedBracketRounds;
 
   if (locks.includes(round)) {
-    return `Bracket round ${round} is locked.`;
+    return { key: 'model.bracketRoundLockedWithPeriod', params: { round: String(round) } };
   }
 
   const sorted = bracketMatchesSortedForRound(bracketMatches, round);
@@ -3309,7 +3322,7 @@ export function eliminateLowestRankedPlayersInBracketRound(
   }
 
   if (changed === 0) {
-    return 'No open pairings in that round could be resolved by elimination.';
+    return { key: 'model.noOpenPairingsForElimination' };
   }
   return undefined;
 }

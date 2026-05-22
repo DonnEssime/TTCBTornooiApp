@@ -167,7 +167,7 @@ describe('Single team-vs-team match (not a team tournament)', () => {
     expect(runner.execute(tm1)).toEqual({ success: true });
     expect(runner.execute(tm2)).toEqual({
       success: false,
-      reason: 'Only one team vs team match is allowed per tournament',
+      reason: 'command.onlyOneTeamVsTeamMatch',
     });
   });
 });

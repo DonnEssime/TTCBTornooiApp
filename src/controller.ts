@@ -638,7 +638,7 @@ export class TournamentController {
 
       return this.undo(c.id, commandId);
     }
-    return { success: false, reason: 'Nothing to undo' };
+    return { success: false, reason: 'command.nothingToUndo' };
   }
 
   /** Removes the trailing Undo from the log (redo); not recorded as a command. */

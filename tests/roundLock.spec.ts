@@ -56,7 +56,11 @@ describe('SetRoundLock and score guards', () => {
       payload: { matchId: 'match-1', scores: [{ playerA: 11, playerB: 9 }] },
       timestamp: ts,
     };
-    expect(runner.execute(score)).toEqual({ success: false, reason: 'Bracket round 1 is locked' });
+    expect(runner.execute(score)).toEqual({
+      success: false,
+      reason: 'command.bracketRoundLocked',
+      reasonParams: { round: '1' },
+    });
   });
 
   it('allows unlock then EnterScore when no finished match in that round', () => {
@@ -149,7 +153,7 @@ describe('SetRoundLock and score guards', () => {
       runner.execute({ id: 'unlock1', type: 'SetRoundLock', dependsOn: ['lock1'], payload: { bracketRound: 1, locked: false }, timestamp: ts }),
     ).toEqual({
       success: false,
-      reason: 'Cannot unlock: a match in this bracket round already has scores',
+      reason: 'command.cannotUnlockBracketRoundHasScores',
     });
   });
 });

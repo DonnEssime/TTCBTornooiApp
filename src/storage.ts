@@ -1,11 +1,31 @@
 import { Command, CommandRunner } from './command';
+import {
+  buildLogHeaderLine,
+  isLogHeaderLine,
+  TOURNAMENT_STORAGE_FORMAT_VERSION,
+  validateCommandLogFormat,
+} from './storage-format';
+
+export {
+  APP_VERSION,
+  TOURNAMENT_STORAGE_FORMAT_VERSION,
+  TOURNAMENT_LOG_HEADER_TYPE,
+  type TournamentLogHeader,
+  buildLogHeader,
+  buildLogHeaderLine,
+  validateCommandLogFormat,
+  type CommandLogFormatError,
+} from './storage-format';
 
 export function commandToJsonLine(command: Command): string {
   return JSON.stringify(command);
 }
 
 export function exportCommandsAsJsonLines(commands: Command[]): string {
-  return commands.map(commandToJsonLine).join('\n') + (commands.length > 0 ? '\n' : '');
+  const header = buildLogHeaderLine();
+  const body = commands.map(commandToJsonLine).join('\n');
+  if (!body) return `${header}\n`;
+  return `${header}\n${body}\n`;
 }
 
 export function commandFromJsonLine(line: string): Command | null {
@@ -20,10 +40,18 @@ export function commandFromJsonLine(line: string): Command | null {
 }
 
 export function parseCommandLogLines(text: string): string[] {
-  return text
+  const formatError = validateCommandLogFormat(text);
+  if (formatError) {
+    throw new Error(formatError.message);
+  }
+  const lines = text
     .split('\n')
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
+  if (lines.length > 0 && isLogHeaderLine(lines[0]!)) {
+    return lines.slice(1);
+  }
+  return lines;
 }
 
 export type ReplayExecuteTiming = {
@@ -49,7 +77,7 @@ export type ReplayExecuteProfile = {
 
 export type ReplayResult = {
   success: boolean;
-  results: Array<{ id: string; success: boolean; reason?: string }>;
+  results: Array<{ id: string; success: boolean; reason?: import('./i18n').MessageKey; reasonParams?: Record<string, string> }>;
   executeProfile?: ReplayExecuteProfile;
 };
 
@@ -125,13 +153,13 @@ export function replayCommandsFromJsonLines(
   options: Pick<ReplayAsyncOptions, 'profileExecute'> = {},
 ): ReplayResult {
   const commandRunner = runner ?? new CommandRunner();
-  const results: Array<{ id: string; success: boolean; reason?: string }> = [];
+  const results: ReplayResult['results'] = [];
   const profileCollector = options.profileExecute ? new ExecuteProfileCollector() : undefined;
 
   for (const line of lines) {
     const cmd = commandFromJsonLine(line);
     if (!cmd) {
-      return { success: false, results: [{ id: 'unknown', success: false, reason: 'invalid command format' }] };
+      return { success: false, results: [{ id: 'unknown', success: false, reason: 'command.invalidCommandFormat' }] };
     }
     const result = executeWithOptionalProfile(commandRunner, cmd, profileCollector);
     results.push({ id: cmd.id, ...result });
@@ -158,7 +186,7 @@ export async function replayCommandsFromJsonLinesAsync(
     const line = lines[i]!;
     const cmd = commandFromJsonLine(line);
     if (!cmd) {
-      return { success: false, results: [{ id: 'unknown', success: false, reason: 'invalid command format' }] };
+      return { success: false, results: [{ id: 'unknown', success: false, reason: 'command.invalidCommandFormat' }] };
     }
     const result = executeWithOptionalProfile(commandRunner, cmd, profileCollector);
     results.push({ id: cmd.id, ...result });

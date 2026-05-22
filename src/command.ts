@@ -44,6 +44,13 @@ import {
   validatePlayerHandicapForTournament,
   type HandicapConfig,
 } from './model';
+import {
+  commandFail,
+  commandFailFromText,
+  type CommandResult,
+  type UndoCheckResult,
+} from './i18n/command-result';
+import type { MessageKey } from './i18n/catalog';
 
 export type CommandType =
   | 'CreatePlayer'
@@ -271,10 +278,7 @@ export type Command =
   | RenamePlayerCommand
   | UndoCommand;
 
-export interface CommandResult {
-  success: boolean;
-  reason?: string;
-}
+export type { CommandResult, UndoCheckResult };
 
 function sortLog(log: Command[]): Command[] {
   return [...log.entries()]
@@ -363,12 +367,12 @@ export class CommandRunner {
 
   execute(command: Command): CommandResult {
     if (this.commandById.has(command.id)) {
-      return { success: false, reason: 'Command ID already exists' };
+      return commandFail('command.commandIdAlreadyExists');
     }
 
     for (const dep of command.dependsOn || []) {
       if (!this.commandById.has(dep)) {
-        return { success: false, reason: `Missing dependency: ${dep}` };
+        return commandFail('command.missingDependency', { dep });
       }
     }
 
@@ -376,7 +380,7 @@ export class CommandRunner {
       const u = command as UndoCommand;
       const ok = this.canAppendUndo(u.payload.targetCommandId);
       if (!ok.ok) {
-        return { success: false, reason: ok.reason ?? 'Cannot append Undo' };
+        return commandFail(ok.reason ?? 'command.cannotAppendUndo', ok.reasonParams);
       }
     }
 
@@ -387,7 +391,7 @@ export class CommandRunner {
     if (err) {
       this.orderedLog.pop();
       this.commandById.delete(command.id);
-      return { success: false, reason: err };
+      return err;
     }
 
     return { success: true };
@@ -398,18 +402,18 @@ export class CommandRunner {
   }
 
   /** Whether a new Undo could target this command (no active dependents after it). */
-  canAppendUndo(targetCommandId: string): { ok: boolean; reason?: string } {
+  canAppendUndo(targetCommandId: string): UndoCheckResult {
     const sorted = sortLog(this.orderedLog);
     const byId = new Map(sorted.map((c) => [c.id, c]));
     const tgt = byId.get(targetCommandId);
     if (!tgt) {
-      return { ok: false, reason: 'Command not found' };
+      return { ok: false, reason: 'command.commandNotFound' };
     }
 
     if (tgt.type === 'Undo') {
       const pos = sorted.findIndex((c) => c.id === targetCommandId);
       if (pos < 0) {
-        return { ok: false, reason: 'Command not found' };
+        return { ok: false, reason: 'command.commandNotFound' };
       }
       const { suppressed } = this.computeSuppressedWithVictims(sorted, byId);
       for (let i = pos + 1; i < sorted.length; i++) {
@@ -422,7 +426,7 @@ export class CommandRunner {
         }
         return {
           ok: false,
-          reason: 'Cannot reverse this Undo while later active mutations exist',
+          reason: 'command.cannotReverseUndoWithLaterMutations',
         };
       }
       return { ok: true };
@@ -430,18 +434,18 @@ export class CommandRunner {
 
     const { suppressed } = this.computeSuppressedWithVictims(sorted, byId);
     if (suppressed.has(targetCommandId)) {
-      return { ok: false, reason: 'Target is already undone' };
+      return { ok: false, reason: 'command.targetAlreadyUndone' };
     }
 
     const pos = sorted.findIndex((c) => c.id === targetCommandId);
-    if (pos < 0) return { ok: false, reason: 'Command not found' };
+    if (pos < 0) return { ok: false, reason: 'command.commandNotFound' };
 
     for (let i = pos + 1; i < sorted.length; i++) {
       const c = sorted[i];
       if (c.type === 'Undo') continue;
       if (suppressed.has(c.id)) continue;
       if (dependsReach(c, targetCommandId, byId)) {
-        return { ok: false, reason: 'Command has active dependents; cannot undo' };
+        return { ok: false, reason: 'command.commandHasActiveDependents' };
       }
     }
 
@@ -458,7 +462,7 @@ export class CommandRunner {
   redoPop(): CommandResult {
     const last = this.orderedLog[this.orderedLog.length - 1];
     if (!last || last.type !== 'Undo') {
-      return { success: false, reason: 'Nothing to redo' };
+      return commandFail('command.nothingToRedo');
     }
     this.orderedLog.pop();
     this.commandById.delete(last.id);
@@ -466,7 +470,7 @@ export class CommandRunner {
     if (err) {
       this.orderedLog.push(last);
       this.commandById.set(last.id, last);
-      return { success: false, reason: err };
+      return err;
     }
     return { success: true };
   }
@@ -546,7 +550,7 @@ export class CommandRunner {
     return { suppressed, undoVictims: undoVictims };
   }
 
-  private rebuildFromLog(): string | undefined {
+  private rebuildFromLog(): CommandResult | undefined {
     const sorted = sortLog(this.orderedLog);
     const byId = new Map(sorted.map((c) => [c.id, c]));
     const { suppressed } = this.computeSuppressedWithVictims(sorted, byId);
@@ -558,7 +562,9 @@ export class CommandRunner {
       if (suppressed.has(c.id)) continue;
       const r = this.applyCommandCore(t, c);
       if (!r.success) {
-        return r.reason ?? 'Replay failed';
+        return r.reason
+          ? { success: false, reason: r.reason, reasonParams: r.reasonParams }
+          : commandFail('command.replayFailed');
       }
     }
 
@@ -571,16 +577,16 @@ export class CommandRunner {
       case 'CreatePlayer': {
         const { playerId, name, handicap } = command.payload;
         if (tournament.players[playerId]) {
-          return { success: false, reason: 'Player already exists' };
+          return commandFail('command.playerAlreadyExists');
         }
         if (isPlayerDisplayNameTaken(tournament, name)) {
-          return { success: false, reason: 'A player with this name already exists' };
+          return commandFail('command.playerNameAlreadyExists');
         }
         const hcErr = tournament.handicapConfig
           ? validatePlayerHandicapForTournament(tournament, handicap)
           : undefined;
         if (hcErr) {
-          return { success: false, reason: hcErr };
+          return commandFail(hcErr.key, hcErr.params);
         }
         const hc = tournament.handicapConfig
           ? clampPlayerHandicapValue(tournament.handicapConfig, handicap)
@@ -596,11 +602,11 @@ export class CommandRunner {
       case 'CreateTeam': {
         const { teamId, name, memberIds } = command.payload;
         if (tournament.teams[teamId]) {
-          return { success: false, reason: 'Team already exists' };
+          return commandFail('command.teamAlreadyExists');
         }
         for (const playerId of memberIds) {
           if (!tournament.players[playerId]) {
-            return { success: false, reason: `Player not found: ${playerId}` };
+            return commandFail('command.playerNotFoundWithId', { playerId });
           }
         }
         tournament.teams[teamId] = { id: teamId, name, memberIds };
@@ -609,13 +615,13 @@ export class CommandRunner {
       case 'CreateMatch': {
         const { matchId, playerA, playerB, groupId, classId } = command.payload;
         if (Object.keys(tournament.teamMatches).length > 0) {
-          return { success: false, reason: 'Player matches are not allowed in a team vs team fixture' };
+          return commandFail('command.playerMatchesNotAllowedInTeamFixture');
         }
         if (tournament.matches[matchId]) {
-          return { success: false, reason: 'Match already exists' };
+          return commandFail('command.matchAlreadyExists');
         }
         if (!tournament.players[playerA] || !tournament.players[playerB]) {
-          return { success: false, reason: 'Player not found' };
+          return commandFail('command.playerNotFound');
         }
         tournament.matches[matchId] = {
           id: matchId,
@@ -631,19 +637,19 @@ export class CommandRunner {
       case 'CreateTeamMatch': {
         const { matchId, teamA, teamB } = command.payload;
         if (tournament.bracketMatches.length > 0) {
-          return { success: false, reason: 'Team vs team matches cannot be used alongside a player bracket' };
+          return commandFail('command.teamVsTeamWithPlayerBracket');
         }
         if (Object.keys(tournament.teamMatches).length > 0) {
-          return { success: false, reason: 'Only one team vs team match is allowed per tournament' };
+          return commandFail('command.onlyOneTeamVsTeamMatch');
         }
         if (tournament.teamMatches[matchId]) {
-          return { success: false, reason: 'Team match already exists' };
+          return commandFail('command.teamMatchAlreadyExists');
         }
         if (!tournament.teams[teamA] || !tournament.teams[teamB]) {
-          return { success: false, reason: 'Team not found' };
+          return commandFail('command.teamNotFound');
         }
         if (teamA === teamB) {
-          return { success: false, reason: 'A team cannot play itself' };
+          return commandFail('command.teamCannotPlayItself');
         }
         tournament.teamMatches[matchId] = {
           id: matchId,
@@ -658,12 +664,12 @@ export class CommandRunner {
         const { matchId, scores } = command.payload;
         const match = tournament.matches[matchId];
         if (!match) {
-          return { success: false, reason: 'Match not found' };
+          return commandFail('command.matchNotFound');
         }
         if (match.status === 'eliminated' || match.status === 'forfeit') {
           return {
             success: false,
-            reason: 'This match was already decided without entering game scores (forfeit / elimination).',
+            reason: 'command.matchDecidedWithoutScores',
           };
         }
         const scope = bracketScopeForPlayerMatch(tournament, match);
@@ -672,13 +678,12 @@ export class CommandRunner {
             ? findBracketRoundForPlayerPairingIn(scope.bracketMatches, match.playerA, match.playerB)
             : undefined;
         if (round !== undefined && scope.lockedBracketRounds.includes(round)) {
-          return { success: false, reason: `Bracket round ${round} is locked` };
+          return commandFail('command.bracketRoundLocked', { round: String(round) });
         }
         if (!canMutateBracketPlayerMatch(tournament, match, scope.bracketMatches, scope.lockedBracketRounds)) {
           return {
             success: false,
-            reason:
-              'This bracket match cannot be changed: a later knockout match already has scores, or the round is locked.',
+            reason: 'command.bracketMatchCannotChange',
           };
         }
         if (match.groupId) {
@@ -687,16 +692,14 @@ export class CommandRunner {
           if (changingExistingGroupResult && !canMutateExistingGroupPhaseMatchScores(tournament, match)) {
             return {
               success: false,
-              reason:
-                'This group result cannot be changed: a knockout match in this track already has recorded play.',
+              reason: 'command.groupResultCannotChange',
             };
           }
         }
         if (!isMatchScoreLegal(scores)) {
           return {
             success: false,
-            reason:
-              'Invalid scores: each game must finish at 11+ with a two-point margin, and the match must have a best-of-five winner (first to three games).',
+            reason: 'command.invalidScores',
           };
         }
         match.scores = scores;
@@ -710,17 +713,16 @@ export class CommandRunner {
         const { matchId } = command.payload;
         const match = tournament.matches[matchId];
         if (!match) {
-          return { success: false, reason: 'Match not found' };
+          return commandFail('command.matchNotFound');
         }
         if (match.groupId) {
           if (match.scores.length === 0 && match.status === 'scheduled') {
-            return { success: false, reason: 'No scores to clear' };
+            return commandFail('command.noScoresToClear');
           }
           if (!canMutateExistingGroupPhaseMatchScores(tournament, match)) {
             return {
               success: false,
-              reason:
-                'This group result cannot be cleared: a knockout match in this track already has recorded play.',
+              reason: 'command.groupResultCannotClear',
             };
           }
           match.scores = [];
@@ -731,19 +733,18 @@ export class CommandRunner {
           return { success: true };
         }
         if (!match.groupId && match.status === 'eliminated') {
-          return { success: false, reason: 'Eliminated results cannot be cleared here; use undo if applicable.' };
+          return commandFail('command.eliminatedResultsCannotClear');
         }
         const scope = bracketScopeForPlayerMatch(tournament, match);
         const round =
           findBracketRoundForPlayerPairingIn(scope.bracketMatches, match.playerA, match.playerB);
         if (round !== undefined && scope.lockedBracketRounds.includes(round)) {
-          return { success: false, reason: `Bracket round ${round} is locked` };
+          return commandFail('command.bracketRoundLocked', { round: String(round) });
         }
         if (!canMutateBracketPlayerMatch(tournament, match, scope.bracketMatches, scope.lockedBracketRounds)) {
           return {
             success: false,
-            reason:
-              'This bracket match cannot be cleared: a later knockout match already has scores, or the round is locked.',
+            reason: 'command.bracketMatchCannotClear',
           };
         }
         match.scores = [];
@@ -757,7 +758,7 @@ export class CommandRunner {
         const { matchId, scores } = command.payload;
         const teamMatch = tournament.teamMatches[matchId];
         if (!teamMatch) {
-          return { success: false, reason: 'Team match not found' };
+          return commandFail('command.teamMatchNotFound');
         }
         teamMatch.scores = scores;
         teamMatch.status = 'finished';
@@ -768,7 +769,7 @@ export class CommandRunner {
       case 'PlayerForfeit': {
         const { playerId, phase, groupMode } = command.payload;
         if (!tournament.players[playerId]) {
-          return { success: false, reason: 'Player not found' };
+          return commandFail('command.playerNotFound');
         }
         forfeitPlayer(tournament, playerId, phase, groupMode);
         return { success: true };
@@ -776,10 +777,10 @@ export class CommandRunner {
       case 'TeamForfeit': {
         const { teamId, phase } = command.payload;
         if (!tournament.teams[teamId]) {
-          return { success: false, reason: 'Team not found' };
+          return commandFail('command.teamNotFound');
         }
         if (phase === 'group') {
-          return { success: false, reason: 'Team group forfeits are not supported' };
+          return commandFail('command.teamGroupForfeitsNotSupported');
         }
         forfeitTeam(tournament, teamId, phase);
         return { success: true };
@@ -787,7 +788,7 @@ export class CommandRunner {
       case 'SetRoundLock': {
         const { bracketRound, locked } = command.payload;
         if (!Number.isInteger(bracketRound) || bracketRound < 1) {
-          return { success: false, reason: 'Invalid bracket round' };
+          return commandFail('command.invalidBracketRound');
         }
         if (locked) {
           if (!tournament.lockedBracketRounds.includes(bracketRound)) {
@@ -800,7 +801,7 @@ export class CommandRunner {
           return { success: true };
         }
         if (bracketRoundHasFinishedPlayerMatch(tournament, bracketRound)) {
-          return { success: false, reason: 'Cannot unlock: a match in this bracket round already has scores' };
+          return commandFail('command.cannotUnlockBracketRoundHasScores');
         }
         tournament.lockedBracketRounds = tournament.lockedBracketRounds.filter((r) => r !== bracketRound);
         return { success: true };
@@ -808,11 +809,11 @@ export class CommandRunner {
       case 'SetSeedings': {
         const { playerIds } = command.payload;
         if (!Array.isArray(playerIds) || playerIds.length === 0) {
-          return { success: false, reason: 'Seedings must be a non-empty ordered player id list' };
+          return commandFail('command.seedingsMustBeNonEmpty');
         }
         for (const pid of playerIds) {
           if (!tournament.players[pid]) {
-            return { success: false, reason: `Unknown player in seedings: ${pid}` };
+            return commandFail('command.unknownPlayerInSeedings', { pid });
           }
         }
         tournament.seedings = [...playerIds];
@@ -822,10 +823,10 @@ export class CommandRunner {
       case 'SetHandicapConfig': {
         const normalized = normalizeHandicapConfig(command.payload.config ?? undefined);
         if (command.payload.config != null && !normalized) {
-          return { success: false, reason: 'Invalid handicap configuration' };
+          return commandFail('command.invalidHandicapConfiguration');
         }
         if (normalized?.system === 'classification') {
-          return { success: false, reason: 'Classification handicaps are not implemented yet' };
+          return commandFail('model.classificationHandicapsNotImplemented');
         }
         if (normalized) {
           tournament.handicapConfig = normalized;
@@ -837,14 +838,14 @@ export class CommandRunner {
       case 'SetTournamentClasses': {
         const { classes } = command.payload;
         if (!Array.isArray(classes)) {
-          return { success: false, reason: 'classes must be an array' };
+          return commandFail('command.classesMustBeArray');
         }
 
         const normalized: Array<{ id: string; name: string }> = [];
         for (const c of classes) {
           const name = String(c.name ?? '').trim();
           if (!name) {
-            return { success: false, reason: 'Each class needs a non-empty display name' };
+            return commandFail('command.classNeedsDisplayName');
           }
           let id = String(c.id ?? '').trim();
           if (!id) {
@@ -855,7 +856,7 @@ export class CommandRunner {
         const idSet = new Set<string>();
         for (const c of normalized) {
           if (idSet.has(c.id)) {
-            return { success: false, reason: 'Duplicate class id' };
+            return commandFail('command.duplicateClassId');
           }
           idSet.add(c.id);
         }
@@ -867,7 +868,7 @@ export class CommandRunner {
         if (hasPlayers && !hadMulti && willMulti) {
           return {
             success: false,
-            reason: 'Define at least two competition classes before adding players.',
+            reason: 'command.defineTwoClassesBeforePlayers',
           };
         }
         if (hasPlayers && hadMulti && willMulti) {
@@ -875,7 +876,7 @@ export class CommandRunner {
           if (oldIds.size !== idSet.size || [...oldIds].some((id) => !idSet.has(id))) {
             return {
               success: false,
-              reason: 'Cannot add or remove a competition class while players exist.',
+              reason: 'command.cannotChangeClassesWhilePlayersExist',
             };
           }
         }
@@ -897,10 +898,10 @@ export class CommandRunner {
       case 'SetPlayerClassFlags': {
         const { playerId, flags } = command.payload;
         if (!tournament.players[playerId]) {
-          return { success: false, reason: 'Player not found' };
+          return commandFail('command.playerNotFound');
         }
         if (!flags || typeof flags !== 'object') {
-          return { success: false, reason: 'flags object required' };
+          return commandFail('command.flagsObjectRequired');
         }
         if (!tournament.playerClassFlags[playerId]) {
           tournament.playerClassFlags[playerId] = {};
@@ -917,11 +918,11 @@ export class CommandRunner {
         if (tournamentUsesClassTabs(tournament)) {
           return {
             success: false,
-            reason: 'Use SetClassGroups from each class tab when multiple competition classes are defined',
+            reason: 'command.useSetClassGroupsFromClassTab',
           };
         }
         if (Object.keys(tournament.teamMatches).length > 0) {
-          return { success: false, reason: 'Groups are not available alongside a team vs team match' };
+          return commandFail('command.groupsNotAvailableWithTeamMatch');
         }
         const payload = command.payload as SetGroupsPayload;
         const hasGroups = 'groups' in payload && payload.groups !== undefined;
@@ -930,7 +931,7 @@ export class CommandRunner {
         if ((hasGroups ? 1 : 0) + (hasSize ? 1 : 0) + (hasCount ? 1 : 0) > 1) {
           return {
             success: false,
-            reason: 'SetGroups: pass one of groups, targetGroupSize, or targetGroupCount with playerIds',
+            reason: 'command.setGroupsPassOneOf',
           };
         }
         let shuffleGroupMemberOrder = false;
@@ -941,7 +942,7 @@ export class CommandRunner {
           if (!Array.isArray(rawList)) {
             return {
               success: false,
-              reason: 'playerIds must be an array when using targetGroupSize or targetGroupCount',
+              reason: 'command.playerIdsMustBeArray',
             };
           }
           const ordered: string[] = [];
@@ -950,7 +951,7 @@ export class CommandRunner {
             const pid = String(x ?? '').trim();
             if (!pid || seenPid.has(pid)) continue;
             if (!tournament.players[pid]) {
-              return { success: false, reason: `Unknown player: ${pid}` };
+              return commandFail('command.unknownPlayer', { pid });
             }
             seenPid.add(pid);
             ordered.push(pid);
@@ -959,7 +960,7 @@ export class CommandRunner {
             const ts = Number((payload as { targetGroupSize: number }).targetGroupSize);
             const tInt = Math.floor(ts);
             if (!Number.isFinite(ts) || tInt < 1) {
-              return { success: false, reason: 'targetGroupSize must be a positive integer' };
+              return commandFail('command.targetGroupSizePositive');
             }
             const defs = buildNumberedGroupsFromPlayerOrder(ordered, tInt);
             groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
@@ -967,7 +968,7 @@ export class CommandRunner {
             const tc = Number((payload as { targetGroupCount: number }).targetGroupCount);
             const gInt = Math.floor(tc);
             if (!Number.isFinite(tc) || gInt < 1) {
-              return { success: false, reason: 'targetGroupCount must be a positive integer' };
+              return commandFail('command.targetGroupCountPositive');
             }
             const defs = buildNumberedGroupsFromPlayerOrderByGroupCount(ordered, gInt);
             groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
@@ -975,13 +976,13 @@ export class CommandRunner {
         } else if (hasGroups) {
           const arr = (payload as { groups: unknown }).groups;
           if (!Array.isArray(arr)) {
-            return { success: false, reason: 'groups must be an array' };
+            return commandFail('command.groupsMustBeArray');
           }
           groups = arr as Array<{ id: string; label?: string; playerIds: string[] }>;
         } else {
           return {
             success: false,
-            reason: 'SetGroups requires groups, targetGroupSize + playerIds, or targetGroupCount + playerIds',
+            reason: 'command.setGroupsRequiresOneOf',
           };
         }
         for (const mid of Object.keys(tournament.matches)) {
@@ -996,20 +997,20 @@ export class CommandRunner {
         for (const raw of groups) {
           const id = String(raw.id ?? '').trim();
           if (!id) {
-            return { success: false, reason: 'Each group needs an id' };
+            return commandFail('command.eachGroupNeedsId');
           }
           if (gidSeen.has(id)) {
-            return { success: false, reason: 'Duplicate group id' };
+            return commandFail('command.duplicateGroupId');
           }
           gidSeen.add(id);
           const label = String(raw.label ?? '').trim();
           const playerIds = Array.isArray(raw.playerIds) ? [...raw.playerIds] : [];
           for (const pid of playerIds) {
             if (!tournament.players[pid]) {
-              return { success: false, reason: `Unknown player in group ${id}: ${pid}` };
+              return commandFail('command.unknownPlayerInGroup', { id, pid });
             }
             if (pidSeen.has(pid)) {
-              return { success: false, reason: `Player ${pid} cannot appear in more than one group` };
+              return commandFail('command.playerInMultipleGroups', { pid });
             }
             pidSeen.add(pid);
           }
@@ -1027,19 +1028,19 @@ export class CommandRunner {
       }
       case 'SetClassGroups': {
         if (!tournamentUsesClassTabs(tournament)) {
-          return { success: false, reason: 'SetClassGroups is only used when multiple competition classes are defined' };
+          return commandFail('command.setClassGroupsOnlyWithMultipleClasses');
         }
         if (Object.keys(tournament.teamMatches).length > 0) {
-          return { success: false, reason: 'Groups are not available alongside a team vs team match' };
+          return commandFail('command.groupsNotAvailableWithTeamMatch');
         }
         const payload = command.payload as { classId: string } & SetClassGroupsPayload;
         const cid = String(payload.classId ?? '').trim();
         if (!cid || !tournament.classDefinitions.some((c) => c.id === cid)) {
-          return { success: false, reason: 'Unknown class id' };
+          return commandFail('command.unknownClassId');
         }
         const slice = tournament.classTournaments[cid];
         if (!slice) {
-          return { success: false, reason: 'Class slice not found' };
+          return commandFail('command.classSliceNotFound');
         }
         const eligible = new Set(slice.seedings);
         const hasGroups = 'groups' in payload && payload.groups !== undefined;
@@ -1048,7 +1049,7 @@ export class CommandRunner {
         if ((hasGroups ? 1 : 0) + (hasSize ? 1 : 0) + (hasCount ? 1 : 0) > 1) {
           return {
             success: false,
-            reason: 'SetClassGroups: pass one of groups, targetGroupSize, or targetGroupCount with playerIds',
+            reason: 'command.setClassGroupsPassOneOf',
           };
         }
         let shuffleGroupMemberOrder = false;
@@ -1059,7 +1060,7 @@ export class CommandRunner {
           if (!Array.isArray(rawList)) {
             return {
               success: false,
-              reason: 'playerIds must be an array when using targetGroupSize or targetGroupCount',
+              reason: 'command.playerIdsMustBeArray',
             };
           }
           const ordered: string[] = [];
@@ -1068,7 +1069,7 @@ export class CommandRunner {
             const pid = String(x ?? '').trim();
             if (!pid || seenPid.has(pid)) continue;
             if (!eligible.has(pid)) {
-              return { success: false, reason: `Player ${pid} is not in this class seeding list` };
+              return commandFail('command.playerNotInClassSeedingList', { pid });
             }
             seenPid.add(pid);
             ordered.push(pid);
@@ -1077,7 +1078,7 @@ export class CommandRunner {
             const ts = Number((payload as { targetGroupSize: number }).targetGroupSize);
             const tInt = Math.floor(ts);
             if (!Number.isFinite(ts) || tInt < 1) {
-              return { success: false, reason: 'targetGroupSize must be a positive integer' };
+              return commandFail('command.targetGroupSizePositive');
             }
             const defs = buildNumberedGroupsFromPlayerOrder(ordered, tInt);
             groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
@@ -1085,7 +1086,7 @@ export class CommandRunner {
             const tc = Number((payload as { targetGroupCount: number }).targetGroupCount);
             const gInt = Math.floor(tc);
             if (!Number.isFinite(tc) || gInt < 1) {
-              return { success: false, reason: 'targetGroupCount must be a positive integer' };
+              return commandFail('command.targetGroupCountPositive');
             }
             const defs = buildNumberedGroupsFromPlayerOrderByGroupCount(ordered, gInt);
             groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
@@ -1093,13 +1094,13 @@ export class CommandRunner {
         } else if (hasGroups) {
           const arr = (payload as { groups: unknown }).groups;
           if (!Array.isArray(arr)) {
-            return { success: false, reason: 'groups must be an array' };
+            return commandFail('command.groupsMustBeArray');
           }
           groups = arr as Array<{ id: string; label?: string; playerIds: string[] }>;
         } else {
           return {
             success: false,
-            reason: 'SetClassGroups requires groups, targetGroupSize + playerIds, or targetGroupCount + playerIds',
+            reason: 'command.setClassGroupsRequiresOneOf',
           };
         }
         for (const mid of Object.keys(tournament.matches)) {
@@ -1114,20 +1115,20 @@ export class CommandRunner {
         for (const raw of groups) {
           const id = String(raw.id ?? '').trim();
           if (!id) {
-            return { success: false, reason: 'Each group needs an id' };
+            return commandFail('command.eachGroupNeedsId');
           }
           if (gidSeen.has(id)) {
-            return { success: false, reason: 'Duplicate group id' };
+            return commandFail('command.duplicateGroupId');
           }
           gidSeen.add(id);
           const label = String(raw.label ?? '').trim();
           const playerIds = Array.isArray(raw.playerIds) ? [...raw.playerIds] : [];
           for (const pid of playerIds) {
             if (!eligible.has(pid)) {
-              return { success: false, reason: `Player ${pid} is not in this class seeding list` };
+              return commandFail('command.playerNotInClassSeedingList', { pid });
             }
             if (pidSeen.has(pid)) {
-              return { success: false, reason: `Player ${pid} cannot appear in more than one group` };
+              return commandFail('command.playerInMultipleGroups', { pid });
             }
             pidSeen.add(pid);
           }
@@ -1150,18 +1151,18 @@ export class CommandRunner {
           if (!cid || !tournament.classDefinitions.some((c) => c.id === cid)) {
             return {
               success: false,
-              reason: 'classId is required and must be valid to generate group matches for a class track',
+              reason: 'command.classIdRequiredForGroupMatches',
             };
           }
         } else if (cid) {
-          return { success: false, reason: 'classId must not be set when only one competition class is in use' };
+          return commandFail('command.classIdMustNotBeSetSingleClass');
         }
         if (Object.keys(tournament.teamMatches).length > 0) {
-          return { success: false, reason: 'Group round robin is not available alongside a team vs team match' };
+          return commandFail('command.groupRoundRobinNotWithTeamMatch');
         }
         const groupsRecord = cid ? tournament.classTournaments[cid]?.groups ?? {} : tournament.groups;
         if (Object.keys(groupsRecord).length === 0) {
-          return { success: false, reason: 'Define groups before generating round-robin matches' };
+          return commandFail('command.defineGroupsBeforeRoundRobin');
         }
         addGroupRoundRobinMatches(tournament, groupsRecord, cid);
         return { success: true };
@@ -1170,12 +1171,11 @@ export class CommandRunner {
         if (tournamentUsesClassTabs(tournament)) {
           return {
             success: false,
-            reason:
-              'Global bracket is disabled when multiple competition classes are defined; generate a bracket from each class tab instead.',
+            reason: 'command.globalBracketDisabledMultiClass',
           };
         }
         if (Object.keys(tournament.teamMatches).length > 0) {
-          return { success: false, reason: 'Cannot generate bracket while a team vs team match exists' };
+          return commandFail('command.cannotGenerateBracketWithTeamMatch');
         }
         const { cullToPowerOfTwo, shuffleKey, tieBreakSalt, cullByGroupPlacement, classId, bracketSeedingMode } =
           command.payload;
@@ -1191,17 +1191,17 @@ export class CommandRunner {
           });
           applyBracketToTournament(tournament, bm);
         } catch (e) {
-          return { success: false, reason: e instanceof Error ? e.message : String(e) };
+          return commandFailFromText(e instanceof Error ? e.message : String(e));
         }
         return { success: true };
       }
       case 'ClearBracket': {
         if (Object.keys(tournament.teamMatches).length > 0) {
-          return { success: false, reason: 'Cannot clear bracket while a team vs team match exists' };
+          return commandFail('command.cannotClearBracketWithTeamMatch');
         }
         const err = clearBracketFromTournament(tournament, command.payload.classId);
         if (err) {
-          return { success: false, reason: err };
+          return commandFail(err.key, err.params);
         }
         return { success: true };
       }
@@ -1209,21 +1209,20 @@ export class CommandRunner {
         if (tournamentUsesClassTabs(tournament)) {
           return {
             success: false,
-            reason:
-              'Global bracket actions are disabled when multiple competition classes are defined; use the class track controls instead.',
+            reason: 'command.globalBracketActionsDisabledMultiClass',
           };
         }
         if (Object.keys(tournament.teamMatches).length > 0) {
-          return { success: false, reason: 'Bracket elimination is not available alongside a team vs team match' };
+          return commandFail('command.bracketEliminationNotWithTeamMatch');
         }
         const { round, classId, tieBreakSalt } = command.payload;
         const r = Math.floor(Number(round));
         if (!Number.isFinite(r) || r < 1) {
-          return { success: false, reason: 'round must be a positive integer' };
+          return commandFail('command.roundMustBePositive');
         }
         const err = eliminateLowestRankedPlayersInBracketRound(tournament, r, classId, tieBreakSalt);
         if (err) {
-          return { success: false, reason: err };
+          return commandFail(err.key, err.params);
         }
         this.reconcileBracketAfterScore(tournament);
         return { success: true };
@@ -1231,7 +1230,7 @@ export class CommandRunner {
       case 'AssignTables': {
         const { tableIds, round } = command.payload;
         if (!tableIds?.length) {
-          return { success: false, reason: 'At least one table id is required' };
+          return commandFail('command.atLeastOneTableId');
         }
         scheduleRound(tournament, tableIds, round);
         return { success: true };
@@ -1239,7 +1238,7 @@ export class CommandRunner {
       case 'SetTournamentTables': {
         const { tableIds } = command.payload;
         if (!Array.isArray(tableIds)) {
-          return { success: false, reason: 'tableIds must be an array' };
+          return commandFail('command.tableIdsMustBeArray');
         }
         setTournamentTables(tournament, tableIds);
         return { success: true };
@@ -1247,25 +1246,25 @@ export class CommandRunner {
       case 'AssignMatchToTable': {
         const { matchId, tableId } = command.payload;
         if (!matchId?.trim() || !tableId?.trim()) {
-          return { success: false, reason: 'matchId and tableId are required' };
+          return commandFail('command.matchIdAndTableIdRequired');
         }
         try {
           assignMatchToTable(tournament, matchId, tableId);
         } catch (e) {
-          return { success: false, reason: e instanceof Error ? e.message : String(e) };
+          return commandFailFromText(e instanceof Error ? e.message : String(e));
         }
         return { success: true };
       }
       case 'ClearMatchTableAssignment': {
         const { matchId } = command.payload;
         if (!matchId?.trim()) {
-          return { success: false, reason: 'matchId is required' };
+          return commandFail('command.matchIdRequired');
         }
         if (!tournament.matches[matchId]) {
-          return { success: false, reason: 'Match not found' };
+          return commandFail('command.matchNotFound');
         }
         if (!tournament.tableAssignments.some((a) => a.matchId === matchId)) {
-          return { success: false, reason: 'Match is not assigned to a table' };
+          return commandFail('command.matchNotAssignedToTable');
         }
         clearMatchTableAssignment(tournament, matchId);
         return { success: true };
@@ -1274,7 +1273,7 @@ export class CommandRunner {
         try {
           advanceBracketRound(tournament);
         } catch (e) {
-          return { success: false, reason: e instanceof Error ? e.message : String(e) };
+          return commandFailFromText(e instanceof Error ? e.message : String(e));
         }
         return { success: true };
       }
@@ -1282,10 +1281,10 @@ export class CommandRunner {
         const { playerId, name, handicap } = command.payload;
         const p = tournament.players[playerId];
         if (!p) {
-          return { success: false, reason: 'Player not found' };
+          return commandFail('command.playerNotFound');
         }
         if (isPlayerDisplayNameTaken(tournament, name, playerId)) {
-          return { success: false, reason: 'A player with this name already exists' };
+          return commandFail('command.playerNameAlreadyExists');
         }
         p.name = name;
         if (handicap !== undefined) {
@@ -1293,7 +1292,7 @@ export class CommandRunner {
             ? validatePlayerHandicapForTournament(tournament, handicap)
             : undefined;
           if (hcErr) {
-            return { success: false, reason: hcErr };
+            return commandFail(hcErr.key, hcErr.params);
           }
           p.handicap = tournament.handicapConfig
             ? clampPlayerHandicapValue(tournament.handicapConfig, handicap)
@@ -1302,7 +1301,7 @@ export class CommandRunner {
         return { success: true };
       }
       default:
-        return { success: false, reason: 'Unknown command type' };
+        return commandFail('command.unknownCommandType');
     }
   }
 

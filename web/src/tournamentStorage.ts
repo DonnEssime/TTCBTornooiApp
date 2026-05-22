@@ -1,10 +1,14 @@
 /** Browser-local tournament files (OPFS) for auto-save, recent list, and import. */
 
+import { APP_VERSION, TOURNAMENT_STORAGE_FORMAT_VERSION } from 'ttc-tornooiapp';
+
 export interface TournamentMeta {
   fileId: string;
   tournamentName: string;
   /** ISO-8601 timestamp of last write. */
   lastModified: string;
+  formatVersion: number;
+  appVersion: string;
 }
 
 const TOURNAMENTS_DIR = 'tournaments';
@@ -54,6 +58,8 @@ export async function saveTournament(
     fileId,
     tournamentName,
     lastModified: new Date().toISOString(),
+    formatVersion: TOURNAMENT_STORAGE_FORMAT_VERSION,
+    appVersion: APP_VERSION,
   };
   await writeTextFile(dir, logFileName(fileId), jsonl);
   await writeTextFile(dir, metaFileName(fileId), JSON.stringify(meta));
@@ -76,7 +82,13 @@ export async function listRecentTournaments(limit = MAX_RECENT): Promise<Tournam
       const file = await handle.getFile();
       const parsed = JSON.parse(await file.text()) as TournamentMeta;
       if (parsed?.fileId && parsed.tournamentName && parsed.lastModified) {
-        metas.push(parsed);
+        metas.push({
+          fileId: parsed.fileId,
+          tournamentName: parsed.tournamentName,
+          lastModified: parsed.lastModified,
+          formatVersion: parsed.formatVersion ?? 1,
+          appVersion: parsed.appVersion ?? '',
+        });
       }
     } catch {
       // skip corrupt meta files

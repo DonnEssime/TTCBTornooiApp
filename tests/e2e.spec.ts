@@ -70,7 +70,7 @@ describe('End-to-end tournament flow', () => {
     expect(controller.createTeamMatch('tm1', 't1', 't2', ['c-t1', 'c-t2'], 'c-tm1')).toEqual({ success: true });
     expect(controller.createTeamMatch('tm2', 't1', 't2', ['c-t1', 'c-t2'], 'c-tm2')).toEqual({
       success: false,
-      reason: 'Only one team vs team match is allowed per tournament',
+      reason: 'command.onlyOneTeamVsTeamMatch',
     });
 
     expect(
@@ -90,13 +90,13 @@ describe('End-to-end tournament flow', () => {
     expect(controller.setSeedings(['p1', 'p2'], [], 'cmd-seed2')).toEqual({ success: true });
     expect(controller.generateBracket(true, false, ['cmd-seed2'], 'cmd-gen2')).toEqual({
       success: false,
-      reason: 'Cannot generate bracket while a team vs team match exists',
+      reason: 'command.cannotGenerateBracketWithTeamMatch',
     });
     expect(controller.getTournament().bracketMatches.length).toBe(0);
 
     expect(controller.createMatch('m1', 'p1', 'p2', ['c-p1', 'c-p2'], 'c-m1')).toEqual({
       success: false,
-      reason: 'Player matches are not allowed in a team vs team fixture',
+      reason: 'command.playerMatchesNotAllowedInTeamFixture',
     });
   });
 });

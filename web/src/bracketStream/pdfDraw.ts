@@ -37,7 +37,14 @@ function drawSlotLine(
   }
 }
 
-function drawMatchBox(doc: jsPDF, box: BracketPdfBox, ox: number, oy: number, scale: number): void {
+function drawMatchBox(
+  doc: jsPDF,
+  box: BracketPdfBox,
+  ox: number,
+  oy: number,
+  scale: number,
+  vsLabel: string,
+): void {
   if (box.hidden) return;
   const x = ox + box.x * scale;
   const y = oy + box.y * scale;
@@ -71,7 +78,7 @@ function drawMatchBox(doc: jsPDF, box: BracketPdfBox, ox: number, oy: number, sc
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(Math.max(5, 6 * scale));
   doc.setTextColor(MUTED.r, MUTED.g, MUTED.b);
-  doc.text('vs', x + w / 2, lineVs, { align: 'center', baseline: 'middle' });
+  doc.text(vsLabel, x + w / 2, lineVs, { align: 'center', baseline: 'middle' });
   drawSlotLine(
     doc,
     x + PAD,
@@ -102,6 +109,7 @@ export function drawBracketStreamOnPdf(
   originX: number,
   originY: number,
   scale: number,
+  vsLabel = 'vs',
 ): number {
   doc.setFillColor(BG.r, BG.g, BG.b);
   doc.setDrawColor(226, 232, 240);
@@ -112,7 +120,7 @@ export function drawBracketStreamOnPdf(
 
   drawLines(doc, layout.lines, originX, originY, scale);
   for (const box of layout.boxes) {
-    drawMatchBox(doc, box, originX, originY, scale);
+    drawMatchBox(doc, box, originX, originY, scale, vsLabel);
   }
   return originY + layout.height * scale + 3;
 }

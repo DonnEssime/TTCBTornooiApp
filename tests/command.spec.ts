@@ -42,7 +42,7 @@ describe('Player display name uniqueness', () => {
       timestamp: iso(),
     });
     expect(r.success).toBe(false);
-    expect(r.reason).toMatch(/already exists/i);
+    expect(r.reason).toBe('command.playerNameAlreadyExists');
     expect(runner.getTournament().players['p2']).toBeUndefined();
   });
 
@@ -70,7 +70,7 @@ describe('Player display name uniqueness', () => {
       timestamp: iso(),
     });
     expect(r.success).toBe(false);
-    expect(r.reason).toMatch(/already exists/i);
+    expect(r.reason).toBe('command.playerNameAlreadyExists');
     expect(runner.getTournament().players['p2']?.name).toBe('Bob');
   });
 
@@ -377,7 +377,7 @@ describe('CommandRunner dependency-aware undo', () => {
       timestamp: '2026-01-01T00:00:03.000Z',
     });
     expect(r.success).toBe(false);
-    expect(r.reason).toMatch(/Global bracket|multiple competition classes/i);
+    expect(r.reason).toBe('command.globalBracketDisabledMultiClass');
   });
 
   it('SetTournamentClasses assigns ids when only display names are given', () => {
@@ -429,7 +429,7 @@ describe('CommandRunner dependency-aware undo', () => {
       timestamp: '2026-01-01T00:00:02.000Z',
     });
     expect(rBlock.success).toBe(false);
-    expect(rBlock.reason).toMatch(/SetClassGroups|multiple competition classes/i);
+    expect(rBlock.reason).toBe('command.useSetClassGroupsFromClassTab');
 
     const runner2 = new CommandRunner();
     runner2.execute({
@@ -588,7 +588,7 @@ describe('CommandRunner dependency-aware undo', () => {
     expect(partitionPlayerCountIntoGroupSizes(4, 3)).toEqual([4]);
     expect(partitionPlayerCountIntoGroupSizes(4, 10)).toEqual([4]);
     expect(buildNumberedGroupsFromPlayerOrder(['a', 'b', 'c', 'd'], 3)).toEqual([
-      { id: '1', label: 'Group 1', playerIds: ['a', 'b', 'c', 'd'] },
+      { id: '1', playerIds: ['a', 'b', 'c', 'd'] },
     ]);
   });
 
@@ -604,8 +604,8 @@ describe('CommandRunner dependency-aware undo', () => {
   it('partitions players across a fixed group count', () => {
     expect(partitionPlayerCountIntoGroupCount(10, 4)).toEqual([3, 3, 2, 2]);
     expect(buildNumberedGroupsFromPlayerOrderByGroupCount(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'], 2)).toEqual([
-      { id: '1', label: 'Group 1', playerIds: ['a', 'b', 'c', 'd'] },
-      { id: '2', label: 'Group 2', playerIds: ['e', 'f', 'g', 'h'] },
+      { id: '1', playerIds: ['a', 'b', 'c', 'd'] },
+      { id: '2', playerIds: ['e', 'f', 'g', 'h'] },
     ]);
   });
 
@@ -676,7 +676,7 @@ describe('EnterScore', () => {
       timestamp: ts,
     });
     expect(bad.success).toBe(false);
-    expect(bad.reason ?? '').toContain('Invalid scores');
+    expect(bad.reason).toBe('command.invalidScores');
     const partial = runner.execute({
       id: 'partial',
       type: 'EnterScore',
@@ -691,7 +691,7 @@ describe('EnterScore', () => {
       timestamp: ts,
     });
     expect(partial.success).toBe(false);
-    expect(partial.reason ?? '').toContain('Invalid scores');
+    expect(partial.reason).toBe('command.invalidScores');
     expect(runner.getTournament().matches.m1.status).toBe('scheduled');
   });
 
@@ -800,7 +800,7 @@ describe('EnterScore', () => {
       timestamp: ts,
     });
     expect(rescore.success).toBe(false);
-    expect(rescore.reason ?? '').toMatch(/group result cannot be changed/i);
+    expect(rescore.reason).toBe('command.groupResultCannotChange');
 
     const rescoreG2 = runner.execute({
       id: 'e2b',
@@ -818,7 +818,7 @@ describe('EnterScore', () => {
       timestamp: ts,
     });
     expect(rescoreG2.success).toBe(false);
-    expect(rescoreG2.reason ?? '').toMatch(/group result cannot be changed/i);
+    expect(rescoreG2.reason).toBe('command.groupResultCannotChange');
 
     const clear = runner.execute({
       id: 'clr',
@@ -828,7 +828,7 @@ describe('EnterScore', () => {
       timestamp: ts,
     });
     expect(clear.success).toBe(false);
-    expect(clear.reason ?? '').toMatch(/group result cannot be cleared/i);
+    expect(clear.reason).toBe('command.groupResultCannotClear');
   });
 });
 
@@ -852,7 +852,10 @@ describe('ClearBracket', () => {
 
   it('fails when no bracket exists', () => {
     const c = new TournamentController();
-    expect(c.clearBracket([], 'cmd-clear')).toEqual({ success: false, reason: 'No knockout bracket to remove.' });
+    expect(c.clearBracket([], 'cmd-clear')).toEqual({
+      success: false,
+      reason: 'model.noKnockoutBracketToRemove',
+    });
   });
 });
 

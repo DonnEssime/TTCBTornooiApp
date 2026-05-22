@@ -1436,7 +1436,9 @@ describe('bracketRoundHasOpenEliminationPairings', () => {
       bm.winner = bm.seedA!;
     }
     expect(bracketRoundHasOpenEliminationPairings(t, t.bracketMatches, 1)).toBe(false);
-    expect(eliminateLowestRankedPlayersInBracketRound(t, 1, undefined, 'salt')).toMatch(/No open pairings/);
+    expect(eliminateLowestRankedPlayersInBracketRound(t, 1, undefined, 'salt')).toEqual({
+      key: 'model.noOpenPairingsForElimination',
+    });
   });
 
   it('is true while at least one open two-player slot lacks a played outcome', () => {

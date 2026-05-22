@@ -3,6 +3,8 @@
   import { bracketMatchRound } from 'ttc-tornooiapp';
   import BracketSlotRow from './BracketSlotRow.svelte';
   import BracketSubtree from './BracketSubtree.svelte';
+  import Msg from './i18n/Msg.svelte';
+  import { msgText } from './i18n/msg';
   import { bracketTreeFromColumns } from './bracketStream/buildTree';
   import { bracketMatchHiddenInStream } from './bracketStream/byeMatch';
 
@@ -13,8 +15,8 @@
     mainDrawSlotCount = undefined,
     bracketClassId = undefined,
     onPairingClick = undefined,
-    ariaLabel = 'Knockout bracket',
-    emptyMessage = 'Add players on the Players tab to preview the tree.',
+    ariaLabel = undefined,
+    emptyMessage = undefined,
   }: {
     cols: BracketMatch[][];
     tournament: Tournament;
@@ -95,9 +97,9 @@
   const joinRightPath = $derived(`M 0 ${finalBotPct} L 18 ${rightJoinPct}`);
 </script>
 
-<div class="bracket-stream" role="img" aria-label={ariaLabel}>
+<div class="bracket-stream" role="img" aria-label={ariaLabel ?? msgText('ui.bracket.aria')}>
   {#if !root}
-    <p class="muted small">{emptyMessage}</p>
+    <p class="muted small">{emptyMessage ?? msgText('ui.bracket.emptyPreview')}</p>
   {:else if !root.left || !root.right}
     <div class="stream-single">
       {#if onPairingClick}
@@ -116,7 +118,7 @@
             label={slot(root.match, 'a')}
             playerId={slotPlayerId(root.match, 'a')}
           />
-          <div class="bracket-vs muted">vs</div>
+          <div class="bracket-vs muted"><Msg key="ui.pdf.vs" /></div>
           <BracketSlotRow
             {tournament}
             {bracketClassId}
@@ -140,7 +142,7 @@
             label={slot(root.match, 'a')}
             playerId={slotPlayerId(root.match, 'a')}
           />
-          <div class="bracket-vs muted">vs</div>
+          <div class="bracket-vs muted"><Msg key="ui.pdf.vs" /></div>
           <BracketSlotRow
             {tournament}
             {bracketClassId}
@@ -177,7 +179,7 @@
                     label={slot(bm, 'a')}
                     playerId={slotPlayerId(bm, 'a')}
                   />
-                  <div class="bracket-vs muted">vs</div>
+                  <div class="bracket-vs muted"><Msg key="ui.pdf.vs" /></div>
                   <BracketSlotRow
                     {tournament}
                     {bracketClassId}
@@ -201,7 +203,7 @@
                     label={slot(bm, 'a')}
                     playerId={slotPlayerId(bm, 'a')}
                   />
-                  <div class="bracket-vs muted">vs</div>
+                  <div class="bracket-vs muted"><Msg key="ui.pdf.vs" /></div>
                   <BracketSlotRow
                     {tournament}
                     {bracketClassId}
@@ -249,7 +251,7 @@
               label={slot(root.match, 'a')}
               playerId={slotPlayerId(root.match, 'a')}
             />
-            <div class="bracket-vs muted">vs</div>
+            <div class="bracket-vs muted"><Msg key="ui.pdf.vs" /></div>
             <BracketSlotRow
               {tournament}
               {bracketClassId}
@@ -274,7 +276,7 @@
               label={slot(root.match, 'a')}
               playerId={slotPlayerId(root.match, 'a')}
             />
-            <div class="bracket-vs muted">vs</div>
+            <div class="bracket-vs muted"><Msg key="ui.pdf.vs" /></div>
             <BracketSlotRow
               {tournament}
               {bracketClassId}

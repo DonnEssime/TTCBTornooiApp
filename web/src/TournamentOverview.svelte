@@ -11,6 +11,9 @@
     matchPlayersResolvedForBracketPhaseList,
   } from 'ttc-tornooiapp';
   import PlayerName from './PlayerName.svelte';
+  import Msg from './i18n/Msg.svelte';
+  import { msgText } from './i18n/msg';
+  import { getLocale } from './i18n/locale.svelte';
 
   let {
     tournament,
@@ -176,9 +179,14 @@
   }
 
   function progressBarAria(done: number, total: number): string {
-    if (total <= 0) return 'No matches';
+    void getLocale();
+    if (total <= 0) return msgText('ui.ov.noMatches');
     const p = pct(done, total);
-    return `${done} of ${total} matches completed, ${p} percent`;
+    return msgText('ui.ov.progressCompleted', {
+      done: String(done),
+      total: String(total),
+      pct: String(p),
+    });
   }
 
   /** Stable key for (competition class × group) when staggering ready group matches. */
@@ -308,11 +316,12 @@
   };
 
   const tracks = $derived.by((): TrackSlice[] => {
+    void getLocale();
     if (!useClassTabs) {
       return [
         {
           key: 'main',
-          title: 'Main draw',
+          title: msgText('ui.ov.mainDraw'),
           classId: undefined,
           groups: tournament.groups,
           bracketMatches: tournament.bracketMatches,
@@ -369,14 +378,15 @@
   }
 
   const readyBracketsAll = $derived.by(() => {
+    void getLocale();
     const list: Array<{ bm: BracketMatch; meta: string; classId: string | undefined }> = [];
     for (const tr of tracks) {
       for (const bm of readyBracketMatches(tournament, tr.bracketMatches, tr.classId)) {
         const r = bracketMatchRound(bm);
         const meta =
           tr.classId !== undefined
-            ? `${tr.title} · Bracket round ${r}`
-            : `Bracket round ${r}`;
+            ? msgText('ui.ov.readyBracketMetaClass', { track: tr.title, round: String(r) })
+            : msgText('ui.ov.bracketRound', { round: String(r) });
         list.push({ bm, meta, classId: tr.classId });
       }
     }
@@ -396,14 +406,14 @@
 <div class="ov">
   <div class="ov-main">
     <section class="ov-card ov-tables-card">
-      <h3 class="ov-h">Tables</h3>
+      <h3 class="ov-h"><Msg key="ui.tables" /></h3>
       {#if tournament.tables.length > 0}
-        <p class="muted small ov-dnd-hint">Drag matches from Ready to play onto a table; drag back to unassign.</p>
+        <p class="muted small ov-dnd-hint"><Msg key="ui.ov.dndHint" tag="p" class="muted small ov-dnd-hint" /></p>
       {/if}
       {#if tournament.tables.length === 0}
-        <p class="muted small">No tables configured yet. Use #Tables in the sidebar to add tables.</p>
+        <p class="muted small"><Msg key="ui.ov.noTablesHint" tag="p" class="muted small" /></p>
       {:else}
-        <div class="ov-table-grid" role="list" aria-label="Tournament tables">
+        <div class="ov-table-grid" role="list" aria-label={msgText('ui.tournament_tables')}>
           {#each tournament.tables as tableId (tableId)}
             {@const tm = matchOnTable(tableId)}
             <div
@@ -415,7 +425,7 @@
               ondragleave={(e) => handleTableDragLeave(tableId, e)}
               ondrop={(e) => handleTableDrop(e, tableId)}
             >
-              <div class="ov-table-num">Table {tableId}</div>
+              <div class="ov-table-num"><Msg key="ui.ov.tableLabel" params={{ id: tableId }} /></div>
               {#if tm}
                 <div
                   class="ov-table-match-drag ov-table-match-btn"
@@ -423,7 +433,7 @@
                   class:ov-dragging={draggingMatchId === tm.id}
                   role="button"
                   tabindex="0"
-                  aria-label={`Match on table ${tableId}, drag to move or unassign`}
+                  aria-label={msgText('ui.ov.matchOnTableAria', { table: tableId })}
                   ondragstart={(e) => handleDragStart(e, tm.id, 'table')}
                   ondragend={handleDragEnd}
                   onclick={() => onOpenTableMatch(tm)}
@@ -435,13 +445,14 @@
                   }}
                 >
                   <span class="ov-table-match-pair">
-                    <PlayerName {tournament} playerId={tm.playerA} tag="strong" /> vs
+                    <PlayerName {tournament} playerId={tm.playerA} tag="strong" />
+                    <Msg key="ui.ov.vs" tag="span" />
                     <PlayerName {tournament} playerId={tm.playerB} tag="strong" />
                   </span>
-                  <span class="muted small">In progress</span>
+                  <span class="muted small"><Msg key="ui.in_progress" /></span>
                 </div>
               {:else}
-                <p class="ov-table-free muted small">Free</p>
+                <p class="ov-table-free muted small"><Msg key="ui.free" /></p>
               {/if}
             </div>
           {/each}
@@ -456,12 +467,12 @@
       ondragleave={handleReadyDragLeave}
       ondrop={handleReadyDrop}
     >
-      <h3 class="ov-h">Ready to play</h3>
+      <h3 class="ov-h"><Msg key="ui.ready_to_play" /></h3>
       {#if readyGroupsAll.length === 0 && readyBracketsAll.length === 0}
-        <p class="muted small">Nothing to highlight: no group matches waiting and no knockout slots ready to play.</p>
+        <p class="muted small"><Msg key="ui.ov.nothingToHighlight" tag="p" class="muted small" /></p>
       {:else}
         {#if readyGroupsAll.length > 0}
-          <h4 class="ov-h4">Group</h4>
+          <h4 class="ov-h4"><Msg key="ui.group" /></h4>
           <ul class="ov-ready-list">
             {#each readyGroupsAll as m (m.id)}
               <li
@@ -473,7 +484,9 @@
               >
                 <button type="button" class="ov-ready-btn" onclick={() => onOpenGroupMatch(m)}>
                   <span class="ov-ready-pair"
-                    ><PlayerName {tournament} playerId={m.playerA} tag="strong" /> vs <PlayerName
+                    ><PlayerName {tournament} playerId={m.playerA} tag="strong" />
+                    <Msg key="ui.ov.vs" tag="span" />
+                    <PlayerName
                       {tournament}
                       playerId={m.playerB}
                       tag="strong"
@@ -486,7 +499,7 @@
           </ul>
         {/if}
         {#if readyBracketsAll.length > 0}
-          <h4 class="ov-h4">Knockout</h4>
+          <h4 class="ov-h4"><Msg key="ui.knockout" /></h4>
           <ul class="ov-ready-list">
             {#each readyBracketsAll as item (item.bm.id)}
               {@const bracketMid = readyBracketPlayableMatchId(tournament, item.bm, item.classId)}
@@ -502,7 +515,9 @@
               >
                 <button type="button" class="ov-ready-btn" onclick={() => onOpenBracketSlot(item.bm)}>
                   <span class="ov-ready-pair"
-                    ><PlayerName {tournament} playerId={item.bm.seedA!} tag="strong" /> vs <PlayerName
+                    ><PlayerName {tournament} playerId={item.bm.seedA!} tag="strong" />
+                    <Msg key="ui.ov.vs" tag="span" />
+                    <PlayerName
                       {tournament}
                       playerId={item.bm.seedB!}
                       tag="strong"
@@ -522,19 +537,19 @@
     <section class="ov-card ov-sidebar-card ov-players-tables-card">
       <div class="ov-players-tables-split">
         <div class="ov-split-metric">
-          <h3 class="ov-h">Players</h3>
+          <h3 class="ov-h"><Msg key="ui.players" /></h3>
           <p class="ov-count">{Object.keys(tournament.players).length}</p>
-          <p class="ov-count-caption muted small">in this tournament</p>
+          <p class="ov-count-caption muted small"><Msg key="ui.in_this_tournament" /></p>
         </div>
         <div class="ov-split-metric ov-split-tables">
-          <h3 class="ov-h">#Tables</h3>
-          <div class="ov-table-stepper" role="group" aria-label="Number of tables">
+          <h3 class="ov-h"><Msg key="ui.settings.tablesLabel" /></h3>
+          <div class="ov-table-stepper" role="group" aria-label={msgText('ui.number_of_tables')}>
             <p class="ov-count" aria-live="polite">{tableCount}</p>
             <div class="ov-stepper-btns">
               <button
                 type="button"
                 class="ov-stepper-btn"
-                aria-label="Increase number of tables"
+                aria-label={msgText('ui.increase_number_of_tables')}
                 disabled={tableCount >= 32}
                 onclick={() => onIncrementTables()}
               >
@@ -543,7 +558,7 @@
               <button
                 type="button"
                 class="ov-stepper-btn"
-                aria-label="Decrease number of tables"
+                aria-label={msgText('ui.decrease_number_of_tables')}
                 disabled={tableCount <= 1}
                 onclick={() => onDecrementTables()}
               >
@@ -556,17 +571,23 @@
     </section>
 
     <section class="ov-card ov-sidebar-card">
-      <h3 class="ov-h">Group phase</h3>
+      <h3 class="ov-h"><Msg key="ui.group_phase" /></h3>
       {#if aggregateGroupPhase.total === 0}
-        <p class="muted small">No group matches yet (create groups on the Group phase tab).</p>
+        <p class="muted small"><Msg key="ui.no_group_matches_yet_create_groups_on_the_group_" /></p>
       {:else}
         <div class="ov-metric">
           <div class="ov-metric-top">
-            <span class="ov-metric-label">Overall</span>
+            <span class="ov-metric-label"><Msg key="ui.overall" /></span>
             <span class="ov-progress-meta" title={progressBarAria(aggregateGroupPhase.done, aggregateGroupPhase.total)}>
-              <span class="ov-match-ratio"
-                >{aggregateGroupPhase.done} / {aggregateGroupPhase.total} matches</span
-              >
+              <span class="ov-match-ratio">
+                <Msg
+                  key="ui.ov.matchesRatio"
+                  params={{
+                    done: String(aggregateGroupPhase.done),
+                    total: String(aggregateGroupPhase.total),
+                  }}
+                />
+              </span>
               <span class="ov-progress-spacer" aria-hidden="true"></span>
               <span class="ov-pct">{pct(aggregateGroupPhase.done, aggregateGroupPhase.total)}%</span>
             </span>
@@ -592,7 +613,9 @@
                   <div class="ov-metric-top">
                     <span class="ov-metric-label" title={`${tr.title} · ${groupDisplayLabel(g)}`}>{tr.title} · {groupDisplayLabel(g)}</span>
                     <span class="ov-progress-meta" title={progressBarAria(c.done, c.total)}>
-                      <span class="ov-match-ratio">{c.done} / {c.total} matches</span>
+                      <span class="ov-match-ratio">
+                        <Msg key="ui.ov.matchesRatio" params={{ done: String(c.done), total: String(c.total) }} />
+                      </span>
                       <span class="ov-progress-spacer" aria-hidden="true"></span>
                       <span class="ov-pct">{pct(c.done, c.total)}%</span>
                     </span>
@@ -616,17 +639,23 @@
     </section>
 
     <section class="ov-card ov-sidebar-card">
-      <h3 class="ov-h">Bracket phase</h3>
+      <h3 class="ov-h"><Msg key="ui.bracket_phase" /></h3>
       {#if aggregateBracketPhase.total === 0}
-        <p class="muted small">No knockout bracket yet (create it on the Bracket tab).</p>
+        <p class="muted small"><Msg key="ui.no_knockout_bracket_yet_create_it_on_the_bracket" /></p>
       {:else}
         <div class="ov-metric">
           <div class="ov-metric-top">
-            <span class="ov-metric-label">Overall</span>
+            <span class="ov-metric-label"><Msg key="ui.overall" /></span>
             <span class="ov-progress-meta" title={progressBarAria(aggregateBracketPhase.done, aggregateBracketPhase.total)}>
-              <span class="ov-match-ratio"
-                >{aggregateBracketPhase.done} / {aggregateBracketPhase.total} matches</span
-              >
+              <span class="ov-match-ratio">
+                <Msg
+                  key="ui.ov.matchesRatio"
+                  params={{
+                    done: String(aggregateBracketPhase.done),
+                    total: String(aggregateBracketPhase.total),
+                  }}
+                />
+              </span>
               <span class="ov-progress-spacer" aria-hidden="true"></span>
               <span class="ov-pct">{pct(aggregateBracketPhase.done, aggregateBracketPhase.total)}%</span>
             </span>
@@ -650,7 +679,9 @@
                   <div class="ov-metric-top">
                     <span class="ov-metric-label">{tr.title} · Round {row.round}</span>
                     <span class="ov-progress-meta" title={progressBarAria(row.done, row.total)}>
-                      <span class="ov-match-ratio">{row.done} / {row.total} matches</span>
+                      <span class="ov-match-ratio">
+                        <Msg key="ui.ov.matchesRatio" params={{ done: String(row.done), total: String(row.total) }} />
+                      </span>
                       <span class="ov-progress-spacer" aria-hidden="true"></span>
                       <span class="ov-pct">{pct(row.done, row.total)}%</span>
                     </span>

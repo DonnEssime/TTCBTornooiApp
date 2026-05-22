@@ -1,6 +1,6 @@
 {
   "name": "ttc-tornooiapp",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
   "main": "dist/index.js",
   "directories": {
@@ -13,6 +13,7 @@
     "build": "tsup src/index.ts --format esm,cjs --dts",
     "test": "vitest",
     "test:watch": "vitest --watch",
+    "check:i18n": "vitest run tests/i18n-coverage.spec.ts",
     "lint": "echo 'no lint configured yet'",
     "dev:web": "npm run dev -w web",
     "build:web": "npm run build -w web"

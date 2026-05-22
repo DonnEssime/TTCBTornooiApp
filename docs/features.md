@@ -6,8 +6,8 @@ Central list of larger product items not yet fully delivered. Smaller fixes and 
 
 ### Language support
 
-- UI and exports are English-only today; no i18n or locale switching.
-- Goal: support at least Dutch and English (copy, labels, PDFs, messages) without duplicating domain logic.
+- **Partial:** EN/NL locale switcher, shared catalog in `src/i18n/`, command `reason` keys, most web UI behind `<Msg>` / `msgText`. Dutch strings are empty until translated (English shown in red).
+- Remaining: fill `nl` entries, any stray literals, optional CI `check:i18n` step.
 
 ### Multiple competition classes tournaments
 

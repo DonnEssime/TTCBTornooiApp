@@ -33,6 +33,16 @@ This document is a minimal intent + workflow guide for a small maintenance agent
 - Sport-specific validation (TT-first) but abstraction-friendly.
 - Pluggable scheduling and match-ordering algorithms.
 
+## Language / i18n
+
+- All user-visible strings live in `src/i18n/catalog*.ts` with **English** in `en` and **Dutch** in `nl`.
+- New UI copy: add a catalog key with `en` filled; `nl` may stay empty until translated.
+- In Svelte markup use `<Msg key="ui...." />` from `web/src/i18n/Msg.svelte`.
+- In script, attributes, PDF, and command toasts use `msgText()` / `showInfoKey()` / `showErrorKey()` from `web/src/i18n/msg.ts`.
+- Command failures use `MessageKey` in `reason` (see `src/i18n/command-result.ts`), not raw English.
+- Empty `nl` shows English with **red** text (`.i18n-fallback`) until translated.
+- Run `npm run check:i18n` for warn-only missing-Dutch report (does not fail CI).
+
 ## Quality guidance
 
 - Avoid large diff refactors in the same commit as feature work.

@@ -29,7 +29,11 @@ describe('Handicap configuration', () => {
         payload: { playerId: 'p1', name: 'Ann', handicap: 1 },
         timestamp: ts,
       }),
-    ).toEqual({ success: false, reason: 'Handicap must be an integer from 2 to 5' });
+    ).toMatchObject({
+      success: false,
+      reason: 'model.handicapMustBeIntegerInRange',
+      reasonParams: { min: '2', max: '5' },
+    });
 
     expect(
       runner.execute({
@@ -61,7 +65,7 @@ describe('Handicap configuration', () => {
       timestamp: '2024-01-01T00:00:00.000Z',
     });
     expect(r.success).toBe(false);
-    expect(r.reason).toMatch(/Classification/);
+    expect(r.reason).toBe('model.classificationHandicapsNotImplemented');
   });
 
   it('randomPlayerHandicapValue stays within configured bounds', () => {

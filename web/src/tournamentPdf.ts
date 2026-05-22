@@ -1,6 +1,14 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import type { BracketMatch, BracketPlacementRow, GroupDefinition, Match, Tournament } from 'ttc-tornooiapp';
+import type {
+  BracketMatch,
+  BracketPlacementRow,
+  GroupDefinition,
+  Locale,
+  Match,
+  Tournament,
+} from 'ttc-tornooiapp';
+import { txt } from 'ttc-tornooiapp';
 import {
   formatBracketSlotPlayerLabel,
   gameWinner,
@@ -111,12 +119,13 @@ function bracketSlotLabel(
   m: BracketMatch,
   side: 'a' | 'b',
   t: Tournament,
+  locale: Locale,
   classId?: string,
 ): string {
   const id = side === 'a' ? m.seedA : m.seedB;
-  if (id) return formatBracketSlotPlayerLabel(t, id, classId);
+  if (id) return formatBracketSlotPlayerLabel(t, id, classId, locale);
   if (m.id.startsWith('__ph-')) return '—';
-  return '--empty--';
+  return txt('ui.slot.empty', locale);
 }
 
 type PdfTrack = {
@@ -172,11 +181,17 @@ function addGroupMatrix(
   y: number,
   t: Tournament,
   g: GroupDefinition,
+  locale: Locale,
   classId?: string,
 ): number {
   const pids = [...g.playerIds];
   const wl = groupStandingsWl(t, g, classId);
-  const head = ['Player', ...pids.map((pid) => playerName(t, pid)), 'W', 'L'];
+  const head = [
+    txt('ui.pdf.playerColumn', locale),
+    ...pids.map((pid) => playerName(t, pid)),
+    txt('ui.standings.win', locale),
+    txt('ui.standings.loss', locale),
+  ];
   const body = pids.map((rowPid) => [
     playerName(t, rowPid),
     ...pids.map((colPid) => matrixCellDigit(t, g, classId, rowPid, colPid)),
@@ -187,7 +202,7 @@ function addGroupMatrix(
   y = nextY(doc, y, 24);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
-  doc.text(groupNumberedTitle(g), PAGE_MARGIN, y);
+  doc.text(groupNumberedTitle(g, locale), PAGE_MARGIN, y);
   y += 6;
 
   autoTable(doc, {
@@ -207,10 +222,11 @@ function addBracketStreamView(
   y: number,
   t: Tournament,
   matches: BracketMatch[],
+  locale: Locale,
   classId?: string,
 ): void {
   const prepared = prepareBracketMatchesForPdf(t, matches);
-  const slotLabel = (m: BracketMatch, side: 'a' | 'b') => bracketSlotLabel(m, side, t, classId);
+  const slotLabel = (m: BracketMatch, side: 'a' | 'b') => bracketSlotLabel(m, side, t, locale, classId);
   const layout = bracketStreamPdfLayout(t, prepared, slotLabel);
   if (!layout) return;
 
@@ -221,7 +237,7 @@ function addBracketStreamView(
   const scaledH = layout.height * scale;
   const originX = PAGE_MARGIN + (availW - scaledW) / 2;
   const originY = y + (availH - scaledH) / 2;
-  drawBracketStreamOnPdf(doc, layout, originX, originY, scale);
+  drawBracketStreamOnPdf(doc, layout, originX, originY, scale, txt('ui.pdf.vs', locale));
 }
 
 function addPlacementList(
@@ -245,7 +261,11 @@ function addPlacementList(
 }
 
 /** Build a PDF blob for the tournament (groups, bracket, placements). */
-export function buildTournamentPdfBlob(tournamentName: string, tournament: Tournament): Blob {
+export function buildTournamentPdfBlob(
+  tournamentName: string,
+  tournament: Tournament,
+  locale: Locale = 'en',
+): Blob {
   const doc = new jsPDF({
     unit: 'mm',
     format: PORTRAIT_FORMAT,
@@ -255,12 +275,13 @@ export function buildTournamentPdfBlob(tournamentName: string, tournament: Tourn
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(16);
-  doc.text(tournamentName.trim() || 'Tournament', PAGE_MARGIN, y);
+  doc.text(tournamentName.trim() || txt('ui.pdf.tournament', locale), PAGE_MARGIN, y);
   y += 10;
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
   doc.setTextColor(100);
-  doc.text(`Exported ${new Date().toLocaleString()}`, PAGE_MARGIN, y);
+  const when = new Date().toLocaleString(locale === 'nl' ? 'nl-NL' : 'en-GB');
+  doc.text(txt('ui.pdf.exportedAt', locale, { when }), PAGE_MARGIN, y);
   doc.setTextColor(0);
   y += 12;
 
@@ -274,10 +295,12 @@ export function buildTournamentPdfBlob(tournamentName: string, tournament: Tourn
 
     if (hasGroups) {
       anyContent = true;
-      const groupsTitle = track.heading ? `Groups · ${track.heading}` : 'Groups';
+      const groupsTitle = track.heading
+        ? txt('ui.pdf.groupsHeading', locale, { heading: track.heading })
+        : txt('ui.pdf.groups', locale);
       y = sectionHeading(doc, y, groupsTitle, 13);
       for (const g of groups) {
-        y = addGroupMatrix(doc, y, tournament, g, track.classId);
+        y = addGroupMatrix(doc, y, tournament, g, locale, track.classId);
       }
       if (hasBracket) {
         addBracketPage(doc);
@@ -292,15 +315,19 @@ export function buildTournamentPdfBlob(tournamentName: string, tournament: Tourn
         addBracketPage(doc);
         y = PAGE_MARGIN;
       }
-      const bracketTitle = track.heading ? `Knockout bracket · ${track.heading}` : 'Knockout bracket';
+      const bracketTitle = track.heading
+        ? txt('ui.pdf.knockoutBracketHeading', locale, { heading: track.heading })
+        : txt('ui.pdf.knockoutBracket', locale);
       y = sectionHeading(doc, y, bracketTitle, 13);
-      addBracketStreamView(doc, y, tournament, preparedBracket, track.classId);
+      addBracketStreamView(doc, y, tournament, preparedBracket, locale, track.classId);
 
       const placements = singleEliminationPlacementRows(preparedBracket, tournament);
       if (placements) {
         addPortraitPage(doc);
         y = PAGE_MARGIN;
-        const resultsTitle = track.heading ? `Results · ${track.heading}` : 'Results';
+        const resultsTitle = track.heading
+          ? txt('ui.pdf.resultsHeading', locale, { heading: track.heading })
+          : txt('ui.pdf.results', locale);
         y = sectionHeading(doc, y, resultsTitle, 13);
         y = addPlacementList(doc, y, tournament, placements);
       }
@@ -308,21 +335,21 @@ export function buildTournamentPdfBlob(tournamentName: string, tournament: Tourn
   }
 
   if (!anyContent) {
-    y = sectionHeading(doc, y, 'No group or bracket data yet', 12);
+    y = sectionHeading(doc, y, txt('ui.pdf.noDataYet', locale), 12);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(10);
-    doc.text(
-      'Create groups or a knockout bracket before exporting a summary PDF.',
-      PAGE_MARGIN,
-      y,
-    );
+    doc.text(txt('ui.pdf.createBeforeExport', locale), PAGE_MARGIN, y);
   }
 
   return doc.output('blob');
 }
 
-export function downloadTournamentPdf(tournamentName: string, tournament: Tournament): void {
-  const blob = buildTournamentPdfBlob(tournamentName, tournament);
+export function downloadTournamentPdf(
+  tournamentName: string,
+  tournament: Tournament,
+  locale: Locale = 'en',
+): void {
+  const blob = buildTournamentPdfBlob(tournamentName, tournament, locale);
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   const slug = tournamentName

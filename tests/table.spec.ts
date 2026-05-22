@@ -103,7 +103,7 @@ describe('Tournament tables', () => {
       timestamp: iso(),
     });
     expect(blockedTable.success).toBe(false);
-    expect(blockedTable.reason).toMatch(/table already/i);
+    expect(blockedTable.reason).toBe('model.tableAlreadyHasMatch');
 
     const blockedPlayer = runner.execute({
       id: 'a3',
@@ -113,7 +113,7 @@ describe('Tournament tables', () => {
       timestamp: iso(),
     });
     expect(blockedPlayer.success).toBe(false);
-    expect(blockedPlayer.reason).toMatch(/already playing another match on table 1/i);
+    expect(blockedPlayer.reason).toBe('model.playerAlreadyOnTable');
   });
 
   it('AssignMatchToTable allows moving the same in-progress match to another table', () => {

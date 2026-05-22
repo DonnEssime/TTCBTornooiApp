@@ -15,6 +15,7 @@
     TournamentController,
     createTournament,
     exportCommandsAsJsonLines,
+    validateCommandLogFormat,
     type ReplayExecuteProfile,
     tournamentControllerFromCommandLogAsync,
     compareBracketMatchId,
@@ -70,6 +71,10 @@
     type TournamentMeta,
   } from './tournamentStorage';
   import { downloadTournamentPdf } from './tournamentPdf';
+  import type { MessageKey, ResolvedMessage } from 'ttc-tornooiapp';
+  import Msg from './i18n/Msg.svelte';
+  import { getLocale, setLocale } from './i18n/locale.svelte';
+  import { commandFailureText, msg, msgText } from './i18n/msg';
 
   /** When true, show developer shortcuts (bulk players, simulated group scores). */
   const DEBUG_UI = true;
@@ -240,23 +245,46 @@
     );
   });
   type StatusKind = 'info' | 'warn' | 'error';
-  type AppStatus = { message: string; kind: StatusKind };
+  type AppStatus = { messageKey: MessageKey; kind: StatusKind; params?: Record<string, string> };
   let status = $state<AppStatus | null>(null);
+
+  const statusResolved = $derived.by(() => {
+    if (!status) return null;
+    void getLocale();
+    return msg(status.messageKey, status.params);
+  });
 
   function clearStatus(): void {
     status = null;
   }
-  function showStatus(message: string, kind: StatusKind): void {
-    status = { message, kind };
+  function showStatusKey(key: MessageKey, kind: StatusKind, params?: Record<string, string>): void {
+    status = { messageKey: key, kind, params };
+  }
+  function showInfoKey(key: MessageKey, params?: Record<string, string>): void {
+    showStatusKey(key, 'info', params);
+  }
+  function showWarnKey(key: MessageKey, params?: Record<string, string>): void {
+    showStatusKey(key, 'warn', params);
+  }
+  function showErrorKey(key: MessageKey, params?: Record<string, string>): void {
+    showStatusKey(key, 'error', params);
   }
   function showInfo(message: string): void {
-    showStatus(message, 'info');
+    showStatusKey('command.dynamicError', 'info', { message });
   }
   function showWarn(message: string): void {
-    showStatus(message, 'warn');
+    showStatusKey('command.dynamicError', 'warn', { message });
   }
   function showError(message: string): void {
-    showStatus(message, 'error');
+    showStatusKey('command.dynamicError', 'error', { message });
+  }
+  function showCommandError(
+    r: { success: boolean; reason?: MessageKey; reasonParams?: Record<string, string> },
+    fallbackKey: MessageKey,
+    extraParams?: Record<string, string>,
+  ): void {
+    if (r.success) return;
+    showErrorKey(r.reason ?? fallbackKey, { ...r.reasonParams, ...extraParams });
   }
   const storageAvailable = isTournamentStorageSupported();
   let recentTournaments = $state<TournamentMeta[]>([]);
@@ -539,7 +567,7 @@
     commitTournamentName();
     const saved = await persistSession(s);
     if (!saved) {
-      showError('Could not save before closing; tournament kept open.');
+      showErrorKey('ui.could_not_save_before_closing_tournament_kept_op');
       return;
     }
     clearStatus();
@@ -571,7 +599,7 @@
       deleteTournamentTarget = null;
       deleteConfirmPhrase = '';
       await refreshRecentTournaments();
-      showInfo(`Deleted “${name}”.`);
+      showInfoKey('ui.toast.deletedTournament', { name });
     } catch (e) {
       deleteTournamentError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -585,11 +613,11 @@
     const existing = findSessionByStorageFileId(fileId);
     if (existing) {
       activateSession(existing);
-      showInfo(`Opened “${existing.tournamentName}”.`);
+      showInfoKey('ui.toast.openedExisting', { name: existing.tournamentName });
       return;
     }
     if (!storageAvailable) {
-      showError('Local tournament storage is not available in this browser.');
+      showErrorKey('ui.local_tournament_storage_is_not_available_in_thi');
       return;
     }
     const meta = recentTournaments.find((m) => m.fileId === fileId);
@@ -597,10 +625,16 @@
     try {
       tournamentLoad = { label, phase: 'read', done: 0, total: 0 };
       const text = await loadTournamentJsonl(fileId);
+      const formatErr = validateCommandLogFormat(text);
+      if (formatErr) {
+        tournamentLoad = null;
+        showErrorKey('command.dynamicError', { message: formatErr.message });
+        return;
+      }
       const { controller: next, replay } = await buildControllerFromCommandLogWithProgress(text, label);
       if (!replay.success) {
         const reason = replay.results.find((r) => !r.success)?.reason ?? 'Replay failed';
-        showError(`Could not open tournament: ${reason}`);
+        showErrorKey('ui.toast.couldNotOpen', { reason });
         return;
       }
       seedPersistSnapshot(
@@ -611,10 +645,12 @@
       const session = sessionFromController(fileId, label, next);
       activateSession(session);
       logDebugReplayExecuteProfile(label, replay.executeProfile);
-      showInfo(`Opened “${session.tournamentName}”.`);
+      showInfoKey('ui.toast.openedSession', { name: session.tournamentName });
     } catch (e) {
       tournamentLoad = null;
-      showError(`Could not load tournament: ${e instanceof Error ? e.message : String(e)}`);
+      showErrorKey('ui.toast.couldNotLoad', {
+        reason: e instanceof Error ? e.message : String(e),
+      });
     }
   }
 
@@ -705,7 +741,7 @@
     const playerB = Number(row.b);
     if (!Number.isFinite(playerA) || !Number.isFinite(playerB)) return null;
     if (isGameScoreLegal({ playerA, playerB })) return null;
-    return 'Win at 11+ with a two-point margin. After 10–10, if either side goes above 11, the final gap must be exactly two points (e.g. 12–10 or 13–11, not 13–10).';
+    return msgText('ui.score.gameHint');
   }
 
   function scoresForSubmitFromRows(rows: ScoreRow[]): GameScore[] | null {
@@ -776,7 +812,7 @@
       const cmdId = `cmd-bracket-slot-${bm.id}-${Date.now()}`;
       const r = c.createMatch(mid, seedA, seedB, deps, cmdId);
       if (!r.success) {
-        showError(r.reason ?? 'Could not create bracket match row');
+        showCommandError(r, 'ui.fallback.createBracketMatchRow');
         return;
       }
       pull();
@@ -851,11 +887,14 @@
       const r = c.clearMatchScores(sm.id, [], `cmd-clear-${sm.id}-${Date.now()}`);
       if (!r.success) {
         scoreModalHint = r.reason ?? 'clearMatchScores failed';
-        showError(r.reason ?? 'clearMatchScores failed');
+        showCommandError(r, 'ui.fallback.clearMatchScores');
         pull();
         return;
       }
-      showInfo(`Cleared group result for ${playerLabel(sm.playerA)} vs ${playerLabel(sm.playerB)}.`);
+      showInfoKey('ui.toast.clearedGroupResult', {
+        a: playerLabel(sm.playerA),
+        b: playerLabel(sm.playerB),
+      });
       closeScoreModal();
       pull();
       return;
@@ -867,11 +906,11 @@
     const r = c.clearMatchScores(sm.id, deps, `cmd-clear-${sm.id}-${Date.now()}`);
     if (!r.success) {
       scoreModalHint = r.reason ?? 'clearMatchScores failed';
-      showError(r.reason ?? 'clearMatchScores failed');
+      showCommandError(r, 'ui.fallback.clearMatchScores');
       pull();
       return;
     }
-    showInfo(`Cleared result for ${sm.id}.`);
+    showInfoKey('ui.toast.clearedResult', { id: sm.id });
     closeScoreModal();
     pull();
   }
@@ -930,7 +969,7 @@
   }
 
   function groupDisplayLabel(g: GroupDefinition): string {
-    return groupNumberedTitle(g);
+    return groupNumberedTitle(g, getLocale());
   }
 
   /** Sort group definitions 1, 2, … numerically when ids are numeric. */
@@ -978,12 +1017,12 @@
     const c = s.controller;
     const t = c.getTournament();
     if (tournamentUsesClassTabs(t)) {
-      showWarn('With multiple competition classes, use each class tab for groups.');
+      showWarnKey('ui.with_multiple_competition_classes_use_each_class');
       return;
     }
     const ordered = eligibleGlobalGroupPlayerIds(t);
     if (ordered.length === 0) {
-      showWarn('Add at least one player (and seedings) before creating groups.');
+      showWarnKey('ui.add_at_least_one_player_and_seedings_before_crea');
       return;
     }
     const deps: string[] = [...new Set(ordered)].map((id) => `cmd-${id}`);
@@ -991,12 +1030,12 @@
     const cmdId = `cmd-setgroups-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
     const r = c.setGroups({ ...payload, playerIds: ordered }, deps, cmdId);
     if (!r.success) {
-      showError(r.reason ?? 'Could not create groups');
+      showCommandError(r, 'ui.fallback.createGroups');
       pull();
       return;
     }
     patchActiveSession({ lastSetGroupsCommandId: cmdId });
-    showInfo('Created groups and all round‑robin matches.');
+    showInfoKey('ui.created_groups_and_all_round_robin_matches');
     pull();
   }
 
@@ -1024,7 +1063,7 @@
     const c = s.controller;
     const t = c.getTournament();
     if (tournamentUsesClassTabs(t)) {
-      showWarn('Use class tabs to clear class groups.');
+      showWarnKey('ui.use_class_tabs_to_clear_class_groups');
       return;
     }
     const deps: string[] = [];
@@ -1032,12 +1071,12 @@
     const cmdId = `cmd-setgroups-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
     const r = c.setGroups([], deps, cmdId);
     if (!r.success) {
-      showError(r.reason ?? 'Could not clear groups');
+      showCommandError(r, 'ui.fallback.clearGroups');
       pull();
       return;
     }
     patchActiveSession({ lastSetGroupsCommandId: cmdId });
-    showInfo('Cleared groups and group matches.');
+    showInfoKey('ui.cleared_groups_and_group_matches');
     pull();
   }
 
@@ -1051,13 +1090,13 @@
     const c = s.controller;
     const t = c.getTournament();
     if (!tournamentUsesClassTabs(t)) {
-      showWarn('Class groups require two or more competition classes.');
+      showWarnKey('ui.class_groups_require_two_or_more_competition_cla');
       return;
     }
     const slice = classSlice(t, classId);
     const ordered = [...slice.seedings];
     if (ordered.length === 0) {
-      showWarn('No players in this class yet — enable the class for players on the Players tab.');
+      showWarnKey('ui.no_players_in_this_class_yet_enable_the_class_fo');
       return;
     }
     const deps: string[] = [...new Set(ordered)].map((id) => `cmd-${id}`);
@@ -1065,14 +1104,14 @@
     const cmdId = `cmd-setcg-${classId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
     const r = c.setClassGroups(classId, { ...payload, playerIds: ordered }, deps, cmdId);
     if (!r.success) {
-      showError(r.reason ?? 'Could not create class groups');
+      showCommandError(r, 'ui.fallback.createClassGroups');
       pull();
       return;
     }
     patchActiveSession({
       lastSetClassGroupsCommandIdByClass: { ...s.lastSetClassGroupsCommandIdByClass, [classId]: cmdId },
     });
-    showInfo('Created groups and round‑robin matches for this class.');
+    showInfoKey('ui.created_groups_and_round_robin_matches_for_this_');
     pull();
   }
 
@@ -1095,14 +1134,14 @@
     const cmdId = `cmd-setcg-${classId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
     const r = c.setClassGroups(classId, [], deps, cmdId);
     if (!r.success) {
-      showError(r.reason ?? 'Could not clear class groups');
+      showCommandError(r, 'ui.fallback.clearClassGroups');
       pull();
       return;
     }
     patchActiveSession({
       lastSetClassGroupsCommandIdByClass: { ...s.lastSetClassGroupsCommandIdByClass, [classId]: cmdId },
     });
-    showInfo('Cleared groups for this class.');
+    showInfoKey('ui.cleared_groups_for_this_class');
     pull();
   }
 
@@ -1216,8 +1255,8 @@
       if (s.lastSetGroupsCommandId) deps.push(s.lastSetGroupsCommandId);
       const cmdId = `cmd-dbg-ensure-${bm.id}-${Date.now()}`;
       const r = c.createMatch(mid, bm.seedA, bm.seedB, deps, cmdId);
-      if (!r.success && r.reason !== 'Match already exists') {
-        showError(r.reason ?? `Could not create ${mid}`);
+      if (!r.success && r.reason !== 'command.matchAlreadyExists') {
+        showCommandError(r, 'ui.fallback.createMatch');
       }
       t = c.getTournament();
     }
@@ -1255,7 +1294,7 @@
     const c = s.controller;
     let t = c.getTournament();
     if (anyUnfinishedGroupPhaseMatch(t)) {
-      showWarn('Finish all group‑phase matches before simulating bracket scores.');
+      showWarnKey('ui.finish_all_group_phase_matches_before_simulating');
       pull();
       return;
     }
@@ -1263,7 +1302,7 @@
     t = c.getTournament();
     const seedEntries = bracketSimulateEligibleEntries(t);
     if (seedEntries.length === 0) {
-      showWarn('No knockout matches awaiting scores to simulate (byes and finished slots are skipped).');
+      showWarnKey('ui.no_knockout_matches_awaiting_scores_to_simulate_');
       pull();
       return;
     }
@@ -1283,7 +1322,7 @@
 
         const scores = debugRandomLegalBo5Scores(rng);
         if (!isMatchScoreLegal(scores)) {
-          showError('Internal: generated illegal scores.');
+          showErrorKey('ui.internal_generated_illegal_scores');
           return;
         }
         const bid = m.id.startsWith('match-') ? m.id.slice('match-'.length) : '';
@@ -1293,7 +1332,7 @@
         const cmdId = `cmd-dbg-brkt-${m.id}-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
         const r = c.enterScore(m.id, scores, deps, cmdId);
         if (!r.success) {
-          showError(r.reason ?? `Stopped while scoring ${m.id} (${done} done).`);
+          showCommandError(r, 'ui.fallback.stoppedScoring', { id: m.id, done: String(done) });
           return;
         }
         done++;
@@ -1301,12 +1340,12 @@
     });
 
     if (done === 0) {
-      showWarn('No knockout matches awaiting scores to simulate (byes and finished slots are skipped).');
+      showWarnKey('ui.no_knockout_matches_awaiting_scores_to_simulate_');
       pull();
       return;
     }
 
-    showInfo(`Debug: simulated ${done} bracket match(es) (round ${targetRound}).`);
+    showInfoKey('ui.toast.debugSimulatedBracket', { done: String(done), round: String(targetRound) });
   }
 
   function debugFillPlayers(): void {
@@ -1315,13 +1354,13 @@
     if (!s) return;
     const n = Math.max(0, Math.min(256, Math.floor(Number(debugFillPlayerCount.trim()))));
     if (!Number.isFinite(n) || n < 1) {
-      showWarn('Enter a positive number of players.');
+      showWarnKey('ui.enter_a_positive_number_of_players');
       return;
     }
     const c = s.controller;
     const t0 = c.getTournament();
     if (Object.keys(t0.teamMatches).length > 0) {
-      showWarn('Debug fill is disabled while a team vs team match exists.');
+      showWarnKey('ui.debug_fill_is_disabled_while_a_team_vs_team_matc');
       return;
     }
     const basePool = debugAllAdjNounNames().filter((nm) => !isPlayerDisplayNameTaken(t0, nm));
@@ -1343,7 +1382,7 @@
         const hc = randomHandicapForTournament(rng);
         const r = c.createPlayer(id, pool[i]!, hc, cmdId);
         if (!r.success) {
-          showError(r.reason ?? `Stopped after ${addedIds.length} player(s).`);
+          showCommandError(r, 'ui.fallback.stoppedAfterPlayers', { n: String(addedIds.length) });
           return;
         }
         addedIds.push(id);
@@ -1369,7 +1408,7 @@
           c.setPlayerClassFlags(pid, flags, [`cmd-${pid}`], cmdId);
         }
       }
-      showInfo(`Debug: added ${n} player(s).`);
+      showInfoKey('ui.toast.debugAddedPlayers', { n: String(n) });
     });
   }
 
@@ -1381,7 +1420,7 @@
     const t = c.getTournament();
     const list = groupMatchesInScope(t, classId).filter(matchOpenForScoring);
     if (list.length === 0) {
-      showWarn('No group matches awaiting scores to simulate.');
+      showWarnKey('ui.no_group_matches_awaiting_scores_to_simulate');
       pull();
       return;
     }
@@ -1391,18 +1430,18 @@
       for (const m of list) {
         const scores = debugRandomLegalBo5Scores(rng);
         if (!isMatchScoreLegal(scores)) {
-          showError('Internal: generated illegal scores.');
+          showErrorKey('ui.internal_generated_illegal_scores');
           return;
         }
         const cmdId = `cmd-dbg-sim-${m.id}-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
         const r = c.enterScore(m.id, scores, [], cmdId);
         if (!r.success) {
-          showError(r.reason ?? `Stopped while scoring ${m.id} (${done} done).`);
+          showCommandError(r, 'ui.fallback.stoppedScoring', { id: m.id, done: String(done) });
           return;
         }
         done++;
       }
-      showInfo(`Debug: simulated ${done} group match(es).`);
+      showInfoKey('ui.toast.debugSimulatedGroup', { done: String(done) });
     });
   }
 
@@ -1496,16 +1535,21 @@
   function groupMatrixCellAriaLabel(t: Tournament, m: Match): string {
     const a = playerLabel(m.playerA);
     const b = playerLabel(m.playerB);
+    const params = { a, b };
     if (m.scores.length === 0 && m.status === 'scheduled') {
-      return groupMatrixCellViewOnly(t, m) ? `${a} vs ${b}, locked` : `${a} vs ${b}, enter scores`;
+      return groupMatrixCellViewOnly(t, m)
+        ? msgText('ui.score.matrixLocked', params)
+        : msgText('ui.score.matrixEnter', params);
     }
-    return groupMatrixCellViewOnly(t, m) ? `${a} vs ${b}, view scores` : `${a} vs ${b}, edit scores`;
+    return groupMatrixCellViewOnly(t, m)
+      ? msgText('ui.score.matrixView', params)
+      : msgText('ui.score.matrixEdit', params);
   }
 
   function titleFromImportFilename(filename: string): string {
     const base = filename.trim().replace(/^.*[/\\]/, '');
     const withoutExt = base.replace(/\.(jsonl|json|txt)$/i, '');
-    return withoutExt.trim() || 'Imported tournament';
+    return withoutExt.trim() || msgText('ui.empty.importedTournament');
   }
 
   function slugForFilename(name: string): string {
@@ -1535,7 +1579,7 @@
     const suggested = deriveLabel(t, s.playerOrder);
     patchActiveSession({ tournamentName: suggested });
     nameDraft = suggested;
-    showInfo(`Title set to: ${suggested}`);
+    showInfoKey('ui.toast.titleSet', { suggested });
   }
 
   function deriveLabel(t: Tournament, playerOrder: string[]): string {
@@ -1582,11 +1626,23 @@
     }
   }
 
+  function bracketElimRoundButtonTitle(elimRound: number): string {
+    if (useClassTabs) return msgText('ui.bracket.titleUsePerClass');
+    if ((tournament.lockedBracketRounds ?? []).includes(elimRound)) return msgText('ui.bracket.titleRoundLocked');
+    return msgText('ui.bracket.titleEliminateRound', { round: String(elimRound) });
+  }
+
+  function debugSimulateBracketTitle(): string {
+    return anyUnfinishedGroupPhaseMatch(tournament)
+      ? msgText('ui.bracket.debugCompleteGroupFirst')
+      : msgText('ui.bracket.debugFillKnockout');
+  }
+
   function bracketSlotTitle(m: BracketMatch, side: 'a' | 'b', t: Tournament, bracketClassId?: string): string {
     const id = side === 'a' ? m.seedA : m.seedB;
-    if (id) return formatBracketSlotPlayerLabel(t, id, bracketClassId);
+    if (id) return formatBracketSlotPlayerLabel(t, id, bracketClassId, getLocale());
     if (m.id.startsWith('__ph-')) return '—';
-    return '--empty--';
+    return msgText('ui.slot.empty');
   }
 
   /** Map legacy `bracket-setup` / `bracket:7` session nav onto current tab ids. */
@@ -1779,7 +1835,9 @@
       console.error('pull() failed', e);
       scoreModalMatchId = null;
       scoreModalHint = null;
-      showError(`Internal UI error while updating: ${e instanceof Error ? e.message : String(e)}`);
+      showErrorKey('ui.toast.internalUiError', {
+        reason: e instanceof Error ? e.message : String(e),
+      });
     }
   }
 
@@ -1871,7 +1929,7 @@
       const cmdId = `cmd-classes-init-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
       const r = controller.setTournamentClasses(namedClasses, [], cmdId);
       if (!r.success) {
-        showError(r.reason ?? 'Could not apply competition classes');
+        showCommandError(r, 'ui.fallback.applyCompetitionClasses');
         return;
       }
     }
@@ -1921,7 +1979,7 @@
     draftTournamentFormat = 'group-bracket';
     draftTableCount = 4;
     pull();
-    showInfo('Tournament created. Add players on the Players tab.');
+    showInfoKey('ui.tournament_created_add_players_on_the_players_ta');
   }
 
   function applyOverviewTableCount(count: number): void {
@@ -1932,7 +1990,7 @@
     const tableIds = buildDefaultTableIds(clamped);
     const r = s.controller.setTournamentTables(tableIds, [], `cmd-tables-${Date.now()}`);
     if (!r.success) {
-      showError(r.reason ?? 'Could not update tables');
+      showCommandError(r, 'ui.fallback.updateTables');
     }
     pull();
   }
@@ -1997,7 +2055,7 @@
       }
     }
     const r = s.controller.assignMatchToTable(matchId, tableId, [], `cmd-table-assign-${matchId}-${ts}`);
-    if (!r.success) showError(r.reason ?? 'Could not assign table');
+    if (!r.success) showCommandError(r, 'ui.fallback.assignTable');
     pull();
   }
 
@@ -2006,7 +2064,7 @@
     const s = getActiveSession();
     if (!s) return;
     const r = s.controller.clearMatchTableAssignment(matchId, [], `cmd-table-clear-${matchId}-${Date.now()}`);
-    if (!r.success) showError(r.reason ?? 'Could not clear table');
+    if (!r.success) showCommandError(r, 'ui.fallback.clearTable');
     pull();
   }
 
@@ -2016,9 +2074,9 @@
     if (!s) return;
     const r = s.controller.undoLast();
     if (!r.success) {
-      showError(r.reason ?? 'Undo failed');
+      showCommandError(r, 'ui.fallback.undoFailed');
     } else {
-      showInfo('Undid one step (logged as Undo command).');
+      showInfoKey('ui.undid_one_step_logged_as_undo_command');
     }
     pull();
   }
@@ -2029,9 +2087,9 @@
     if (!s) return;
     const r = s.controller.redo();
     if (!r.success) {
-      showError(r.reason ?? 'Redo failed');
+      showCommandError(r, 'ui.fallback.redoFailed');
     } else {
-      showInfo('Redo: removed last Undo from the log.');
+      showInfoKey('ui.redo_removed_last_undo_from_the_log');
     }
     pull();
   }
@@ -2042,7 +2100,7 @@
     if (!s0) return;
     const name = newName.trim();
     if (!name) {
-      showWarn('Enter a player name.');
+      showWarnKey('ui.enter_a_player_name');
       return;
     }
     const id = newId();
@@ -2052,7 +2110,7 @@
     const hc = cfg ? clampPlayerHandicapValue(cfg, Number(newHc) || 0) : 0;
     const r = c.createPlayer(id, name, hc, cmdId);
     if (!r.success) {
-      showError(r.reason ?? 'Could not add player');
+      showCommandError(r, 'ui.fallback.addPlayer');
       return;
     }
     const s = s0;
@@ -2079,7 +2137,7 @@
     }
     newName = '';
     newHc = 0;
-    showInfo(`Added ${name} (${id}).`);
+    showInfoKey('ui.toast.addedPlayer', { name, id });
     pull();
   }
 
@@ -2091,16 +2149,16 @@
     const t = c.getTournament();
     if (tournamentUsesClassTabs(t)) {
       showWarn(
-        'This tournament has multiple competition classes. Per-class bracket generation from each class tab will be added next; the global bracket control is disabled.',
+        msgText('ui.this_tournament_has_multiple_competition_classes'),
       );
       return;
     }
     if (Object.keys(t.groups).length === 0) {
-      showWarn('Create groups (group phase) before generating the knockout bracket.');
+      showWarnKey('ui.create_groups_group_phase_before_generating_the_');
       return;
     }
     if (t.seedings.length === 0 || s.playerOrder.length === 0) {
-      showWarn('Add at least one player first.');
+      showWarnKey('ui.add_at_least_one_player_first');
       return;
     }
     const deps: string[] = s.playerOrder.map((pid) => `cmd-${pid}`);
@@ -2132,7 +2190,7 @@
           },
         );
         if (!search) {
-          showError('Heuristic bracket seeding could not be computed from group standings.');
+          showErrorKey('ui.heuristic_bracket_seeding_could_not_be_computed_');
           return;
         }
         tieBreakSalt = search.tieBreakSalt;
@@ -2148,13 +2206,13 @@
         tieBreakSalt,
       });
       if (!r.success) {
-        showError(r.reason ?? 'Bracket generation failed');
+        showCommandError(r, 'ui.fallback.bracketGeneration');
         return;
       }
       const live = c.getTournament();
       const r1 = live.bracketMatches.filter((m) => bracketMatchRound(m) === 1 && m.seedA && m.seedB);
       if (r1.length === 0) {
-        showWarn('Bracket generated, but no round‑1 pairings with two players.');
+        showWarnKey('ui.bracket_generated_but_no_round_1_pairings_with_t');
         return;
       }
       for (const bm of r1) {
@@ -2174,9 +2232,11 @@
       }
       const trialsNote =
         bracketSeedingChoice === 'heuristic'
-          ? ` (${HEURISTIC_BRACKET_SEARCH_TRIALS} heuristic draws compared)`
+          ? msgText('ui.toast.bracketGeneratedTrialsNote', {
+              trials: String(HEURISTIC_BRACKET_SEARCH_TRIALS),
+            })
           : '';
-      showInfo(`Knockout bracket generated${trialsNote} (byes filled) and round‑1 matches created.`);
+      showInfoKey('ui.toast.bracketGenerated', { trialsNote });
     });
   }
 
@@ -2185,13 +2245,11 @@
     const s = getActiveSession();
     if (!s) return;
     if (tournament.bracketMatches.length === 0) {
-      showWarn('No knockout bracket to remove.');
+      showWarnKey('ui.no_knockout_bracket_to_remove');
       return;
     }
     if (
-      !confirm(
-        'Remove the knockout bracket? All bracket pairings, scores, round locks, and related data will be forgotten. The group phase is not changed.',
-      )
+      !confirm(msgText('ui.confirm.removeBracketLong'))
     ) {
       return;
     }
@@ -2203,11 +2261,11 @@
     const cmdId = `cmd-clear-bracket-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
     const r = s.controller.clearBracket(deps, cmdId);
     if (!r.success) {
-      showError(r.reason ?? 'Could not remove bracket');
+      showCommandError(r, 'ui.fallback.removeBracket');
       pull();
       return;
     }
-    showInfo('Knockout bracket removed. You can create a new bracket when ready.');
+    showInfoKey('ui.knockout_bracket_removed_you_can_create_a_new_br');
     pull();
   }
 
@@ -2225,11 +2283,11 @@
     const cmdId = `cmd-elim-r${round}-${salt.replaceAll('-', '').slice(0, 12)}`;
     const r = s.controller.eliminateLowestBracketRound(round, deps, salt, cmdId);
     if (!r.success) {
-      showError(r.reason ?? 'Elimination failed');
+      showCommandError(r, 'ui.fallback.elimination');
       pull();
       return;
     }
-    showInfo(`Eliminated lower-ranked players in round ${round} where pairings were still open.`);
+    showInfoKey('ui.toast.eliminatedRound', { round: String(round) });
     pull();
   }
 
@@ -2248,9 +2306,9 @@
     const cmdId = `cmd-hc-${playerId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
     const r = c.renamePlayer(playerId, p.name, next, [`cmd-${playerId}`], cmdId);
     if (!r.success) {
-      showError(r.reason ?? 'Could not update handicap');
+      showCommandError(r, 'ui.fallback.updateHandicap');
     } else {
-      showInfo(`Handicap for ${p.name} set to ${next}.`);
+      showInfoKey('ui.toast.handicapSet', { name: p.name, next: String(next) });
     }
     pull();
   }
@@ -2278,7 +2336,7 @@
       `cmd-lock-${round}-${locked ? 'on' : 'off'}-${crypto.randomUUID().slice(0, 8)}`,
     );
     if (!r.success) {
-      showError(r.reason ?? 'SetRoundLock failed');
+      showCommandError(r, 'ui.fallback.setRoundLock');
     } else {
       showInfo(locked ? `Locked bracket round ${round}.` : `Unlocked bracket round ${round}.`);
     }
@@ -2288,7 +2346,7 @@
   function downloadJsonl(): void {
     const s = getActiveSession();
     if (!s) {
-      showWarn('Create or import a tournament before exporting.');
+      showWarnKey('ui.create_or_import_a_tournament_before_exporting');
       return;
     }
     const c = s.controller;
@@ -2299,20 +2357,20 @@
     a.download = `${slugForFilename(s.tournamentName)}-${new Date().toISOString().slice(0, 10)}.jsonl`;
     a.click();
     URL.revokeObjectURL(a.href);
-    showInfo('Downloaded command log (.jsonl).');
+    showInfoKey('ui.downloaded_command_log_jsonl');
   }
 
   function exportTournamentPdf(): void {
     const s = getActiveSession();
     if (!s) {
-      showWarn('Create or import a tournament before exporting.');
+      showWarnKey('ui.create_or_import_a_tournament_before_exporting');
       return;
     }
     try {
-      downloadTournamentPdf(s.tournamentName, s.controller.getTournament());
-      showInfo('Downloaded tournament summary (.pdf).');
+      downloadTournamentPdf(s.tournamentName, s.controller.getTournament(), getLocale());
+      showInfoKey('ui.downloaded_tournament_summary_pdf');
     } catch (e) {
-      showError(`PDF export failed: ${e instanceof Error ? e.message : String(e)}`);
+      showErrorKey('ui.toast.pdfFailed', { reason: e instanceof Error ? e.message : String(e) });
     }
   }
 
@@ -2330,13 +2388,19 @@
       text = await file.text();
     } catch (e) {
       tournamentLoad = null;
-      showError(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
+      showErrorKey('ui.toast.importFailed', { reason: e instanceof Error ? e.message : String(e) });
+      return;
+    }
+    const formatErr = validateCommandLogFormat(text);
+    if (formatErr) {
+      tournamentLoad = null;
+      showErrorKey('command.dynamicError', { message: formatErr.message });
       return;
     }
     const { controller: next, replay } = await buildControllerFromCommandLogWithProgress(text, tournamentName);
     if (!replay.success) {
       const reason = replay.results.find((r) => !r.success)?.reason ?? 'Replay failed';
-      showError(`Import failed: ${reason}`);
+      showErrorKey('ui.toast.importFailed', { reason });
       return;
     }
     const exported = exportCommandsAsJsonLines(next.getCommandLog());
@@ -2347,7 +2411,9 @@
         seedPersistSnapshot(storageFileId, tournamentName, exported);
         await refreshRecentTournaments();
       } catch (e) {
-        showError(`Import failed while saving locally: ${e instanceof Error ? e.message : String(e)}`);
+        showErrorKey('ui.toast.importSaveFailed', {
+          reason: e instanceof Error ? e.message : String(e),
+        });
         return;
       }
     } else {
@@ -2356,14 +2422,14 @@
     const session = sessionFromController(storageFileId, tournamentName, next);
     activateSession(session);
     logDebugReplayExecuteProfile(tournamentName, replay.executeProfile);
-    showInfo(`Imported ${file.name} (${replay.results.length} commands).`);
+    showInfoKey('ui.toast.imported', { file: file.name, count: String(replay.results.length) });
   }
 
   function submitScores(match: Match): void {
     clearStatus();
     const rows = scoreDrafts()[match.id];
     if (!rows) {
-      showError('Internal: no score draft for this match.');
+      showErrorKey('ui.internal_no_score_draft_for_this_match');
       return;
     }
     const scores = scoresForSubmitFromRows(rows);
@@ -2404,12 +2470,12 @@
       pull();
       return;
     }
-    showInfo(`Saved scores for ${match.id}.`);
+    showInfoKey('ui.toast.savedScores', { id: match.id });
     closeScoreModal();
     pull();
   }
 
-  /** DEBUG: random legal BO5, write drafts, then same path as “Save match”. */
+  /** DEBUG: random legal BO5, write drafts, then same path as Save match. */
   function debugSimulateOpenScoreModalMatch(): void {
     if (!DEBUG_UI) return;
     clearStatus();
@@ -2435,102 +2501,143 @@
     submitScores(sm);
   }
 
-  function summarizeLastCommand(cmd: Command, t: Tournament): string {
+  function forfeitPhaseLabel(phase: 'group' | 'bracket'): string {
+    return phase === 'group' ? msgText('ui.phase.group') : msgText('ui.phase.bracket');
+  }
+
+  function summarizeLastCommand(cmd: Command, t: Tournament): ResolvedMessage {
     const pn = (id: string | undefined) => (id && t.players[id]?.name) || id || '—';
     const tn = (id: string | undefined) => (id && t.teams[id]?.name) || id || '—';
     switch (cmd.type) {
       case 'CreatePlayer':
-        return `Added player “${cmd.payload.name}”.`;
+        return msg('ui.summary.addedPlayer', { name: cmd.payload.name });
       case 'RenamePlayer':
-        return `Updated player “${pn(cmd.payload.playerId)}”.`;
+        return msg('ui.summary.updatedPlayer', { name: pn(cmd.payload.playerId) });
       case 'SetSeedings':
-        return `Set seeding order (${cmd.payload.playerIds.length} players).`;
+        return msg('ui.summary.setSeeding', { count: String(cmd.payload.playerIds.length) });
       case 'SetHandicapConfig': {
         const cfg = cmd.payload.config;
-        if (!cfg) return 'Disabled handicap tracking.';
-        const crit = cfg.startingCriteria === 'minus_points' ? 'minus points' : 'headstart';
-        return `Handicap: numerical ${cfg.minValue}–${cfg.maxValue}, ${crit}, max adjustment ${cfg.maxStartAdjustment}.`;
+        if (!cfg) return msg('ui.summary.disabledHandicap');
+        const crit =
+          cfg.startingCriteria === 'minus_points'
+            ? msgText('ui.summary.critMinusPoints')
+            : msgText('ui.summary.critHeadstart');
+        return msg('ui.summary.handicapConfig', {
+          min: String(cfg.minValue),
+          max: String(cfg.maxValue),
+          crit,
+          adj: String(cfg.maxStartAdjustment),
+        });
       }
       case 'EnterScore': {
         const m = t.matches[cmd.payload.matchId];
-        return m ? `Entered scores · ${pn(m.playerA)} vs ${pn(m.playerB)}` : 'Entered match scores.';
+        return m
+          ? msg('ui.summary.enteredScores', { a: pn(m.playerA), b: pn(m.playerB) })
+          : msg('ui.summary.enteredMatchScores');
       }
       case 'ClearMatchScores': {
         const m = t.matches[cmd.payload.matchId];
-        return m ? `Cleared scores · ${pn(m.playerA)} vs ${pn(m.playerB)}` : 'Cleared match scores.';
+        return m
+          ? msg('ui.summary.clearedScores', { a: pn(m.playerA), b: pn(m.playerB) })
+          : msg('ui.summary.clearedMatchScores');
       }
       case 'EnterTeamScore': {
         const tm = t.teamMatches[cmd.payload.matchId];
-        return tm ? `Entered team scores · ${tn(tm.teamA)} vs ${tn(tm.teamB)}` : 'Entered team match scores.';
+        return tm
+          ? msg('ui.summary.enteredTeamScores', { a: tn(tm.teamA), b: tn(tm.teamB) })
+          : msg('ui.summary.enteredTeamMatchScores');
       }
       case 'CreateMatch':
-        return `Created match · ${pn(cmd.payload.playerA)} vs ${pn(cmd.payload.playerB)}`;
+        return msg('ui.summary.createdMatch', {
+          a: pn(cmd.payload.playerA),
+          b: pn(cmd.payload.playerB),
+        });
       case 'CreateTeam':
-        return `Created team “${cmd.payload.name}”.`;
+        return msg('ui.summary.createdTeam', { name: cmd.payload.name });
       case 'CreateTeamMatch':
-        return `Created team match · ${tn(cmd.payload.teamA)} vs ${tn(cmd.payload.teamB)}`;
+        return msg('ui.summary.createdTeamMatch', {
+          a: tn(cmd.payload.teamA),
+          b: tn(cmd.payload.teamB),
+        });
       case 'GenerateBracket': {
         const mode = cmd.payload.bracketSeedingMode ?? 'heuristic';
         const label =
           mode === 'closed_form' || mode === 'crop_closed_form'
-            ? 'closed-form seeding'
+            ? msgText('ui.summary.seedingClosedForm')
             : mode === 'extend_closed_form'
-              ? 'extended closed-form seeding (legacy)'
-              : 'heuristic seeding';
-        return `Generated bracket (${label}, byes filled).`;
+              ? msgText('ui.summary.seedingExtendedClosedForm')
+              : msgText('ui.summary.seedingHeuristic');
+        return msg('ui.summary.generatedBracket', { label });
       }
       case 'ClearBracket':
-        return 'Removed knockout bracket.';
+        return msg('ui.summary.removedBracket');
       case 'EliminateLowestBracketRound':
-        return `Eliminated lower-ranked players in round ${cmd.payload.round} (bureaucratic outcome).`;
+        return msg('ui.summary.eliminatedRound', { round: String(cmd.payload.round) });
       case 'GenerateGroupRoundRobin':
-        return cmd.payload.classId ? 'Generated round‑robin for a class track.' : 'Generated group round‑robin.';
+        return cmd.payload.classId
+          ? msg('ui.summary.generatedRoundRobinClass')
+          : msg('ui.summary.generatedRoundRobin');
       case 'SetGroups': {
         if ('groups' in cmd.payload) {
           const n = cmd.payload.groups.length;
-          return n === 0 ? 'Cleared groups.' : `Updated groups (${n} group${n === 1 ? '' : 's'}).`;
+          if (n === 0) return msg('ui.summary.clearedGroups');
+          return n === 1
+            ? msg('ui.summary.updatedGroupsOne')
+            : msg('ui.summary.updatedGroupsMany', { n: String(n) });
         }
-        return 'Created groups from seeding.';
+        return msg('ui.summary.createdGroupsFromSeeding');
       }
       case 'SetClassGroups': {
         const cname = t.classDefinitions.find((c) => c.id === cmd.payload.classId)?.name ?? cmd.payload.classId;
         if ('groups' in cmd.payload) {
           const n = cmd.payload.groups.length;
-          return n === 0 ? `Cleared groups for “${cname}”.` : `Updated groups for “${cname}”.`;
+          return n === 0
+            ? msg('ui.summary.clearedGroupsForClass', { cname })
+            : msg('ui.summary.updatedGroupsForClass', { cname });
         }
-        return `Created groups for class “${cname}”.`;
+        return msg('ui.summary.createdGroupsForClass', { cname });
       }
       case 'SetTournamentClasses':
-        return `Set competition classes (${cmd.payload.classes.length}).`;
+        return msg('ui.summary.setCompetitionClasses', { count: String(cmd.payload.classes.length) });
       case 'SetPlayerClassFlags':
-        return `Updated class flags for ${pn(cmd.payload.playerId)}.`;
+        return msg('ui.summary.updatedClassFlags', { name: pn(cmd.payload.playerId) });
       case 'SetRoundLock':
         return cmd.payload.locked
-          ? `Locked bracket round ${cmd.payload.bracketRound}.`
-          : `Unlocked bracket round ${cmd.payload.bracketRound}.`;
+          ? msg('ui.summary.lockedRound', { round: String(cmd.payload.bracketRound) })
+          : msg('ui.summary.unlockedRound', { round: String(cmd.payload.bracketRound) });
       case 'AssignTables':
-        return 'Assigned tables.';
-      case 'SetTournamentTables':
-        return `Set up ${cmd.payload.tableIds.length} table${cmd.payload.tableIds.length === 1 ? '' : 's'}.`;
+        return msg('ui.summary.assignedTables');
+      case 'SetTournamentTables': {
+        const n = cmd.payload.tableIds.length;
+        return n === 1
+          ? msg('ui.summary.setUpTables', { count: '1', suffix: '' })
+          : msg('ui.summary.setUpTables', { count: String(n), suffix: 's' });
+      }
       case 'AssignMatchToTable': {
         const m = t.matches[cmd.payload.matchId];
         const table = cmd.payload.tableId;
         return m
-          ? `Started on table ${table} · ${pn(m.playerA)} vs ${pn(m.playerB)}`
-          : `Assigned match to table ${table}.`;
+          ? msg('ui.summary.startedOnTable', { table, a: pn(m.playerA), b: pn(m.playerB) })
+          : msg('ui.summary.assignedMatchToTable', { table });
       }
       case 'ClearMatchTableAssignment': {
         const m = t.matches[cmd.payload.matchId];
-        return m ? `Cleared table · ${pn(m.playerA)} vs ${pn(m.playerB)}` : 'Cleared table assignment.';
+        return m
+          ? msg('ui.summary.clearedTable', { a: pn(m.playerA), b: pn(m.playerB) })
+          : msg('ui.summary.clearedTableAssignment');
       }
       case 'AdvanceBracketRound':
-        return 'Advanced bracket round.';
+        return msg('ui.summary.advancedBracketRound');
       case 'PlayerForfeit':
-        return `Player forfeit (${cmd.payload.phase}).`;
+        return msg('ui.summary.playerForfeit', { phase: forfeitPhaseLabel(cmd.payload.phase) });
       case 'TeamForfeit':
-        return `Team forfeit (${cmd.payload.phase}).`;
+        return msg('ui.summary.teamForfeit', { phase: forfeitPhaseLabel(cmd.payload.phase) });
       case 'Undo':
-        return 'Undo.';
+        return msg('ui.summary.undo');
+      default: {
+        const unknown = cmd as Command;
+        return msg('ui.summary.unhandledCommand', { type: unknown.type });
+      }
     }
   }
 
@@ -2541,39 +2648,42 @@
   const activeSess = $derived(getActiveSession());
   const showFormatStub = $derived(Boolean(activeSess && activeSess.tournamentFormat !== 'group-bracket'));
 
-  const lastCommandSummary = $derived.by(() => {
+  const lastCommandSummary = $derived.by((): ResolvedMessage => {
+    void getLocale();
     const s = getActiveSession();
-    if (!s) return '';
+    if (!s) return { text: '', isFallback: false };
     const t = tournament;
     const log = s.controller.getCommandLog();
-    if (log.length === 0) return 'No actions yet.';
+    if (log.length === 0) return msg('ui.noActionsYet');
     return summarizeLastCommand(log[log.length - 1]!, t);
   });
 
-  const singleTrackRestTabs = $derived.by((): Array<{ id: InnerTab; label: string }> => {
-    const tabs: Array<{ id: InnerTab; label: string }> = [
-      { id: 'groups', label: 'Group phase' },
-      { id: 'bracket', label: 'Bracket' },
+  const singleTrackRestTabs = $derived.by((): Array<{ id: InnerTab; labelKey: MessageKey }> => {
+    void getLocale();
+    const tabs: Array<{ id: InnerTab; labelKey: MessageKey }> = [
+      { id: 'groups', labelKey: 'ui.group_phase' },
+      { id: 'bracket', labelKey: 'ui.bracket' },
     ];
     if (tournament.bracketMatches.length > 0) {
-      tabs.push({ id: 'results', label: 'Results' });
+      tabs.push({ id: 'results', labelKey: 'ui.results' });
     }
     return tabs;
   });
 
-  const classSubTabsList = $derived.by((): Array<{ id: ClassInnerTab; label: string }> => {
+  const classSubTabsList = $derived.by((): Array<{ id: ClassInnerTab; labelKey: MessageKey }> => {
     const s = getActiveSession();
     if (!s || s.nav.kind !== 'multi' || s.nav.screen === 'players' || s.nav.screen === 'overview') {
       return [];
     }
     const cid = s.nav.screen.classId;
     const rounds = uniqueSortedRounds(classSlice(tournament, cid).bracketMatches);
-    const tabs: Array<{ id: ClassInnerTab; label: string }> = [
-      { id: 'groups', label: 'Group phase' },
-      { id: 'bracket', label: 'Bracket' },
+    void getLocale();
+    const tabs: Array<{ id: ClassInnerTab; labelKey: MessageKey }> = [
+      { id: 'groups', labelKey: 'ui.group_phase' },
+      { id: 'bracket', labelKey: 'ui.bracket' },
     ];
     if (rounds.length > 0) {
-      tabs.push({ id: 'results', label: 'Results' });
+      tabs.push({ id: 'results', labelKey: 'ui.results' });
     }
     return tabs;
   });
@@ -2629,18 +2739,18 @@
   <div class="app-sticky-head">
     <header class="top-bar">
       <div class="brand">
-        <span class="brand-mark">TTCB</span>
-        <span class="brand-text">Tornooiapp</span>
+        <span class="brand-mark"><Msg key="ui.ttcb" /></span>
+        <span class="brand-text"><Msg key="ui.tornooiapp" /></span>
       </div>
       <div class="top-bar-actions">
-        <nav class="workspace-tabs" aria-label="Workspace">
+        <nav class="workspace-tabs" aria-label={msgText('ui.workspace')}>
           <button
             type="button"
             class="workspace-tab"
             class:active={workspaceTab === 'settings'}
             onclick={() => selectWorkspaceTab('settings')}
           >
-            Settings
+            <Msg key="ui.settings" />
           </button>
           {#each sessions as s (s.id)}
             <button
@@ -2657,13 +2767,27 @@
           <button
             type="button"
             class="session-close-btn"
-            title="Close tournament"
-            aria-label="Close {activeSess.tournamentName}"
+            title={msgText('ui.close_tournament')}
+            aria-label={msgText('ui.close_tournament') + ' ' + activeSess.tournamentName}
             onclick={() => void closeActiveSession()}
           >
             <span aria-hidden="true">×</span>
           </button>
         {/if}
+        <nav class="lang-switch" aria-label={msgText('ui.lang.aria')}>
+          <button
+            type="button"
+            class="lang-btn"
+            class:active={getLocale() === 'en'}
+            onclick={() => setLocale('en')}>EN</button
+          >
+          <button
+            type="button"
+            class="lang-btn"
+            class:active={getLocale() === 'nl'}
+            onclick={() => setLocale('nl')}>NL</button
+          >
+        </nav>
       </div>
     </header>
 
@@ -2674,7 +2798,9 @@
         class:status-banner--error={status.kind === 'error'}
         role={status.kind === 'error' ? 'alert' : 'status'}
       >
-        {status.message}
+        {#if statusResolved}
+          <span class:i18n-fallback={statusResolved.isFallback}>{statusResolved.text}</span>
+        {/if}
       </div>
     {/if}
   </div>
@@ -2682,27 +2808,27 @@
   <main class="main" class:main--tournament={workspaceTab !== 'settings'}>
     {#if workspaceTab === 'settings'}
       <section class="card settings-card">
-        <h1 class="h1">Tournament Management</h1>
+        <h1 class="h1"><Msg key="ui.tournament_management" /></h1>
 
         <div class="settings-grid">
           <div class="settings-block">
-            <h2 class="h2">Data</h2>
+            <h2 class="h2"><Msg key="ui.data" /></h2>
             <div class="btn-row">
               <label class="file-btn">
-                Import tournament
+                <Msg key="ui.import.tournament" />
                 <input type="file" accept=".jsonl,.txt,application/json,text/plain" class="sr" onchange={onImportFile} />
               </label>
             </div>
             {#if !storageAvailable}
-              <p class="muted small">Local auto-save is unavailable in this browser; import still opens the tournament for this session.</p>
+              <Msg key="ui.settings.localSaveUnavailable" tag="p" class="muted small" />
             {/if}
           </div>
 
           <div class="settings-block new-tournament-block">
-            <h2 class="h2">New tournament</h2>
+            <h2 class="h2"><Msg key="ui.new_tournament" /></h2>
             <div class="draft-top-fields">
               <label class="field-block draft-name-field">
-                <span class="field-label">Name</span>
+                <span class="field-label"><Msg key="ui.name" /></span>
                 <input
                   class="draft-tournament-name-input"
                   type="text"
@@ -2712,65 +2838,65 @@
                 />
               </label>
               <label class="field-block draft-tables-field">
-                <span class="field-label">#Tables</span>
+                <span class="field-label"><Msg key="ui.settings.tablesLabel" /></span>
                 <input type="number" min="1" max="32" step="1" bind:value={draftTableCount} />
               </label>
             </div>
 
             <fieldset class="type-fieldset">
-              <legend class="field-label">Tournament type</legend>
+              <legend class="field-label"><Msg key="ui.tournament_type" /></legend>
               <label class="radio-line">
                 <input type="radio" name="draft-tournament-format" value="group-bracket" bind:group={draftTournamentFormat} />
-                <span>Group phase + brackets</span>
+                <span><Msg key="ui.group_phase_brackets" /></span>
               </label>
               <label class="radio-line radio-line-disabled">
                 <input type="radio" name="draft-tournament-format" value="bracket-only" disabled />
-                <span>Direct to brackets <span class="muted small">(coming soon)</span></span>
+                <span><Msg key="ui.direct_to_brackets" /> <span class="muted small"><Msg key="ui.settings.comingSoon" /></span></span>
               </label>
               <label class="radio-line radio-line-disabled">
                 <input type="radio" name="draft-tournament-format" value="team-vs-team" disabled />
-                <span>Team vs team <span class="muted small">(coming soon)</span></span>
+                <span><Msg key="ui.team_vs_team" /> <span class="muted small"><Msg key="ui.settings.comingSoon" /></span></span>
               </label>
             </fieldset>
 
             <label class="checkbox-line">
               <input type="checkbox" bind:checked={draftHandicapEnabled} />
-              <span>Include handicap for players</span>
+              <span><Msg key="ui.include_handicap_for_players" /></span>
             </label>
 
             {#if draftHandicapEnabled}
               <fieldset class="type-fieldset handicap-config-fieldset">
-                <legend class="field-label">Handicap system</legend>
+                <legend class="field-label"><Msg key="ui.handicap_system" /></legend>
                 <label class="radio-line">
                   <input type="radio" name="draft-handicap-system" value="numerical" checked disabled={false} />
-                  <span><strong>Numerical</strong> — player rating from min to max (active)</span>
+                  <span><strong><Msg key="ui.numerical" /></strong><Msg key="ui.settings.ratingRangeTitle" tag="span" /></span>
                 </label>
                 <label class="radio-line radio-line-disabled">
                   <input type="radio" name="draft-handicap-system" value="classification" disabled />
                   <span
-                    ><strong>Classification-based</strong>
-                    <span class="muted small">(mock — coming soon)</span></span
+                    ><strong><Msg key="ui.classification_based" /></strong>
+                    <span class="muted small"><Msg key="ui.settings.mockComingSoon" /></span></span
                   >
                 </label>
                 <div class="handicap-config-grid">
                   <label>
-                    <span class="field-label">Min rating</span>
+                    <span class="field-label"><Msg key="ui.min_rating" /></span>
                     <input type="number" min="0" step="1" bind:value={draftHandicapMin} />
                   </label>
                   <label>
-                    <span class="field-label">Max rating</span>
+                    <span class="field-label"><Msg key="ui.max_rating" /></span>
                     <input type="number" min="0" step="1" bind:value={draftHandicapMax} />
                   </label>
                   <label class="handicap-config-span">
-                    <span class="field-label">Starting criteria</span>
+                    <span class="field-label"><Msg key="ui.starting_criteria" /></span>
                     <select bind:value={draftHandicapStartingCriteria}>
-                      <option value="headstart">Headstart for weaker player</option>
-                      <option value="minus_points">Minus points for stronger player</option>
+                      <option value="headstart"><Msg key="ui.headstart_for_weaker_player" /></option>
+                      <option value="minus_points"><Msg key="ui.minus_points_for_stronger_player" /></option>
                     </select>
                   </label>
                   <label>
-                    <span class="field-label">Max start adjustment</span>
-                    <input type="number" min="0" step="1" bind:value={draftHandicapMaxStart} title="Maximum absolute headstart or negative start" />
+                    <span class="field-label"><Msg key="ui.max_start_adjustment" /></span>
+                    <input type="number" min="0" step="1" bind:value={draftHandicapMaxStart} title={msgText('ui.maximum_absolute_headstart_or_negative_start')} />
                   </label>
                 </div>
               </fieldset>
@@ -2778,16 +2904,16 @@
 
             <label class="checkbox-line">
               <input type="checkbox" bind:checked={draftClassesEnabled} />
-              <span>Use competition classes</span>
+              <span><Msg key="ui.use_competition_classes" /></span>
             </label>
 
             {#if draftClassesEnabled}
               <div class="sub-card draft-classes">
-                <h3 class="h3">Competition classes</h3>
+                <h3 class="h3"><Msg key="ui.competition_classes" /></h3>
                 <table class="grid class-grid">
                   <thead>
                     <tr>
-                      <th>Display name</th>
+                      <th><Msg key="ui.display_name" /></th>
                       <th></th>
                     </tr>
                   </thead>
@@ -2801,13 +2927,13 @@
                             value={row.name}
                             maxlength="80"
                             autocomplete="off"
-                            aria-label="Class display name"
+                            aria-label={msgText('ui.class_display_name')}
                             oninput={(e) => updateDraftClassRow(ri, (e.currentTarget as HTMLInputElement).value)}
                           />
                         </td>
                         <td>
                           <button type="button" class="btn ghost small-inline" onclick={() => removeDraftClassRow(ri)}>
-                            Remove
+                            <Msg key="ui.remove" />
                           </button>
                         </td>
                       </tr>
@@ -2815,24 +2941,24 @@
                   </tbody>
                 </table>
                 <div class="btn-row">
-                  <button type="button" class="btn" onclick={addDraftClassRow}>Add class row</button>
+                  <button type="button" class="btn" onclick={addDraftClassRow}><Msg key="ui.add_class_row" /></button>
                 </div>
               </div>
             {/if}
 
             <div class="btn-row">
-              <button type="button" class="btn primary" onclick={createTournamentFromWizard}>Create tournament</button>
+              <button type="button" class="btn primary" onclick={createTournamentFromWizard}><Msg key="ui.create_tournament" /></button>
             </div>
           </div>
 
           <div class="settings-block">
-            <h2 class="h2">Recent activity</h2>
+            <h2 class="h2"><Msg key="ui.recent_activity" /></h2>
             {#if !storageAvailable}
-              <p class="muted small">Recent tournaments require a browser with Origin Private File System support (e.g. Chrome or Edge).</p>
+              <Msg key="ui.settings.recentOpfsRequired" tag="p" class="muted small" />
             {:else if recentListLoading && recentTournaments.length === 0}
-              <p class="muted">Loading…</p>
+              <p class="muted"><Msg key="ui.loading" /></p>
             {:else if recentTournaments.length === 0}
-              <p class="muted">No saved tournaments yet. Create or import one — it will appear here after the first change.</p>
+              <Msg key="ui.settings.noSavedTournaments" tag="p" class="muted" />
             {:else}
               <ul class="recent-list">
                 {#each recentTournaments as entry (entry.fileId)}
@@ -2849,8 +2975,8 @@
                     <button
                       type="button"
                       class="recent-delete-btn"
-                      title="Delete saved tournament"
-                      aria-label="Delete {entry.tournamentName}"
+                      title={msgText('ui.delete_saved_tournament')}
+                      aria-label={msgText('ui.aria.deleteNamed', { name: entry.tournamentName })}
                       onclick={() => openDeleteTournamentModal(entry)}
                     >
                       <span aria-hidden="true">×</span>
@@ -2867,13 +2993,16 @@
       <div class="tournament-shell">
         {#if showFormatStub}
           <div class="banner format-banner" role="status">
-            Only <strong>Group phase + brackets</strong> is fully implemented. You are viewing a placeholder for the selected
-            tournament type.
+            <Msg
+              key="ui.format.onlyGroupPhaseImplemented"
+              params={{ format: msgText('ui.group_phase_brackets') }}
+              tag="span"
+            />
           </div>
         {/if}
         <div class="tournament-toolbar">
           <div class="title-block">
-            <label class="title-label" for="tm-name-input">Tournament name</label>
+            <label class="title-label" for="tm-name-input"><Msg key="ui.tournament_name" /></label>
             <div class="title-row">
               <input
                 id="tm-name-input"
@@ -2900,31 +3029,31 @@
               <button
                 type="button"
                 class="btn ghost title-export-btn"
-                title="Download command log (.jsonl)"
+                title={msgText('ui.download_command_log_jsonl')}
                 onclick={downloadJsonl}
               >
-                Export Tournament File
+                <Msg key="ui.export.tournamentFile" />
               </button>
               <button
                 type="button"
                 class="btn ghost title-export-btn"
-                title="Download groups, bracket, and results summary (.pdf)"
+                title={msgText('ui.download_groups_bracket_and_results_summary_pdf')}
                 onclick={exportTournamentPdf}
               >
-                Export Tournament PDF
+                <Msg key="ui.export.tournamentPdf" />
               </button>
             </div>
           </div>
         </div>
 
-        <nav class="inner-tabs" aria-label="Tournament sections">
+        <nav class="inner-tabs" aria-label={msgText('ui.tournament_sections')}>
           <button
             type="button"
             class="inner-tab"
             class:active={showOverviewPanel}
             onclick={selectOverviewNav}
           >
-            Overview
+            <Msg key="ui.overview" />
           </button>
           <button
             type="button"
@@ -2932,7 +3061,7 @@
             class:active={showPlayersPanel}
             onclick={selectPlayersNav}
           >
-            Players
+            <Msg key="ui.players" />
           </button>
           {#if useClassTabs}
             {#each tournament.classDefinitions as c (c.id)}
@@ -2953,14 +3082,14 @@
                 class:active={singleTrackInner === tab.id}
                 onclick={() => selectSingleTrackTab(tab.id)}
               >
-                {tab.label}
+                <Msg key={tab.labelKey} />
               </button>
             {/each}
           {/if}
         </nav>
 
         {#if useClassTabs && multiClassScreen}
-          <nav class="inner-tabs inner-tabs-sub" aria-label="Class track sections">
+          <nav class="inner-tabs inner-tabs-sub" aria-label={msgText('ui.class_track_sections')}>
             {#each classSubTabsList as tab (tab.id)}
               <button
                 type="button"
@@ -2968,7 +3097,7 @@
                 class:active={multiClassScreen.inner === tab.id}
                 onclick={() => selectClassSubTab(multiClassScreen.classId, tab.id)}
               >
-                {tab.label}
+                <Msg key={tab.labelKey} />
               </button>
             {/each}
           </nav>
@@ -2977,7 +3106,7 @@
         <div class="inner-panels">
           {#if showOverviewPanel}
             <section class="card">
-              <h2 class="h2">Overview</h2>
+              <h2 class="h2"><Msg key="ui.overview" /></h2>
               <TournamentOverview
                 {tournament}
                 useClassTabs={useClassTabs}
@@ -2994,7 +3123,7 @@
             </section>
           {:else if showPlayersPanel}
             <section class="card">
-              <h2 class="h2">Players</h2>
+              <h2 class="h2"><Msg key="ui.players" /></h2>
 
               <form
                 class="row"
@@ -3003,10 +3132,10 @@
                   addPlayer();
                 }}
               >
-                <input class="grow" placeholder="Name" bind:value={newName} autocomplete="off" />
+                <input class="grow" placeholder={msgText('ui.name')} bind:value={newName} autocomplete="off" />
                 {#if handicapEnabled}
                   <label class="hc-add-wrap" for="new-player-hc">
-                    <span class="hc-label">Handicap</span>
+                    <span class="hc-label"><Msg key="ui.handicap" /></span>
                     <input
                       id="new-player-hc"
                       class="hc"
@@ -3015,26 +3144,29 @@
                       min={handicapBounds.min}
                       max={handicapBounds.max}
                       step="1"
-                      title="Handicap ({handicapBounds.min}–{handicapBounds.max})"
+                      title={msgText('ui.handicap.rangeTitle', {
+                        min: String(handicapBounds.min),
+                        max: String(handicapBounds.max),
+                      })}
                     />
                   </label>
                 {/if}
-                <button type="submit" class="btn primary">Add player</button>
+                <button type="submit" class="btn primary"><Msg key="ui.add_player" /></button>
               </form>
               {#if DEBUG_UI}
                 <div class="row align-end gap-sm debug-fill-row">
                   <label class="row align-center gap-sm">
-                    <span class="muted small"># to add</span>
+                    <span class="muted small"><Msg key="ui.players.hashToAdd" tag="span" class="muted small" /></span>
                     <input
                       class="debug-fill-count"
                       type="text"
                       inputmode="numeric"
                       autocomplete="off"
-                      aria-label="Number of players to add (debug)"
+                      aria-label={msgText('ui.number_of_players_to_add_debug')}
                       bind:value={debugFillPlayerCount}
                     />
                   </label>
-                  <button type="button" class="btn subtle" onclick={debugFillPlayers}>[DEBUG] Fill players</button>
+                  <button type="button" class="btn subtle" onclick={debugFillPlayers}><Msg key="ui.players.debugFill" /></button>
                 </div>
               {/if}
               <ol class="seed-list">
@@ -3044,7 +3176,7 @@
                       <span class="name">{playerLabel(pid)}</span>
                       {#if handicapEnabled}
                         <span class="hc-wrap">
-                          <label class="hc-label" for={`hc-${pid}`}>Handicap</label>
+                          <label class="hc-label" for={`hc-${pid}`}><Msg key="ui.handicap" /></label>
                           <input
                             id={`hc-${pid}`}
                             class="hc-inline"
@@ -3052,7 +3184,7 @@
                             min={handicapBounds.min}
                             max={handicapBounds.max}
                             step="1"
-                            aria-label={`Handicap for ${playerLabel(pid)}`}
+                            aria-label={msgText('ui.handicap.forPlayer', { name: playerLabel(pid) })}
                             bind:value={handicapDrafts[pid]}
                             onfocus={() => {
                               handicapFocusPid = pid;
@@ -3087,19 +3219,18 @@
             </section>
           {:else if !useClassTabs && singleTrackInner === 'groups'}
             <section class="card">
-              <h2 class="h2">Group phase</h2>
+              <h2 class="h2"><Msg key="ui.group_phase" /></h2>
               {#if tournament.bracketMatches.length > 0}
                 <p class="group-lock-banner">
-                  Knockout bracket is active — group lineup is locked here. You can still finish unfinished
-                  round‑robin matches from the matrix above.
+                  <Msg key="ui.group.knockoutActiveLock" tag="p" class="group-lock-banner" />
                 </p>
               {/if}
               {#if Object.keys(tournament.groups).length === 0}
                 <p class="muted small">
                   {#if globalGroupPlayerCount === 0}
-                    Add players on the Players tab first.
+                    <Msg key="ui.group.addPlayersFirst" />
                   {:else}
-                    All {globalGroupPlayerCount} seeded players are included, in seeding order.
+                    <Msg key="ui.group.allSeededIncluded" params={{ count: String(globalGroupPlayerCount) }} />
                   {/if}
                 </p>
                 <div class="group-create-row">
@@ -3110,7 +3241,7 @@
                     step="1"
                     disabled={tournament.bracketMatches.length > 0}
                     value={activeSess?.groupTargetSize ?? CLOSED_FORM_PLAYERS_PER_GROUP}
-                    aria-label="Target players per group"
+                    aria-label={msgText('ui.target_players_per_group')}
                     oninput={(e) => {
                       const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));
                       patchActiveSession({ groupTargetSize: v });
@@ -3122,7 +3253,7 @@
                     disabled={tournament.bracketMatches.length > 0 || globalGroupPlayerCount === 0}
                     onclick={createGlobalGroupsByPlayerCount}
                   >
-                    Create by player count
+                    <Msg key="ui.group.createByPlayerCount" />
                   </button>
                   <div class="group-create-gap" aria-hidden="true"></div>
                   <input
@@ -3132,7 +3263,7 @@
                     step="1"
                     disabled={tournament.bracketMatches.length > 0}
                     value={activeSess?.groupTargetCount ?? suggestedGlobalGroupTargetCount}
-                    aria-label="Target number of groups"
+                    aria-label={msgText('ui.target_number_of_groups')}
                     oninput={(e) => {
                       const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));
                       patchActiveSession({ groupTargetCount: v });
@@ -3144,7 +3275,7 @@
                     disabled={tournament.bracketMatches.length > 0 || globalGroupPlayerCount === 0}
                     onclick={createGlobalGroupsByGroupCount}
                   >
-                    Create by group count
+                    <Msg key="ui.group.createByGroupCount" />
                   </button>
                   <div class="group-create-spacer" aria-hidden="true"></div>
                 </div>
@@ -3156,17 +3287,17 @@
                     disabled={tournament.bracketMatches.length > 0}
                     onclick={clearGlobalGroups}
                   >
-                    Clear groups
+                    <Msg key="ui.group.clearGroups" />
                   </button>
                 </div>
                 {#if DEBUG_UI}
                   <div class="row align-end">
                     <button type="button" class="btn subtle" onclick={() => debugSimulateGroupMatches(undefined)}>
-                      [DEBUG] Simulate matches
+                      <Msg key="ui.group.debugSimulateMatches" />
                     </button>
                   </div>
                 {/if}
-                <h3 class="h3">Groups</h3>
+                <h3 class="h3"><Msg key="ui.groups" /></h3>
                 {#each sortGroupsForDisplay(tournament.groups) as g (g.id)}
                   {@const matrixPids = groupMatrixPlayerOrder(g)}
                   {@const standingsWl = groupStandingsWlByPid(tournament, g, undefined)}
@@ -3176,14 +3307,14 @@
                       <table class="grid compact group-matrix-table">
                         <thead>
                           <tr>
-                            <th>Player</th>
+                            <th><Msg key="ui.player" /></th>
                             {#each matrixPids as colPid (colPid)}
                               <th class="h2h-th" title={playerLabel(colPid)}>
                                 <span class="h2h-th-inner"><PlayerName {tournament} playerId={colPid} /></span>
                               </th>
                             {/each}
-                            <th>W</th>
-                            <th>L</th>
+                            <th><Msg key="ui.standings.win" /></th>
+                            <th><Msg key="ui.standings.loss" /></th>
                           </tr>
                         </thead>
                         <tbody>
@@ -3212,7 +3343,7 @@
                                         {/if}
                                       </button>
                                     {:else}
-                                      <span class="muted" title="No match">—</span>
+                                      <span class="muted" title={msgText('ui.no_match')}>—</span>
                                     {/if}
                                   {/if}
                                 </td>
@@ -3231,27 +3362,27 @@
             </section>
           {:else if !useClassTabs && singleTrackInner === 'bracket'}
             <section class="card">
-              <h2 class="h2">Bracket</h2>
+              <h2 class="h2"><Msg key="ui.bracket" /></h2>
               {#if tournament.bracketMatches.length === 0}
                 <fieldset class="bracket-seed-fieldset">
-                  <legend class="muted small">Bracket seeding</legend>
+                  <legend class="muted small"><Msg key="ui.bracket_seeding" /></legend>
                   <label class="radio-line">
                     <input type="radio" bind:group={bracketSeedingChoice} value="crop_closed_form" disabled={!canPickClosedFormSeeding} />
                     <span>
-                      <strong>Closed-form</strong>
-                      — built-in layout when you have power-of-two groups (≥4 players each).
+                      <strong><Msg key="ui.closed_form" /></strong>
+                      <Msg key="ui.bracket.closedFormDesc" tag="span" />
                       {#if closedFormSeedingKind === 'culled'}
-                        Top four per group use the closed layout; 5th place and lower join via an extra preliminary round (selected by default).
+                        <Msg key="ui.bracket.closedFormCulled" />
                       {:else if closedFormSeedingKind === 'exact'}
-                        Exact G×4 grid (every group has four players).
+                        <Msg key="ui.bracket.closedFormExact" />
                       {/if}
                     </span>
                   </label>
                   <label class="radio-line">
                     <input type="radio" bind:group={bracketSeedingChoice} value="heuristic" />
                     <span>
-                      <strong>Heuristic</strong>
-                      — rule-based placement from group standings.
+                      <strong><Msg key="ui.heuristic" /></strong>
+                      <Msg key="ui.bracket.heuristicDesc" tag="span" />
                     </span>
                   </label>
                 </fieldset>
@@ -3264,21 +3395,21 @@
                       eligibleGlobalGroupPlayerIds(tournament).length === 0}
                     onclick={() => void generateKnockoutBracket()}
                   >
-                    Create knockout bracket
+                    <Msg key="ui.bracket.createKnockout" />
                   </button>
                 </div>
                 {#if Object.keys(tournament.groups).length === 0}
-                  <p class="muted small">Finish the group phase first — the create button enables after groups exist.</p>
+                  <Msg key="ui.group.finishGroupPhaseFirst" tag="p" class="muted small" />
                 {/if}
               {/if}
 
               {#if tournament.bracketMatches.length > 0}
                 <div class="row align-end bracket-remove-row" style="margin-bottom: 0.75rem;">
                   <button type="button" class="btn danger-ghost" onclick={removeKnockoutBracket}>
-                    Remove bracket
+                    <Msg key="ui.bracket.removeBracket" />
                   </button>
                 </div>
-                <h3 class="h3">Knockout bracket</h3>
+                <h3 class="h3"><Msg key="ui.knockout_bracket" /></h3>
                 <BracketStreamView
                   cols={previewBracketColumns(
                     tournament,
@@ -3290,7 +3421,7 @@
                   {tournament}
                   slotTitle={bracketSlotTitle}
                   onPairingClick={openBracketPairingModal}
-                  ariaLabel="Knockout bracket"
+                  ariaLabel={msgText('ui.bracket.aria')}
                 />
                 {#if DEBUG_UI}
                   {@const debugElimRounds = uniqueSortedRounds(tournament.bracketMatches).filter((elimRound) =>
@@ -3298,40 +3429,32 @@
                   )}
                   {#if debugElimRounds.length > 0}
                     <div class="row align-end bracket-elim-row" style="flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem;">
-                      <span class="muted small">Bureaucratic elimination (distinct from forfeit):</span>
+                      <span class="muted small"><Msg key="ui.bureaucratic_elimination_distinct_from_forfeit" /></span>
                       {#each debugElimRounds as elimRound (elimRound)}
                         <button
                           type="button"
                           class="btn subtle"
                           disabled={useClassTabs || (tournament.lockedBracketRounds ?? []).includes(elimRound)}
-                          title={useClassTabs
-                            ? 'Use per-class controls when multiple classes are defined.'
-                            : (tournament.lockedBracketRounds ?? []).includes(elimRound)
-                              ? 'This round is locked.'
-                              : `In round ${elimRound}, eliminate the worse group finisher in each open pairing (ties favour larger groups, then a random pick).`}
+                          title={bracketElimRoundButtonTitle(elimRound)}
                           onclick={() => eliminateBracketRoundByRanking(elimRound)}
                         >
-                          Eliminate lowest in round {elimRound}
+                          <Msg key="ui.bracket.eliminateLowestRound" params={{ round: String(elimRound) }} />
                         </button>
                       {/each}
                     </div>
                   {/if}
                 {:else}
                   <div class="row align-end bracket-elim-row" style="flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem;">
-                    <span class="muted small">Bureaucratic elimination (distinct from forfeit):</span>
+                    <span class="muted small"><Msg key="ui.bureaucratic_elimination_distinct_from_forfeit" /></span>
                     {#each uniqueSortedRounds(tournament.bracketMatches) as elimRound (elimRound)}
                       <button
                         type="button"
                         class="btn subtle"
                         disabled={useClassTabs || (tournament.lockedBracketRounds ?? []).includes(elimRound)}
-                        title={useClassTabs
-                          ? 'Use per-class controls when multiple classes are defined.'
-                          : (tournament.lockedBracketRounds ?? []).includes(elimRound)
-                            ? 'This round is locked.'
-                            : `In round ${elimRound}, eliminate the worse group finisher in each open pairing (ties favour larger groups, then a random pick).`}
+                        title={bracketElimRoundButtonTitle(elimRound)}
                         onclick={() => eliminateBracketRoundByRanking(elimRound)}
                       >
-                        Eliminate lowest in round {elimRound}
+                        <Msg key="ui.bracket.eliminateLowestRound" params={{ round: String(elimRound) }} />
                       </button>
                     {/each}
                   </div>
@@ -3342,26 +3465,21 @@
                       type="button"
                       class="btn subtle"
                       disabled={anyUnfinishedGroupPhaseMatch(tournament)}
-                      title={anyUnfinishedGroupPhaseMatch(tournament)
-                        ? 'Complete every group‑phase match first.'
-                        : 'Fill scheduled knockout matches with random legal scores.'}
+                      title={debugSimulateBracketTitle()}
                       onclick={debugSimulateBracketPhaseMatches}
                     >
-                      [DEBUG] Simulate phase matches
+                      <Msg key="ui.bracket.debugSimulatePhase" />
                     </button>
                   </div>
                 {/if}
-                <p class="muted small">
-                  Click a pairing in the bracket to view scores or enter games. You can change or clear a result only
-                  while the winner’s next bracket match has not been played yet.
-                </p>
+                <Msg key="ui.bracket.clickPairingHint" tag="p" class="muted small" />
               {:else}
-                <p class="muted small">The bracket appears here after you create it with one of the buttons above.</p>
+                <Msg key="ui.bracket.appearsAfterCreate" tag="p" class="muted small" />
               {/if}
             </section>
           {:else if !useClassTabs && singleTrackInner === 'results'}
             <section class="card">
-              <h2 class="h2">Results</h2>
+              <h2 class="h2"><Msg key="ui.results" /></h2>
               {#if tournament.bracketMatches.length > 0}
                 {@const placementRows = singleEliminationPlacementRows(tournament.bracketMatches, tournament)}
                 {#if placementRows}
@@ -3374,10 +3492,10 @@
                     {/each}
                   </ol>
                 {:else}
-                  <p class="muted small">Complete the final match to list finishing order.</p>
+                  <p class="muted small"><Msg key="ui.complete_the_final_match_to_list_finishing_order" /></p>
                 {/if}
               {:else}
-                <p class="muted small">Generate a knockout bracket to show finishing order here.</p>
+                <p class="muted small"><Msg key="ui.generate_a_knockout_bracket_to_show_finishing_or" /></p>
               {/if}
             </section>
           {:else if useClassTabs && multiClassScreen}
@@ -3387,25 +3505,22 @@
             {@const cin = multiClassScreen.inner}
             {#if cin === 'groups'}
               <section class="card">
-                <h2 class="h2">Group phase · {def?.name ?? cid}</h2>
+                <h2 class="h2"><Msg key="ui.group.classPhaseTitle" params={{ name: def?.name ?? cid }} /></h2>
                 {#if slice.bracketMatches.length > 0}
                   <p class="group-lock-banner">
-                    Knockout bracket is active for this class — group lineup is locked here. You can still finish
-                    unfinished round‑robin matches from the matrix above.
+                    <Msg key="ui.group.knockoutActiveLockClass" tag="p" class="group-lock-banner" />
                   </p>
                 {/if}
                 {#if Object.keys(slice.groups).length === 0}
                   {@const classGroupPlayerCount = slice.seedings.length}
                   <p class="muted small">
-                    Players listed here are in this class (from the Players tab). Targets use closed-form bracket sizes
-                    (4 players per group; 2, 4, or 8 groups). Creating groups also creates all round‑robin matches for this
-                    class.
+                    <Msg key="ui.group.classPlayersHint" tag="p" class="muted small" />
                   </p>
                   <p class="muted small">
                     {#if classGroupPlayerCount === 0}
-                      No players in this class yet — enable the class checkbox for players on the Players tab.
+                      <Msg key="ui.group.noPlayersInClass" />
                     {:else}
-                      All {classGroupPlayerCount} players in this class are included, in class seeding order.
+                      <Msg key="ui.group.allInClassIncluded" params={{ count: String(classGroupPlayerCount) }} />
                     {/if}
                   </p>
                   <div class="group-create-row">
@@ -3416,7 +3531,7 @@
                       step="1"
                       disabled={slice.bracketMatches.length > 0}
                       value={classGroupTargetSize(cid)}
-                      aria-label="Target players per group for class"
+                      aria-label={msgText('ui.target_players_per_group_for_class')}
                       oninput={(e) => {
                         const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));
                         const s = getActiveSession();
@@ -3432,7 +3547,7 @@
                       disabled={slice.bracketMatches.length > 0 || classGroupPlayerCount === 0}
                       onclick={() => createClassGroupsByPlayerCount(cid)}
                     >
-                      Create by player count
+                      <Msg key="ui.group.createByPlayerCount" />
                     </button>
                     <div class="group-create-gap" aria-hidden="true"></div>
                     <input
@@ -3442,7 +3557,7 @@
                       step="1"
                       disabled={slice.bracketMatches.length > 0}
                       value={classGroupTargetCount(cid)}
-                      aria-label="Target number of groups for class"
+                      aria-label={msgText('ui.target_number_of_groups_for_class')}
                       oninput={(e) => {
                         const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));
                         const s = getActiveSession();
@@ -3458,7 +3573,7 @@
                       disabled={slice.bracketMatches.length > 0 || classGroupPlayerCount === 0}
                       onclick={() => createClassGroupsByGroupCount(cid)}
                     >
-                      Create by group count
+                      <Msg key="ui.group.createByGroupCount" />
                     </button>
                     <div class="group-create-spacer" aria-hidden="true"></div>
                   </div>
@@ -3470,17 +3585,17 @@
                       disabled={slice.bracketMatches.length > 0}
                       onclick={() => clearClassGroups(cid)}
                     >
-                      Clear groups
+                      <Msg key="ui.group.clearGroups" />
                     </button>
                   </div>
                   {#if DEBUG_UI}
                     <div class="row align-end">
                       <button type="button" class="btn subtle" onclick={() => debugSimulateGroupMatches(cid)}>
-                        [DEBUG] Simulate matches
+                        <Msg key="ui.group.debugSimulateMatches" />
                       </button>
                     </div>
                   {/if}
-                  <h3 class="h3">Groups</h3>
+                  <h3 class="h3"><Msg key="ui.groups" /></h3>
                   {#each sortGroupsForDisplay(slice.groups) as g (g.id)}
                     {@const matrixPids = groupMatrixPlayerOrder(g)}
                     {@const standingsWl = groupStandingsWlByPid(tournament, g, cid)}
@@ -3490,14 +3605,14 @@
                         <table class="grid compact group-matrix-table">
                           <thead>
                             <tr>
-                              <th>Player</th>
+                              <th><Msg key="ui.player" /></th>
                               {#each matrixPids as colPid (colPid)}
                                 <th class="h2h-th" title={playerLabel(colPid)}>
                                   <span class="h2h-th-inner"><PlayerName {tournament} playerId={colPid} classId={cid} /></span>
                                 </th>
                               {/each}
-                              <th>W</th>
-                              <th>L</th>
+                              <th><Msg key="ui.standings.win" /></th>
+                              <th><Msg key="ui.standings.loss" /></th>
                             </tr>
                           </thead>
                           <tbody>
@@ -3526,7 +3641,7 @@
                                           {/if}
                                         </button>
                                       {:else}
-                                        <span class="muted" title="No match">—</span>
+                                        <span class="muted" title={msgText('ui.no_match')}>—</span>
                                       {/if}
                                     {/if}
                                   </td>
@@ -3545,22 +3660,25 @@
               </section>
             {:else if cin === 'bracket'}
               <section class="card">
-                <h2 class="h2">Bracket · {def?.name ?? cid}</h2>
+                <h2 class="h2"><Msg key="ui.bracket.classTitle" params={{ name: def?.name ?? cid }} /></h2>
                 <p class="muted small">
-                  Per-class knockout generation from the app is not wired yet. The draw will appear here after you create a
-                  bracket for this class.
+                  <Msg key="ui.bracket.classNotWired" tag="p" class="muted small" />
                 </p>
                 <div class="row align-end bracket-create-row">
-                  <button type="button" class="btn primary" disabled>Per-class bracket generation (coming soon)</button>
+                  <button type="button" class="btn primary" disabled><Msg key="ui.per_class_bracket_generation_coming_soon" /></button>
                 </div>
 
                 {#if slice.bracketMatches.length > 0}
-                  <h3 class="h3">Knockout bracket</h3>
-                  <p class="muted small">
-                    Same centered layout as the global bracket. Player names appear once their group is fully played; until
-                    then slots show <span class="mono">group … place …</span> from current standings order.
-                    <span class="mono">--empty--</span> is a bye; “—” is a structural placeholder.
-                  </p>
+                  <h3 class="h3"><Msg key="ui.knockout_bracket" /></h3>
+                  <Msg
+                    key="ui.bracket.classLayoutHint"
+                    tag="p"
+                    class="muted small"
+                    params={{
+                      groupPlace: `${msgText('ui.group')} … ${msgText('model.placeWord')} …`,
+                      emptySlot: msgText('ui.slot.empty'),
+                    }}
+                  />
                   <BracketStreamView
                     cols={displayBracketColumns(slice.bracketMatches)}
                     mainDrawSlotCount={inferBracketSlotCountFromRoundOne(slice.bracketMatches)}
@@ -3568,8 +3686,8 @@
                     slotTitle={bracketSlotTitle}
                     bracketClassId={cid}
                     onPairingClick={openBracketPairingModal}
-                    ariaLabel="Class knockout bracket"
-                    emptyMessage="No class entrants — enable this class for players on the Players tab."
+                    ariaLabel={msgText('ui.bracket.classAria')}
+                    emptyMessage={msgText('ui.bracket.classEmptyEntrants')}
                   />
                   {#if DEBUG_UI}
                     <div class="row align-end">
@@ -3577,26 +3695,21 @@
                         type="button"
                         class="btn subtle"
                         disabled={anyUnfinishedGroupPhaseMatch(tournament)}
-                        title={anyUnfinishedGroupPhaseMatch(tournament)
-                          ? 'Complete every group‑phase match first.'
-                          : 'Fill scheduled knockout matches with random legal scores.'}
+                        title={debugSimulateBracketTitle()}
                         onclick={debugSimulateBracketPhaseMatches}
                       >
-                        [DEBUG] Simulate phase matches
+                        <Msg key="ui.bracket.debugSimulatePhase" />
                       </button>
                     </div>
                   {/if}
-                  <p class="muted small">
-                    Click a pairing in the bracket to view scores or enter games. You can change or clear a result only
-                    while the winner’s next bracket match has not been played yet.
-                  </p>
+                  <Msg key="ui.bracket.clickPairingHint" tag="p" class="muted small" />
                 {:else}
-                  <p class="muted small">The bracket appears here after a knockout bracket exists for this class.</p>
+                  <Msg key="ui.bracket.classAfterCreate" tag="p" class="muted small" />
                 {/if}
               </section>
             {:else if cin === 'results'}
               <section class="card">
-                <h2 class="h2">Results · {def?.name ?? cid}</h2>
+                <h2 class="h2"><Msg key="ui.results.classTitle" params={{ name: def?.name ?? cid }} /></h2>
                 {#if slice.bracketMatches.length > 0}
                   {@const classPlacementRows = singleEliminationPlacementRows(slice.bracketMatches, tournament)}
                   {#if classPlacementRows}
@@ -3609,10 +3722,10 @@
                       {/each}
                     </ol>
                   {:else}
-                    <p class="muted small">Complete the final match to list finishing order.</p>
+                    <p class="muted small"><Msg key="ui.complete_the_final_match_to_list_finishing_order" /></p>
                   {/if}
                 {:else}
-                  <p class="muted small">No knockout bracket for this class yet.</p>
+                  <p class="muted small"><Msg key="ui.no_knockout_bracket_for_this_class_yet" /></p>
                 {/if}
               </section>
             {/if}
@@ -3621,10 +3734,10 @@
       </div>
       {:else}
       <section class="card empty-tournament-card">
-        <h2 class="h2">No tournament in this tab</h2>
+        <h2 class="h2"><Msg key="ui.no_tournament_in_this_tab" /></h2>
         <p class="muted">
-          Go to <button type="button" class="linkish" onclick={() => selectWorkspaceTab('settings')}>Settings</button> to
-          create a tournament or import JSONL.
+          Go to <button type="button" class="linkish" onclick={() => selectWorkspaceTab('settings')}><Msg key="ui.settings" /></button>
+          <Msg key="ui.empty.createOrImportJsonl" tag="span" />
         </p>
       </section>
       {/if}
@@ -3633,17 +3746,19 @@
 
   {#if activeSess}
     <footer class="tournament-footer app-dock-footer" aria-label="Tournament activity">
-      <p class="footer-last muted">{lastCommandSummary}</p>
+      <p class="footer-last muted">
+        <span class:i18n-fallback={lastCommandSummary.isFallback}>{lastCommandSummary.text}</span>
+      </p>
       <div class="footer-actions">
-        <button type="button" class="btn ghost" onclick={doUndo} title="Append Undo for latest undoable step">Undo</button>
+        <button type="button" class="btn ghost" onclick={doUndo} title={msgText('ui.append_undo_for_latest_undoable_step')}><Msg key="ui.undo" /></button>
         <button
           type="button"
           class="btn ghost"
           onclick={doRedo}
           disabled={!activeSess.controller.canRedo()}
-          title="Drop last Undo from log"
+          title={msgText('ui.drop_last_undo_from_log')}
         >
-          Redo
+          <Msg key="ui.footer.redo" />
         </button>
       </div>
     </footer>
@@ -3652,9 +3767,15 @@
   {#if bracketHeuristicSearch}
     <div class="load-overlay" role="dialog" aria-modal="true" aria-labelledby="bracket-heuristic-search-title">
       <div class="load-panel">
-        <h3 id="bracket-heuristic-search-title" class="load-title">Optimizing bracket draw</h3>
+        <h3 id="bracket-heuristic-search-title" class="load-title"><Msg key="ui.optimizing_bracket_draw" /></h3>
         <p class="load-meta muted small">
-          Trying heuristic seeds — {bracketHeuristicSearch.done} / {bracketHeuristicSearch.total}
+          <Msg
+            key="ui.load.heuristicTrials"
+            params={{
+              done: String(bracketHeuristicSearch.done),
+              total: String(bracketHeuristicSearch.total),
+            }}
+          />
         </p>
         <div
           class="load-track"
@@ -3662,7 +3783,10 @@
           aria-valuenow={bracketHeuristicSearch.done}
           aria-valuemin="0"
           aria-valuemax={bracketHeuristicSearch.total}
-          aria-label={`${bracketHeuristicSearch.done} of ${bracketHeuristicSearch.total} heuristic trials`}
+          aria-label={msgText('ui.load.heuristicTrialsAria', {
+            done: String(bracketHeuristicSearch.done),
+            total: String(bracketHeuristicSearch.total),
+          })}
         >
           <div
             class="load-fill"
@@ -3676,10 +3800,15 @@
   {#if tournamentLoad}
     <div class="load-overlay" role="dialog" aria-modal="true" aria-labelledby="tournament-load-title">
       <div class="load-panel">
-        <h3 id="tournament-load-title" class="load-title">Loading “{tournamentLoad.label}”</h3>
+        <h3 id="tournament-load-title" class="load-title">
+          <Msg key="ui.load.loadingTournament" params={{ label: tournamentLoad.label }} />
+        </h3>
         {#if tournamentLoad.phase === 'replay' && tournamentLoad.total > 0}
           <p class="load-meta muted small">
-            Replaying commands — {tournamentLoad.done} / {tournamentLoad.total}
+            <Msg
+              key="ui.load.replayingCommands"
+              params={{ done: String(tournamentLoad.done), total: String(tournamentLoad.total) }}
+            />
           </p>
           <div
             class="load-track"
@@ -3687,7 +3816,10 @@
             aria-valuenow={tournamentLoad.done}
             aria-valuemin="0"
             aria-valuemax={tournamentLoad.total}
-            aria-label={`${tournamentLoad.done} of ${tournamentLoad.total} commands replayed`}
+            aria-label={msgText('ui.load.commandsReplayedAria', {
+              done: String(tournamentLoad.done),
+              total: String(tournamentLoad.total),
+            })}
           >
             <div
               class="load-fill"
@@ -3695,8 +3827,8 @@
             ></div>
           </div>
         {:else}
-          <p class="load-meta muted small">Reading tournament file…</p>
-          <div class="load-track load-track-indeterminate" role="progressbar" aria-busy="true" aria-label="Reading tournament file">
+          <p class="load-meta muted small"><Msg key="ui.load.readingFile" /></p>
+          <div class="load-track load-track-indeterminate" role="progressbar" aria-busy="true" aria-label={msgText('ui.reading_tournament_file')}>
             <div class="load-fill-indeterminate"></div>
           </div>
         {/if}
@@ -3710,7 +3842,7 @@
       <button
         type="button"
         class="modal-scrim"
-        aria-label="Close delete dialog"
+        aria-label={msgText('ui.close_delete_dialog')}
         disabled={deleteTournamentBusy}
         onclick={() => cancelDeleteTournamentModal()}
       ></button>
@@ -3722,7 +3854,7 @@
         tabindex="-1"
       >
         <header class="modal-head">
-          <h3 id="delete-tournament-title" class="modal-title">Delete tournament?</h3>
+          <h3 id="delete-tournament-title" class="modal-title"><Msg key="ui.delete_tournament" /></h3>
           <button
             type="button"
             class="btn subtle small-inline"
@@ -3733,10 +3865,11 @@
           </button>
         </header>
         <p class="muted small modal-lead">
-          This permanently removes the saved copy of <strong>{deleteTarget.tournamentName}</strong> from this
-          browser (local tournament files). Export a tournament file first if you need a backup.
+          <Msg key="ui.delete.lead" params={{ name: deleteTarget.tournamentName }} />
         </p>
-        <label class="field-label" for="delete-confirm-input">Type <strong>I understand</strong> to confirm</label>
+        <label class="field-label" for="delete-confirm-input">
+          <Msg key="ui.delete.typeToConfirm" params={{ confirm: msgText('ui.i_understand') }} />
+        </label>
         <input
           id="delete-confirm-input"
           type="text"
@@ -3764,7 +3897,7 @@
             disabled={!deleteConfirmOk || deleteTournamentBusy}
             onclick={() => confirmDeleteTournament()}
           >
-            {deleteTournamentBusy ? 'Deleting…' : 'Delete permanently'}
+            {deleteTournamentBusy ? msgText('ui.delete.deleting') : msgText('ui.delete.deletePermanently')}
           </button>
         </div>
       </div>
@@ -3779,7 +3912,7 @@
         <button
           type="button"
           class="modal-scrim"
-          aria-label="Close score dialog"
+          aria-label={msgText('ui.close_score_dialog')}
           onclick={() => cancelScoreModal()}
         ></button>
         <div
@@ -3791,27 +3924,29 @@
         >
           <header class="modal-head">
             <h3 id="score-modal-title" class="modal-title">
-              Games · {playerLabel(sm.playerA)} vs {playerLabel(sm.playerB)}
+              <Msg
+                key="ui.score.gamesTitle"
+                params={{ a: playerLabel(sm.playerA), b: playerLabel(sm.playerB) }}
+              />
             </h3>
-            <button type="button" class="btn subtle small-inline" onclick={() => cancelScoreModal()}>Close</button>
+            <button type="button" class="btn subtle small-inline" onclick={() => cancelScoreModal()}><Msg key="ui.close" /></button>
           </header>
-          <p class="muted small modal-lead">
-            Best of five (first to three games). Each game is won at 11+ with a two-point margin; once either player is
-            past 11, the winning margin must be exactly two. Extra rows appear automatically when the match is not decided
-            after three or four valid games (up to five games).
-          </p>
+          <Msg key="ui.score.rulesLead" tag="p" class="muted small modal-lead" />
           {#if !scoreModalCanEditGames() && (sm.status === 'finished' || sm.scores.length > 0)}
             <p class="muted small modal-lead">
               {#if sm.groupId}
-                This group result cannot be edited: a knockout match in this track already has recorded play.
+                <Msg key="ui.score.groupLockedEdit" />
               {:else}
-                This result cannot be edited: the winner’s next bracket match already has scores (or this round is locked).
+                <Msg key="ui.score.bracketLockedEdit" />
               {/if}
             </p>
           {/if}
           {#if scoreModalAssignedTableId()}
             <p class="score-modal-table-readout muted small">
-              <span class="field-label">Playing on table</span> Table {scoreModalAssignedTableId()}
+              <Msg
+                key="ui.score.tableReadout"
+                params={{ table: String(scoreModalAssignedTableId()) }}
+              />
             </p>
           {/if}
           <table class="mini score-modal-table">
@@ -3857,7 +3992,7 @@
             <p class="modal-error">{scoreModalHint}</p>
           {/if}
           <div class="row modal-actions">
-            <button type="button" class="btn" onclick={() => cancelScoreModal()}>Cancel</button>
+            <button type="button" class="btn" onclick={() => cancelScoreModal()}><Msg key="ui.cancel" /></button>
             {#if DEBUG_UI}
               <button
                 type="button"
@@ -3865,12 +4000,12 @@
                 disabled={!scoreModalCanEditGames()}
                 onclick={() => debugSimulateOpenScoreModalMatch()}
               >
-                [DEBUG] Simulate match
+                <Msg key="ui.score.debugSimulate" />
               </button>
             {/if}
             {#if scoreModalCanClearResult()}
               <button type="button" class="btn danger-ghost" onclick={() => clearScoreModalBracketResult()}>
-                Clear result
+                <Msg key="ui.score.clearResult" />
               </button>
             {/if}
             <button
@@ -3879,7 +4014,7 @@
               disabled={!scoreModalCanEditGames()}
               onclick={() => submitScores(sm)}
             >
-              Save match
+              <Msg key="ui.score.saveMatch" />
             </button>
           </div>
         </div>
@@ -3950,6 +4085,36 @@
     align-items: center;
     gap: 0.35rem;
     margin-left: auto;
+  }
+
+  .lang-switch {
+    display: flex;
+    align-items: center;
+    gap: 0.2rem;
+    margin-left: 0.35rem;
+  }
+
+  .lang-btn {
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    padding: 0.35rem 0.55rem;
+    border: 1px solid var(--border, #ccc);
+    border-radius: 0.35rem;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .lang-btn.active {
+    background: var(--accent, #2563eb);
+    border-color: var(--accent, #2563eb);
+    color: #fff;
+  }
+
+  :global(.i18n-fallback) {
+    color: var(--i18n-fallback, #c00);
   }
 
   .session-close-btn {
