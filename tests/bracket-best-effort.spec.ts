@@ -2,6 +2,15 @@ import { describe, it, expect } from 'vitest';
 import {
   bestEffortOrderParticipantsForGroupBracket,
   searchBestHeuristicBracketOrder,
+  postprocessBracketLeafByeRankSwaps,
+  bracketPartitionTreeTotalPenalty,
+  buildBracketPartitionTree,
+  applyLeafPlayersToEqualizedPartitionTree,
+  bracketPartitionEntryByPid,
+  collectBracketPartitionTerminals,
+  equalizeBracketPartitionTreeDepths,
+  flattenBracketPartitionTreeToLeafOrder,
+  maxBracketPartitionTerminalDepth,
   bipartitionBracketPlayers,
   bracketMatchRound,
   buildBracketLeafOrderByBipartition,
@@ -301,6 +310,58 @@ describe('bipartition bracket leaf order', () => {
       const row = bracket.find((m) => m.seedA === pid || m.seedB === pid);
       expect(row?.seedA && row?.seedB).toBe(true);
     }
+  });
+});
+
+describe('postprocessBracketLeafByeRankSwaps', () => {
+  it('swaps a bye holder with a better-ranked forced round-1 player until stable', () => {
+    const placeByPid = new Map([
+      ['p1', 1],
+      ['p2', 2],
+      ['p3', 3],
+    ]);
+    const leaves = ['p3', 'BYE', 'p1', 'p2', 'BYE', 'BYE', 'BYE', 'BYE'];
+    const out = postprocessBracketLeafByeRankSwaps(leaves, placeByPid);
+    expect(out[0]).toBe('p1');
+    expect(out[1]).toBe('BYE');
+    expect(out[2]).toBe('p3');
+    expect(out[3]).toBe('p2');
+  });
+
+  it('partition-tree penalty reflects final leaf assignment (e.g. who holds the bye)', () => {
+    const entries = [
+      { pid: 'p1', groupIndex: 0, place: 1 },
+      { pid: 'p2', groupIndex: 0, place: 2 },
+      { pid: 'p3', groupIndex: 0, place: 3 },
+    ];
+    const built = buildBracketPartitionTree(entries);
+    const terminals = collectBracketPartitionTerminals(built.tree);
+    const maxDepth = maxBracketPartitionTerminalDepth(terminals);
+    const equalized = equalizeBracketPartitionTreeDepths(built.tree, 0, maxDepth);
+    const entryByPid = bracketPartitionEntryByPid(entries);
+    const treeP3Bye = applyLeafPlayersToEqualizedPartitionTree(
+      equalized,
+      ['p3', 'BYE', 'p1', 'p2'],
+      entryByPid,
+    );
+    const treeP1Bye = applyLeafPlayersToEqualizedPartitionTree(
+      equalized,
+      ['p1', 'BYE', 'p3', 'p2'],
+      entryByPid,
+    );
+    expect(bracketPartitionTreeTotalPenalty(treeP1Bye, entries)).not.toBe(
+      bracketPartitionTreeTotalPenalty(treeP3Bye, entries),
+    );
+  });
+
+  it('does not swap when every round-1 player is at least as strong as every bye holder', () => {
+    const placeByPid = new Map([
+      ['p1', 1],
+      ['p2', 2],
+      ['p3', 3],
+    ]);
+    const leaves = ['p1', 'BYE', 'p2', 'p3'];
+    expect(postprocessBracketLeafByeRankSwaps(leaves, placeByPid)).toEqual(leaves);
   });
 });
 

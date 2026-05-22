@@ -1430,7 +1430,8 @@ export type BracketBipartitionPenaltyConfig = {
   /** Per existing set member from the same group as the candidate. */
   sameGroupPenalty: number;
   /**
-   * Non-empty set rank term: multiplier × (max in-group rank − |candidate rank − average set rank|).
+   * Non-empty set rank term: multiplier × (max in-group rank − min distance to any set member).
+   * Closer in-group ranks incur a higher penalty than farther-apart ranks.
    */
   rankSpreadMultiplier: number;
   /** Per existing set member with the same in-group rank as the candidate (non-empty sets only). */
@@ -1476,13 +1477,14 @@ function bracketSetPenaltyForPlayer(
   if (set.length === 0) {
     penalty += entry.place;
   } else {
+    let minRankDist = Infinity;
     for (const other of set) {
       if (other.place === entry.place) {
         penalty += cfg.sameRankPenalty;
       }
+      minRankDist = Math.min(minRankDist, Math.abs(entry.place - other.place));
     }
-    const avgRank = set.reduce((sum, other) => sum + other.place, 0) / set.length;
-    penalty += cfg.rankSpreadMultiplier * (maxGroupRank - Math.abs(entry.place - avgRank));
+    penalty += cfg.rankSpreadMultiplier * (maxGroupRank - minRankDist);
   }
   return penalty;
 }
@@ -1764,6 +1766,177 @@ export function equalizeBracketPartitionTreeDepths(
   };
 }
 
+function isBracketLeafByeSlot(pid: PlayerId): boolean {
+  return pid === 'BYE' || isBracketLayoutDummyPid(pid);
+}
+
+function bracketPartitionPlaceByPid(
+  entries: readonly BracketPartitionEntry[],
+): Map<PlayerId, number> {
+  return new Map(entries.map((e) => [e.pid, e.place]));
+}
+
+/**
+ * After bipartition leaf order is built, iteratively swap round-1 bye holders with forced round-1
+ * players when the worst bye is worse-ranked than the best forced player (in-group place: 1 = best;
+ * swap when worst-bye place > best-forced place, i.e. rank B < rank A when rank increases with
+ * standing).
+ */
+export function postprocessBracketLeafByeRankSwaps(
+  leaves: readonly PlayerId[],
+  placeByPid: ReadonlyMap<PlayerId, number>,
+): PlayerId[] {
+  const out = [...leaves];
+  const pairCount = Math.floor(out.length / 2);
+
+  while (true) {
+    let bestForcedPlace = Infinity;
+    let bestForcedIndex = -1;
+    let worstByePlace = -Infinity;
+    let worstByeIndex = -1;
+
+    for (let pair = 0; pair < pairCount; pair++) {
+      const i = 2 * pair;
+      const a = out[i]!;
+      const b = out[i + 1]!;
+      const aBye = isBracketLeafByeSlot(a);
+      const bBye = isBracketLeafByeSlot(b);
+
+      if (aBye !== bBye) {
+        const playerIndex = aBye ? i + 1 : i;
+        const pid = out[playerIndex]!;
+        const place = placeByPid.get(pid);
+        if (place !== undefined && place > worstByePlace) {
+          worstByePlace = place;
+          worstByeIndex = playerIndex;
+        }
+      } else if (!aBye && !bBye) {
+        for (const idx of [i, i + 1] as const) {
+          const pid = out[idx]!;
+          const place = placeByPid.get(pid);
+          if (place !== undefined && place < bestForcedPlace) {
+            bestForcedPlace = place;
+            bestForcedIndex = idx;
+          }
+        }
+      }
+    }
+
+    if (bestForcedIndex < 0 || worstByeIndex < 0 || worstByePlace <= bestForcedPlace) {
+      break;
+    }
+
+    const tmp = out[bestForcedIndex]!;
+    out[bestForcedIndex] = out[worstByeIndex]!;
+    out[worstByeIndex] = tmp;
+  }
+
+  return out;
+}
+
+export function bracketPartitionEntryByPid(
+  entries: readonly BracketPartitionEntry[],
+): Map<PlayerId, BracketPartitionEntry> {
+  return new Map(entries.map((e) => [e.pid, e]));
+}
+
+/** All partition entries in an in-order subtree (terminals only). */
+function collectBracketPartitionSubtreeEntries(node: BracketPartitionTree): BracketPartitionEntry[] {
+  if (node.kind === 'terminal') return [...node.entries];
+  return [
+    ...collectBracketPartitionSubtreeEntries(node.left),
+    ...collectBracketPartitionSubtreeEntries(node.right),
+  ];
+}
+
+/**
+ * Every set that was (or would have been) bipartitioned: the full subtree at each branch plus each
+ * terminal leaf subset, from 1–2 player leaves up to the root half-tree.
+ */
+function collectBracketPartitionSetsFromTree(node: BracketPartitionTree): BracketPartitionEntry[][] {
+  const members = collectBracketPartitionSubtreeEntries(node);
+  if (node.kind === 'terminal') {
+    return members.length > 0 ? [members] : [];
+  }
+  return [members, ...collectBracketPartitionSetsFromTree(node.left), ...collectBracketPartitionSetsFromTree(node.right)];
+}
+
+/** Sum, for each member of {@link set}, {@link bracketSetPenaltyForPlayer} against all other members. */
+function bracketPartitionSetMembersPenalty(
+  set: readonly BracketPartitionEntry[],
+  allEntries: readonly BracketPartitionEntry[],
+  cfg: BracketBipartitionPenaltyConfig,
+): number {
+  if (set.length === 0) return 0;
+  const maxPlaceByGroup = maxGroupRankByGroupIndex(allEntries);
+  let total = 0;
+  for (let i = 0; i < set.length; i++) {
+    const entry = set[i]!;
+    const others = set.filter((_, j) => j !== i);
+    total += bracketSetPenaltyForPlayer(others, entry, maxPlaceByGroup, cfg);
+  }
+  return total;
+}
+
+/** Total penalty over every partition set at every level in the final (equalized) tree. */
+export function bracketPartitionTreeTotalPenalty(
+  tree: BracketPartitionTree,
+  allEntries: readonly BracketPartitionEntry[],
+  cfg: BracketBipartitionPenaltyConfig = DEFAULT_BRACKET_BIPARTITION_PENALTIES,
+): number {
+  const sets = collectBracketPartitionSetsFromTree(tree);
+  return sets.reduce((sum, set) => sum + bracketPartitionSetMembersPenalty(set, allEntries, cfg), 0);
+}
+
+/**
+ * Reassign terminal players from a postprocessed leaf order (same traversal as
+ * {@link flattenBracketPartitionTreeToLeafOrder}, excluding trailing pad slots).
+ */
+export function applyLeafPlayersToEqualizedPartitionTree(
+  tree: BracketPartitionTree,
+  leaves: readonly PlayerId[],
+  entryByPid: ReadonlyMap<PlayerId, BracketPartitionEntry>,
+): BracketPartitionTree {
+  let leafIndex = 0;
+
+  function visit(node: BracketPartitionTree): BracketPartitionTree {
+    if (node.kind === 'terminal') {
+      const newEntries: BracketPartitionEntry[] = [];
+      if (node.entries.length === 1) {
+        const pid = leaves[leafIndex++];
+        if (pid === undefined || isBracketLeafByeSlot(pid)) {
+          throw new Error('applyLeafPlayersToEqualizedPartitionTree: expected player before BYE');
+        }
+        const meta = entryByPid.get(pid);
+        if (!meta) throw new Error(`applyLeafPlayersToEqualizedPartitionTree: unknown player ${pid}`);
+        newEntries.push(meta);
+        if (leafIndex < leaves.length && isBracketLeafByeSlot(leaves[leafIndex]!)) {
+          leafIndex++;
+        }
+      } else {
+        for (let k = 0; k < node.entries.length; k++) {
+          const pid = leaves[leafIndex++];
+          if (pid === undefined || isBracketLeafByeSlot(pid)) {
+            throw new Error('applyLeafPlayersToEqualizedPartitionTree: expected player in terminal pair');
+          }
+          const meta = entryByPid.get(pid);
+          if (!meta) throw new Error(`applyLeafPlayersToEqualizedPartitionTree: unknown player ${pid}`);
+          newEntries.push(meta);
+        }
+      }
+      return { kind: 'terminal', entries: newEntries };
+    }
+    return {
+      kind: 'branch',
+      left: visit(node.left),
+      right: visit(node.right),
+    };
+  }
+
+  const out = visit(tree);
+  return out;
+}
+
 /** In-order leaf slots: 1-player terminals become `[player, BYE]`; 2-player terminals stay paired. */
 export function flattenBracketPartitionTreeToLeafOrder(node: BracketPartitionTree): PlayerId[] {
   if (node.kind === 'terminal') {
@@ -1795,12 +1968,14 @@ export function buildBracketLeafOrderByBipartition(
   const maxDepth = maxBracketPartitionTerminalDepth(terminals);
   const equalized = equalizeBracketPartitionTreeDepths(built.tree, 0, maxDepth);
 
-  let leaves = flattenBracketPartitionTreeToLeafOrder(equalized);
+  const leaves = flattenBracketPartitionTreeToLeafOrder(equalized);
+  const totalPenalty = bracketPartitionTreeTotalPenalty(equalized, entries, cfg);
   const slotCount = nextPowerOfTwo(leaves.length);
-  while (leaves.length < slotCount) {
-    leaves.push('BYE');
+  const padded = [...leaves];
+  while (padded.length < slotCount) {
+    padded.push('BYE');
   }
-  return { leaves, totalPenalty: built.penalty };
+  return { leaves: padded, totalPenalty };
 }
 
 /**
@@ -1925,8 +2100,28 @@ export function bestEffortOrderWithPenaltyForGroupBracket(
 ): { order: PlayerId[]; totalPenalty: number } | null {
   const entries = resolveBracketPartitionEntriesForBestEffort(tournament, participantIds, classId);
   if (!entries) return null;
-  const built = buildBracketLeafOrderByBipartition(entries, cfg, tieBreakSalt);
-  return { order: built.leaves, totalPenalty: built.totalPenalty };
+
+  const built = buildBracketPartitionTree(entries, cfg, tieBreakSalt);
+  const terminals = collectBracketPartitionTerminals(built.tree);
+  const maxDepth = maxBracketPartitionTerminalDepth(terminals);
+  const equalized = equalizeBracketPartitionTreeDepths(built.tree, 0, maxDepth);
+
+  let leaves = flattenBracketPartitionTreeToLeafOrder(equalized);
+  leaves = postprocessBracketLeafByeRankSwaps(leaves, bracketPartitionPlaceByPid(entries));
+
+  const tree = applyLeafPlayersToEqualizedPartitionTree(
+    equalized,
+    leaves,
+    bracketPartitionEntryByPid(entries),
+  );
+  const totalPenalty = bracketPartitionTreeTotalPenalty(tree, entries, cfg);
+
+  const slotCount = nextPowerOfTwo(leaves.length);
+  const order = [...leaves];
+  while (order.length < slotCount) {
+    order.push('BYE');
+  }
+  return { order, totalPenalty };
 }
 
 function heuristicTrialSalt(baseSalt: string, trialIndex: number): string {
