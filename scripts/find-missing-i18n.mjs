@@ -12,7 +12,6 @@ function loadKeys() {
   for (const file of [
     'src/i18n/catalog-ui.ts',
     'src/i18n/catalog-ui-summary.ts',
-    'src/i18n/catalog-ui.generated.ts',
     'src/i18n/catalog-ui-remaining.ts',
   ]) {
     const src = fs.readFileSync(file, 'utf8');
