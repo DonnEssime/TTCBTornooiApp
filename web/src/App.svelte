@@ -305,11 +305,14 @@
     label: string,
   ): Promise<Awaited<ReturnType<typeof tournamentControllerFromCommandLogAsync>>> {
     try {
+      const progressEvery = 16;
       return await tournamentControllerFromCommandLogAsync(text, {}, {
         onProgress: ({ done, total }) => {
-          tournamentLoad = { label, phase: 'replay', done, total };
+          if (done === 1 || done === total || done % progressEvery === 0) {
+            tournamentLoad = { label, phase: 'replay', done, total };
+          }
         },
-        yieldEvery: 32,
+        yieldEvery: 8,
         profileExecute: DEBUG_UI,
       });
     } finally {
@@ -393,6 +396,44 @@
   }
 
   let persistSnapshotByFile = new Map<string, string>();
+
+  /** While > 0, {@link pull} is deferred until {@link endUiBatch}. */
+  let uiBatchDepth = 0;
+
+  function normalizeJsonlForSnapshot(text: string): string {
+    return text.length === 0 ? '' : text.endsWith('\n') ? text : `${text}\n`;
+  }
+
+  function persistSnapshotKey(tournamentName: string, jsonl: string): string {
+    return `${tournamentName}\n${normalizeJsonlForSnapshot(jsonl)}`;
+  }
+
+  /** Mark OPFS as up-to-date (e.g. after loading or import) so the next pull skips a rewrite. */
+  function seedPersistSnapshot(fileId: string, tournamentName: string, jsonl: string): void {
+    persistSnapshotByFile.set(fileId, persistSnapshotKey(tournamentName, jsonl));
+  }
+
+  function beginUiBatch(): void {
+    uiBatchDepth++;
+  }
+
+  function endUiBatch(options: { persist?: boolean } = {}): void {
+    if (uiBatchDepth <= 0) return;
+    uiBatchDepth--;
+    if (uiBatchDepth === 0) {
+      pull({ persist: options.persist ?? true });
+    }
+  }
+
+  /** Run many controller mutations with one UI refresh and one auto-save at the end. */
+  function runUiBatch(fn: () => void, options: { persist?: boolean } = {}): void {
+    beginUiBatch();
+    try {
+      fn();
+    } finally {
+      endUiBatch(options);
+    }
+  }
 
   async function persistActiveSession(): Promise<void> {
     const s = getActiveSession();
@@ -478,7 +519,7 @@
   async function persistSession(s: TournamentSession): Promise<boolean> {
     if (!storageAvailable) return true;
     const text = exportCommandsAsJsonLines(s.controller.getCommandLog());
-    const snapshot = `${s.tournamentName}\n${text}`;
+    const snapshot = persistSnapshotKey(s.tournamentName, text);
     if (persistSnapshotByFile.get(s.storageFileId) === snapshot) return true;
     try {
       await saveTournament(s.storageFileId, s.tournamentName, text);
@@ -561,6 +602,11 @@
         showError(`Could not open tournament: ${reason}`);
         return;
       }
+      seedPersistSnapshot(
+        fileId,
+        label,
+        exportCommandsAsJsonLines(next.getCommandLog()),
+      );
       const session = sessionFromController(fileId, label, next);
       activateSession(session);
       logDebugReplayExecuteProfile(label, replay.executeProfile);
@@ -1117,8 +1163,18 @@
   }
 
   const DEBUG_NAME_PARTS = {
-    adj: ['Swift', 'Quiet', 'Lucky', 'Bold', 'Calm', 'Keen', 'Bright', 'Steady', 'Quick', 'Fine'],
-    noun: ['Fox', 'River', 'Paddle', 'Ace', 'Spin', 'Loop', 'Drive', 'Block', 'Serve', 'Rally'],
+    adj: [
+      'Swift', 'Quiet', 'Lucky', 'Bold', 'Calm', 'Keen', 'Bright', 'Steady', 'Quick', 'Fine',
+      'Sharp', 'Nimble', 'Agile', 'Fierce', 'Cool', 'Crisp', 'Smooth', 'Solid', 'Hardy', 'Fresh',
+      'Clear', 'Prime', 'Noble', 'Grand', 'True', 'Fair', 'Pure', 'Wild', 'Brave', 'Alert',
+      'Active', 'Rapid',
+    ],
+    noun: [
+      'Fox', 'River', 'Paddle', 'Ace', 'Spin', 'Loop', 'Drive', 'Block', 'Serve', 'Rally',
+      'Ball', 'Blade', 'Net', 'Table', 'Champ', 'Star', 'Hawk', 'Wolf', 'Bear', 'Lion',
+      'Eagle', 'Shark', 'Storm', 'Flame', 'Spark', 'Bolt', 'King', 'Queen', 'Knight', 'Guard',
+      'Peak', 'Edge',
+    ],
   };
 
   /** All "Adjective Noun" debug display names (no numeric suffix). */
@@ -1215,34 +1271,33 @@
     const rng = Math.random;
     let done = 0;
     const maxIters = 200;
-    for (let iter = 0; iter < maxIters; iter++) {
-      t = c.getTournament();
-      debugEnsureBracketMatchRows(c, s);
-      t = c.getTournament();
-      const roundEntries = bracketSimulateEligibleEntries(t).filter((e) => e.round === targetRound);
-      if (roundEntries.length === 0) break;
-      const m = sortBracketSimulateMatches(roundEntries.map((e) => e.m))[0]!;
+    runUiBatch(() => {
+      for (let iter = 0; iter < maxIters; iter++) {
+        let t = c.getTournament();
+        debugEnsureBracketMatchRows(c, s);
+        t = c.getTournament();
+        const roundEntries = bracketSimulateEligibleEntries(t).filter((e) => e.round === targetRound);
+        if (roundEntries.length === 0) break;
+        const m = sortBracketSimulateMatches(roundEntries.map((e) => e.m))[0]!;
 
-      const scores = debugRandomLegalBo5Scores(rng);
-      if (!isMatchScoreLegal(scores)) {
-        showError('Internal: generated illegal scores.');
-        pull();
-        return;
+        const scores = debugRandomLegalBo5Scores(rng);
+        if (!isMatchScoreLegal(scores)) {
+          showError('Internal: generated illegal scores.');
+          return;
+        }
+        const bid = m.id.startsWith('match-') ? m.id.slice('match-'.length) : '';
+        const bm = bid ? t.bracketMatches.find((x) => x.id === bid) : undefined;
+        const createCmdId = bm ? c.findLatestActiveCreateMatchCommandId(m.id) : undefined;
+        const deps = createCmdId ? [createCmdId] : [];
+        const cmdId = `cmd-dbg-brkt-${m.id}-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
+        const r = c.enterScore(m.id, scores, deps, cmdId);
+        if (!r.success) {
+          showError(r.reason ?? `Stopped while scoring ${m.id} (${done} done).`);
+          return;
+        }
+        done++;
       }
-      const bid = m.id.startsWith('match-') ? m.id.slice('match-'.length) : '';
-      const bm = bid ? t.bracketMatches.find((x) => x.id === bid) : undefined;
-      const createCmdId = bm ? c.findLatestActiveCreateMatchCommandId(m.id) : undefined;
-      const deps = createCmdId ? [createCmdId] : [];
-      const cmdId = `cmd-dbg-brkt-${m.id}-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
-      const r = c.enterScore(m.id, scores, deps, cmdId);
-      if (!r.success) {
-        showError(r.reason ?? `Stopped while scoring ${m.id} (${done} done).`);
-        pull();
-        return;
-      }
-      done++;
-      pull();
-    }
+    });
 
     if (done === 0) {
       showWarn('No knockout matches awaiting scores to simulate (byes and finished slots are skipped).');
@@ -1251,14 +1306,13 @@
     }
 
     showInfo(`Debug: simulated ${done} bracket match(es) (round ${targetRound}).`);
-    pull();
   }
 
   function debugFillPlayers(): void {
     clearStatus();
     const s = getActiveSession();
     if (!s) return;
-    const n = Math.max(0, Math.min(80, Math.floor(Number(debugFillPlayerCount.trim()))));
+    const n = Math.max(0, Math.min(256, Math.floor(Number(debugFillPlayerCount.trim()))));
     if (!Number.isFinite(n) || n < 1) {
       showWarn('Enter a positive number of players.');
       return;
@@ -1281,46 +1335,41 @@
     const pool = shuffleDeterministic([...basePool], shuffleKey);
     const rng = Math.random;
     const addedIds: string[] = [];
-    for (let i = 0; i < n; i++) {
-      const id = newId();
-      const cmdId = `cmd-${id}`;
-      const hc = randomHandicapForTournament(rng);
-      const r = c.createPlayer(id, pool[i]!, hc, cmdId);
-      if (!r.success) {
-        showError(r.reason ?? `Stopped after ${addedIds.length} player(s).`);
-        pull();
+    runUiBatch(() => {
+      for (let i = 0; i < n; i++) {
+        const id = newId();
+        const cmdId = `cmd-${id}`;
+        const hc = randomHandicapForTournament(rng);
+        const r = c.createPlayer(id, pool[i]!, hc, cmdId);
+        if (!r.success) {
+          showError(r.reason ?? `Stopped after ${addedIds.length} player(s).`);
+          return;
+        }
+        addedIds.push(id);
+      }
+      const newOrder = [...s.playerOrder, ...addedIds];
+      const seedDeps = newOrder.map((pid) => `cmd-${pid}`);
+      const seedCmdId = `cmd-seed-${crypto.randomUUID().replaceAll('-', '').slice(0, 14)}`;
+      const rSeed = c.setSeedings(newOrder, seedDeps, seedCmdId);
+      if (!rSeed.success) {
+        showError(rSeed.reason ?? 'Could not update seedings after debug fill');
         return;
       }
-      addedIds.push(id);
-    }
-    const newOrder = [...s.playerOrder, ...addedIds];
-    const seedDeps = newOrder.map((pid) => `cmd-${pid}`);
-    const seedCmdId = `cmd-seed-${crypto.randomUUID().replaceAll('-', '').slice(0, 14)}`;
-    const rSeed = c.setSeedings(newOrder, seedDeps, seedCmdId);
-    if (!rSeed.success) {
-      showError(rSeed.reason ?? 'Could not update seedings after debug fill');
-      pull();
-      return;
-    }
-    patchActiveSession({ playerOrder: newOrder, lastSeedingCommandId: seedCmdId });
-    const t1 = c.getTournament();
-    const defs = t1.classDefinitions;
-    if (defs.length >= 2) {
-      for (const pid of addedIds) {
-        const flags: Record<string, boolean> = {};
-        for (const def of defs) {
-          flags[def.id] = rng() < 0.4;
+      patchActiveSession({ playerOrder: newOrder, lastSeedingCommandId: seedCmdId });
+      const t1 = c.getTournament();
+      const defs = t1.classDefinitions;
+      if (defs.length > 0) {
+        for (const pid of addedIds) {
+          const flags: Record<string, boolean> = {};
+          for (const def of defs) {
+            flags[def.id] = rng() < 0.5;
+          }
+          const cmdId = `cmd-dbg-class-${pid}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
+          c.setPlayerClassFlags(pid, flags, [`cmd-${pid}`], cmdId);
         }
-        if (!defs.some((d) => flags[d.id])) {
-          const pick = defs[debugRandomInt(rng, 0, defs.length - 1)]!;
-          flags[pick.id] = true;
-        }
-        const cmdId = `cmd-dbg-class-${pid}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
-        c.setPlayerClassFlags(pid, flags, [`cmd-${pid}`], cmdId);
       }
-    }
-    showInfo(`Debug: added ${n} player(s).`);
-    pull();
+      showInfo(`Debug: added ${n} player(s).`);
+    });
   }
 
   function debugSimulateGroupMatches(classId: string | undefined): void {
@@ -1337,24 +1386,23 @@
     }
     const rng = Math.random;
     let done = 0;
-    for (const m of list) {
-      const scores = debugRandomLegalBo5Scores(rng);
-      if (!isMatchScoreLegal(scores)) {
-        showError('Internal: generated illegal scores.');
-        pull();
-        return;
+    runUiBatch(() => {
+      for (const m of list) {
+        const scores = debugRandomLegalBo5Scores(rng);
+        if (!isMatchScoreLegal(scores)) {
+          showError('Internal: generated illegal scores.');
+          return;
+        }
+        const cmdId = `cmd-dbg-sim-${m.id}-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
+        const r = c.enterScore(m.id, scores, [], cmdId);
+        if (!r.success) {
+          showError(r.reason ?? `Stopped while scoring ${m.id} (${done} done).`);
+          return;
+        }
+        done++;
       }
-      const cmdId = `cmd-dbg-sim-${m.id}-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
-      const r = c.enterScore(m.id, scores, [], cmdId);
-      if (!r.success) {
-        showError(r.reason ?? `Stopped while scoring ${m.id} (${done} done).`);
-        pull();
-        return;
-      }
-      done++;
-    }
-    showInfo(`Debug: simulated ${done} group match(es).`);
-    pull();
+      showInfo(`Debug: simulated ${done} group match(es).`);
+    });
   }
 
   function groupStandingsForGroup(
@@ -1628,7 +1676,8 @@
     sessions = sessions.map((s) => (s.id === activeSessionId ? { ...s, ...patch } : s));
   }
 
-  function pull(): void {
+  function pull(options: { persist?: boolean } = {}): void {
+    if (uiBatchDepth > 0) return;
     try {
       const s = getActiveSession();
       if (!s) {
@@ -1721,7 +1770,9 @@
         if (!po.includes(k)) delete hd[k];
       }
       handicapDrafts = hd;
-      void persistActiveSession();
+      if (options.persist !== false) {
+        void persistActiveSession();
+      }
     } catch (e) {
       // Avoid hard-locking the UI on a render-triggering exception; surface it.
       console.error('pull() failed', e);
@@ -2014,6 +2065,17 @@
       return;
     }
     patchActiveSession({ playerOrder: newOrder, lastSeedingCommandId: seedCmdId });
+    const defs = c.getTournament().classDefinitions;
+    if (defs.length > 0) {
+      const firstClassId = defs[0]!.id;
+      const classCmdId = `cmd-pcf-${id}-${firstClassId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 8)}`;
+      const rClass = c.setPlayerClassFlags(id, { [firstClassId]: true }, [`cmd-${id}`], classCmdId);
+      if (!rClass.success) {
+        showError(rClass.reason ?? 'Could not assign competition class');
+        pull();
+        return;
+      }
+    }
     newName = '';
     newHc = 0;
     showInfo(`Added ${name} (${id}).`);
@@ -2050,40 +2112,38 @@
     const genId = `cmd-gen-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
     const shuffleKey = s.tournamentName.trim() || 'Tournament';
     const tieBreakSalt = String(Date.now());
-    const r = c.generateBracket(true, false, deps, genId, shuffleKey, {
-      bracketSeedingMode: bracketSeedingChoice,
-      tieBreakSalt,
-    });
-    if (!r.success) {
-      showError(r.reason ?? 'Bracket generation failed');
-      pull();
-      return;
-    }
-    const live = c.getTournament();
-    const r1 = live.bracketMatches.filter((m) => bracketMatchRound(m) === 1 && m.seedA && m.seedB);
-    if (r1.length === 0) {
-      showWarn('Bracket generated, but no round‑1 pairings with two players.');
-      pull();
-      return;
-    }
-    for (const bm of r1) {
-      const mid = `match-${bm.id}`;
-      if (live.matches[mid]) continue;
-      const a = bm.seedA!;
-      const b = bm.seedB!;
-      const createCmdId = `${genId}-pair-${bm.id}`;
-      const rM = c.createMatch(mid, a, b, [genId, `cmd-${a}`, `cmd-${b}`], createCmdId);
-      if (!rM.success) {
-        showError(rM.reason ?? 'createMatch failed');
-        pull();
+    runUiBatch(() => {
+      const r = c.generateBracket(true, false, deps, genId, shuffleKey, {
+        bracketSeedingMode: bracketSeedingChoice,
+        tieBreakSalt,
+      });
+      if (!r.success) {
+        showError(r.reason ?? 'Bracket generation failed');
         return;
       }
-    }
-    if (c.getTournament().bracketMatches.length > 0) {
-      patchActiveSession({ nav: { kind: 'single', inner: 'bracket' } });
-    }
-    showInfo('Knockout bracket generated (byes filled) and round‑1 matches created.');
-    pull();
+      const live = c.getTournament();
+      const r1 = live.bracketMatches.filter((m) => bracketMatchRound(m) === 1 && m.seedA && m.seedB);
+      if (r1.length === 0) {
+        showWarn('Bracket generated, but no round‑1 pairings with two players.');
+        return;
+      }
+      for (const bm of r1) {
+        const mid = `match-${bm.id}`;
+        if (live.matches[mid]) continue;
+        const a = bm.seedA!;
+        const b = bm.seedB!;
+        const createCmdId = `${genId}-pair-${bm.id}`;
+        const rM = c.createMatch(mid, a, b, [genId, `cmd-${a}`, `cmd-${b}`], createCmdId);
+        if (!rM.success) {
+          showError(rM.reason ?? 'createMatch failed');
+          return;
+        }
+      }
+      if (c.getTournament().bracketMatches.length > 0) {
+        patchActiveSession({ nav: { kind: 'single', inner: 'bracket' } });
+      }
+      showInfo('Knockout bracket generated (byes filled) and round‑1 matches created.');
+    });
   }
 
   function removeKnockoutBracket(): void {
@@ -2245,13 +2305,12 @@
       showError(`Import failed: ${reason}`);
       return;
     }
+    const exported = exportCommandsAsJsonLines(next.getCommandLog());
     let storageFileId: string;
     if (storageAvailable) {
       try {
-        storageFileId = await importTournamentJsonl(
-          exportCommandsAsJsonLines(next.getCommandLog()),
-          tournamentName,
-        );
+        storageFileId = await importTournamentJsonl(exported, tournamentName);
+        seedPersistSnapshot(storageFileId, tournamentName, exported);
         await refreshRecentTournaments();
       } catch (e) {
         showError(`Import failed while saving locally: ${e instanceof Error ? e.message : String(e)}`);
@@ -3146,7 +3205,7 @@
                     <input type="radio" bind:group={bracketSeedingChoice} value="crop_closed_form" disabled={!canPickClosedFormSeeding} />
                     <span>
                       <strong>Closed-form</strong>
-                      — built-in 2×4 / 4×4 / 8×4 / 16×4 layout when you have 2, 4, 8, or 16 groups (≥4 players each).
+                      — built-in layout when you have power-of-two groups (≥4 players each).
                       {#if closedFormSeedingKind === 'culled'}
                         Top four per group use the closed layout; 5th place and lower join via an extra preliminary round (selected by default).
                       {:else if closedFormSeedingKind === 'exact'}
