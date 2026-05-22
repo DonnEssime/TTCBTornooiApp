@@ -488,14 +488,24 @@ describe('Bracket generation', () => {
 });
 
 describe('Bracket progress (overview totals)', () => {
+  it('excludes round-1 bye walkovers from totals and done (6 players)', () => {
+    const bracket = generateBracket(['p1', 'p2', 'p3', 'p4', 'p5', 'p6'], {
+      fillByes: true,
+      cullToPowerOfTwo: false,
+    });
+    const rows = bracketRoundAggregatesIncludingFutureRounds(bracket);
+    expect(rows[0]).toEqual({ round: 1, total: 2, done: 0 });
+    expect(bracketPhaseCountsIncludingFutureRounds(bracket)).toEqual({ total: 5, done: 0 });
+  });
+
   it('includes later rounds at 0 until advanced for a 9-player bye bracket', () => {
     const seedings = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p9'];
     const bracket = generateBracket(seedings, { fillByes: true, cullToPowerOfTwo: false });
     expect(bracket).toHaveLength(8);
     const rows = bracketRoundAggregatesIncludingFutureRounds(bracket);
-    expect(rows.map((r) => r.total)).toEqual([8, 4, 2, 1]);
-    expect(rows.map((r) => r.done)).toEqual([7, 0, 0, 0]);
-    expect(bracketPhaseCountsIncludingFutureRounds(bracket)).toEqual({ total: 15, done: 7 });
+    expect(rows.map((r) => r.total)).toEqual([1, 4, 2, 1]);
+    expect(rows.map((r) => r.done)).toEqual([0, 0, 0, 0]);
+    expect(bracketPhaseCountsIncludingFutureRounds(bracket)).toEqual({ total: 8, done: 0 });
   });
 
   it('uses materialized matches after advance while keeping unreached final at 0%', () => {
@@ -532,7 +542,7 @@ describe('Bracket progress (overview totals)', () => {
     }
     const rows = bracketRoundAggregatesIncludingFutureRounds(bracket);
     expect(rows).toHaveLength(4);
-    expect(rows.map((r) => r.total)).toEqual([8, 4, 2, 1]);
+    expect(rows.map((r) => r.total)).toEqual([1, 4, 2, 1]);
   });
 });
 

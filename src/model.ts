@@ -692,6 +692,15 @@ export function inferBracketSlotCountFromRoundOne(bracketMatches: BracketMatch[]
   return best;
 }
 
+/** Bracket rows that require an actual match (excludes one-sided bye walkovers). */
+function bracketRoundPlayableTotals(list: BracketMatch[]): { total: number; done: number } {
+  const playable = list.filter((bm) => !isBracketByeWalkoverMatch(bm));
+  return {
+    total: playable.length,
+    done: playable.filter((bm) => Boolean(bm.winner)).length,
+  };
+}
+
 function bracketRoundAggregatesFromExistingOnly(
   bracketMatches: BracketMatch[],
 ): Array<{ round: number; total: number; done: number }> {
@@ -706,7 +715,8 @@ function bracketRoundAggregatesFromExistingOnly(
   const rounds = [...byRound.keys()].sort((a, b) => a - b);
   return rounds.map((round) => {
     const list = (byRound.get(round) ?? []).sort(compareBracketMatchId);
-    return { round, total: list.length, done: list.filter((bm) => Boolean(bm.winner)).length };
+    const { total, done } = bracketRoundPlayableTotals(list);
+    return { round, total, done };
   });
 }
 
@@ -728,10 +738,19 @@ export function bracketRoundAggregatesIncludingFutureRounds(
   }
   const rows: Array<{ round: number; total: number; done: number }> = [];
   for (let round = 1; round <= numRounds; round++) {
-    const expected = slotCount >>> round;
+    const structural = slotCount >>> round;
     const list = bracketMatches.filter((m) => bracketMatchRound(m) === round).sort(compareBracketMatchId);
-    const total = Math.max(expected, list.length);
-    const done = list.filter((bm) => Boolean(bm.winner)).length;
+    const playableInList = list.filter((bm) => !isBracketByeWalkoverMatch(bm));
+    const byeWalkoversInList = list.length - playableInList.length;
+    let total: number;
+    if (list.length === 0) {
+      total = structural;
+    } else if (list.length >= structural) {
+      total = playableInList.length;
+    } else {
+      total = Math.max(structural - byeWalkoversInList, playableInList.length);
+    }
+    const done = playableInList.filter((bm) => Boolean(bm.winner)).length;
     rows.push({ round, total, done });
   }
   return rows;
