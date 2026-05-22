@@ -93,6 +93,7 @@
 
   const joinLeftPath = $derived(`M 0 ${leftJoinPct} L 18 ${finalTopPct}`);
   const joinRightPath = $derived(`M 0 ${finalBotPct} L 18 ${rightJoinPct}`);
+</script>
 
 <div class="bracket-stream" role="img" aria-label={ariaLabel}>
   {#if !root}

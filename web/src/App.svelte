@@ -15,7 +15,7 @@
     TournamentController,
     createTournament,
     exportCommandsAsJsonLines,
-    tournamentControllerFromCommandLog,
+    tournamentControllerFromCommandLogAsync,
     compareBracketMatchId,
     compareBracketMatchIdString,
     bracketMatchRound,
@@ -261,6 +261,36 @@
   const storageAvailable = isTournamentStorageSupported();
   let recentTournaments = $state<TournamentMeta[]>([]);
   let recentListLoading = $state(false);
+
+  type TournamentLoadPhase = 'read' | 'replay';
+  type TournamentLoadState = {
+    label: string;
+    phase: TournamentLoadPhase;
+    done: number;
+    total: number;
+  };
+  let tournamentLoad = $state<TournamentLoadState | null>(null);
+
+  function tournamentLoadPct(done: number, total: number): number {
+    if (total <= 0) return 0;
+    return Math.min(100, Math.round((done / total) * 100));
+  }
+
+  async function buildControllerFromCommandLogWithProgress(
+    text: string,
+    label: string,
+  ): Promise<Awaited<ReturnType<typeof tournamentControllerFromCommandLogAsync>>> {
+    try {
+      return await tournamentControllerFromCommandLogAsync(text, {}, {
+        onProgress: ({ done, total }) => {
+          tournamentLoad = { label, phase: 'replay', done, total };
+        },
+        yieldEvery: 32,
+      });
+    } finally {
+      tournamentLoad = null;
+    }
+  }
   let deleteTournamentTarget = $state<TournamentMeta | null>(null);
   let deleteConfirmPhrase = $state('');
   let deleteTournamentBusy = $state(false);
@@ -340,19 +370,9 @@
   let persistSnapshotByFile = new Map<string, string>();
 
   async function persistActiveSession(): Promise<void> {
-    if (!storageAvailable) return;
     const s = getActiveSession();
     if (!s) return;
-    const text = exportCommandsAsJsonLines(s.controller.getCommandLog());
-    const snapshot = `${s.tournamentName}\n${text}`;
-    if (persistSnapshotByFile.get(s.storageFileId) === snapshot) return;
-    try {
-      await saveTournament(s.storageFileId, s.tournamentName, text);
-      persistSnapshotByFile.set(s.storageFileId, snapshot);
-      await refreshRecentTournaments();
-    } catch (e) {
-      console.error('persistActiveSession failed', e);
-    }
+    await persistSession(s);
   }
 
   function sessionFromController(
@@ -413,20 +433,59 @@
     deleteTournamentError = null;
   }
 
+  function purgeSessionsById(removeIds: Set<string>): void {
+    if (removeIds.size === 0) return;
+    sessions = sessions.filter((s) => !removeIds.has(s.id));
+    const nextDrafts = { ...scoreDraftsBySession };
+    for (const id of removeIds) delete nextDrafts[id];
+    scoreDraftsBySession = nextDrafts;
+    if (removeIds.has(workspaceTab) || (activeSessionId && removeIds.has(activeSessionId))) {
+      activeSessionId = sessions[0]?.id ?? '';
+      workspaceTab = activeSessionId || 'settings';
+      if (workspaceTab === 'settings') {
+        void refreshRecentTournaments();
+      } else {
+        pull();
+      }
+    }
+  }
+
+  async function persistSession(s: TournamentSession): Promise<boolean> {
+    if (!storageAvailable) return true;
+    const text = exportCommandsAsJsonLines(s.controller.getCommandLog());
+    const snapshot = `${s.tournamentName}\n${text}`;
+    if (persistSnapshotByFile.get(s.storageFileId) === snapshot) return true;
+    try {
+      await saveTournament(s.storageFileId, s.tournamentName, text);
+      persistSnapshotByFile.set(s.storageFileId, snapshot);
+      await refreshRecentTournaments();
+      return true;
+    } catch (e) {
+      console.error('persistSession failed', e);
+      return false;
+    }
+  }
+
+  async function closeActiveSession(): Promise<void> {
+    const s = getActiveSession();
+    if (!s) return;
+    commitTournamentName();
+    const saved = await persistSession(s);
+    if (!saved) {
+      showError('Could not save before closing; tournament kept open.');
+      return;
+    }
+    clearStatus();
+    purgeSessionsById(new Set([s.id]));
+  }
+
   function closeSessionsForStorageFile(fileId: string): void {
     const removeIds = new Set(
       sessions.filter((s) => s.storageFileId === fileId).map((s) => s.id),
     );
     if (removeIds.size === 0) return;
-    sessions = sessions.filter((s) => s.storageFileId !== fileId);
-    const nextDrafts = { ...scoreDraftsBySession };
-    for (const id of removeIds) delete nextDrafts[id];
-    scoreDraftsBySession = nextDrafts;
+    purgeSessionsById(removeIds);
     persistSnapshotByFile.delete(fileId);
-    if (removeIds.has(workspaceTab) || (activeSessionId && removeIds.has(activeSessionId))) {
-      activeSessionId = sessions[0]?.id ?? '';
-      workspaceTab = activeSessionId || 'settings';
-    }
   }
 
   async function confirmDeleteTournament(): Promise<void> {
@@ -454,6 +513,7 @@
   }
 
   async function openStoredTournament(fileId: string): Promise<void> {
+    if (tournamentLoad) return;
     clearStatus();
     const existing = findSessionByStorageFileId(fileId);
     if (existing) {
@@ -465,23 +525,22 @@
       showError('Local tournament storage is not available in this browser.');
       return;
     }
+    const meta = recentTournaments.find((m) => m.fileId === fileId);
+    const label = meta?.tournamentName ?? 'Tournament';
     try {
+      tournamentLoad = { label, phase: 'read', done: 0, total: 0 };
       const text = await loadTournamentJsonl(fileId);
-      const { controller: next, replay } = tournamentControllerFromCommandLog(text);
+      const { controller: next, replay } = await buildControllerFromCommandLogWithProgress(text, label);
       if (!replay.success) {
         const reason = replay.results.find((r) => !r.success)?.reason ?? 'Replay failed';
         showError(`Could not open tournament: ${reason}`);
         return;
       }
-      const meta = recentTournaments.find((m) => m.fileId === fileId);
-      const session = sessionFromController(
-        fileId,
-        meta?.tournamentName ?? 'Tournament',
-        next,
-      );
+      const session = sessionFromController(fileId, label, next);
       activateSession(session);
       showInfo(`Opened “${session.tournamentName}”.`);
     } catch (e) {
+      tournamentLoad = null;
       showError(`Could not load tournament: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
@@ -1434,10 +1493,12 @@
     if (existing.length > 0) return displayBracketColumns(existing);
     if (seedIds.length === 0) return [];
     try {
+      const key = shuffleKey.trim() || 'Tournament';
       const r1 = generateBracket(seedIds, t, {
         fillByes: true,
         cullToPowerOfTwo: false,
-        shuffleKey: shuffleKey.trim() || 'Tournament',
+        shuffleKey: key,
+        tieBreakSalt: `preview:${key}`,
         bracketSeedingMode: bracketSeedingChoice,
       });
       return displayBracketColumns(r1);
@@ -1962,8 +2023,10 @@
     }
     const genId = `cmd-gen-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
     const shuffleKey = s.tournamentName.trim() || 'Tournament';
+    const tieBreakSalt = String(Date.now());
     const r = c.generateBracket(true, false, deps, genId, shuffleKey, {
       bracketSeedingMode: bracketSeedingChoice,
+      tieBreakSalt,
     });
     if (!r.success) {
       showError(r.reason ?? 'Bracket generation failed');
@@ -2134,19 +2197,28 @@
   }
 
   async function onImportFile(ev: Event): Promise<void> {
+    if (tournamentLoad) return;
     const input = ev.target as HTMLInputElement;
     const file = input.files?.[0];
     input.value = '';
     if (!file) return;
     clearStatus();
-    const text = await file.text();
-    const { controller: next, replay } = tournamentControllerFromCommandLog(text);
+    const tournamentName = titleFromImportFilename(file.name);
+    let text: string;
+    try {
+      tournamentLoad = { label: tournamentName, phase: 'read', done: 0, total: 0 };
+      text = await file.text();
+    } catch (e) {
+      tournamentLoad = null;
+      showError(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    const { controller: next, replay } = await buildControllerFromCommandLogWithProgress(text, tournamentName);
     if (!replay.success) {
       const reason = replay.results.find((r) => !r.success)?.reason ?? 'Replay failed';
       showError(`Import failed: ${reason}`);
       return;
     }
-    const tournamentName = titleFromImportFilename(file.name);
     let storageFileId: string;
     if (storageAvailable) {
       try {
@@ -2440,26 +2512,39 @@
         <span class="brand-mark">TTCB</span>
         <span class="brand-text">Tornooiapp</span>
       </div>
-      <nav class="workspace-tabs" aria-label="Workspace">
-        <button
-          type="button"
-          class="workspace-tab"
-          class:active={workspaceTab === 'settings'}
-          onclick={() => selectWorkspaceTab('settings')}
-        >
-          Settings
-        </button>
-        {#each sessions as s (s.id)}
+      <div class="top-bar-actions">
+        <nav class="workspace-tabs" aria-label="Workspace">
           <button
             type="button"
             class="workspace-tab"
-            class:active={workspaceTab === s.id}
-            onclick={() => selectWorkspaceTab(s.id)}
+            class:active={workspaceTab === 'settings'}
+            onclick={() => selectWorkspaceTab('settings')}
           >
-            {s.tournamentName}
+            Settings
           </button>
-        {/each}
-      </nav>
+          {#each sessions as s (s.id)}
+            <button
+              type="button"
+              class="workspace-tab"
+              class:active={workspaceTab === s.id}
+              onclick={() => selectWorkspaceTab(s.id)}
+            >
+              {s.tournamentName}
+            </button>
+          {/each}
+        </nav>
+        {#if workspaceTab !== 'settings' && activeSess}
+          <button
+            type="button"
+            class="session-close-btn"
+            title="Close tournament"
+            aria-label="Close {activeSess.tournamentName}"
+            onclick={() => void closeActiveSession()}
+          >
+            <span aria-hidden="true">×</span>
+          </button>
+        {/if}
+      </div>
     </header>
 
     {#if status}
@@ -2635,6 +2720,7 @@
                     <button
                       type="button"
                       class="recent-entry-btn"
+                      disabled={tournamentLoad !== null}
                       onclick={() => openStoredTournament(entry.fileId)}
                     >
                       <span class="recent-entry-name">{entry.tournamentName}</span>
@@ -3449,6 +3535,37 @@
     </footer>
   {/if}
 
+  {#if tournamentLoad}
+    <div class="load-overlay" role="dialog" aria-modal="true" aria-labelledby="tournament-load-title">
+      <div class="load-panel">
+        <h3 id="tournament-load-title" class="load-title">Loading “{tournamentLoad.label}”</h3>
+        {#if tournamentLoad.phase === 'replay' && tournamentLoad.total > 0}
+          <p class="load-meta muted small">
+            Replaying commands — {tournamentLoad.done} / {tournamentLoad.total}
+          </p>
+          <div
+            class="load-track"
+            role="progressbar"
+            aria-valuenow={tournamentLoad.done}
+            aria-valuemin="0"
+            aria-valuemax={tournamentLoad.total}
+            aria-label={`${tournamentLoad.done} of ${tournamentLoad.total} commands replayed`}
+          >
+            <div
+              class="load-fill"
+              style={`width: ${tournamentLoadPct(tournamentLoad.done, tournamentLoad.total)}%`}
+            ></div>
+          </div>
+        {:else}
+          <p class="load-meta muted small">Reading tournament file…</p>
+          <div class="load-track load-track-indeterminate" role="progressbar" aria-busy="true" aria-label="Reading tournament file">
+            <div class="load-fill-indeterminate"></div>
+          </div>
+        {/if}
+      </div>
+    </div>
+  {/if}
+
   {#if deleteTournamentTarget}
     {@const deleteTarget = deleteTournamentTarget}
     <div class="modal-root">
@@ -3687,6 +3804,44 @@
   .brand-text {
     font-size: 1.05rem;
     color: #334155;
+  }
+
+  .top-bar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+    margin-left: auto;
+  }
+
+  .session-close-btn {
+    flex: 0 0 auto;
+    width: 1.5rem;
+    height: 1.5rem;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition:
+      color 0.15s,
+      background 0.15s;
+  }
+
+  .session-close-btn:hover {
+    color: #64748b;
+    background: rgb(148 163 184 / 12%);
+  }
+
+  .session-close-btn:focus-visible {
+    outline: 2px solid #86efac;
+    outline-offset: 2px;
   }
 
   .workspace-tabs {
@@ -4759,6 +4914,67 @@
     padding: 0.35rem 0.5rem;
     border: 1px solid #cbd5e1;
     border-radius: 6px;
+  }
+
+  .load-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 120;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    background: rgba(15, 23, 42, 0.45);
+  }
+
+  .load-panel {
+    width: min(28rem, 100%);
+    padding: 1.25rem 1.35rem 1.1rem;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 12px 40px rgba(15, 23, 42, 0.18);
+  }
+
+  .load-title {
+    margin: 0 0 0.55rem;
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: #0f172a;
+  }
+
+  .load-meta {
+    margin: 0 0 0.65rem;
+  }
+
+  .load-track {
+    height: 0.55rem;
+    border-radius: 999px;
+    background: #e2e8f0;
+    overflow: hidden;
+  }
+
+  .load-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #2563eb, #3b82f6);
+    transition: width 0.12s ease-out;
+  }
+
+  .load-track-indeterminate .load-fill-indeterminate {
+    width: 40%;
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #2563eb, #3b82f6);
+    animation: load-indeterminate 1.1s ease-in-out infinite;
+  }
+
+  @keyframes load-indeterminate {
+    0% {
+      transform: translateX(-120%);
+    }
+    100% {
+      transform: translateX(320%);
+    }
   }
 
   .modal-root {
