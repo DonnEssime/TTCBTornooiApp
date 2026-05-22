@@ -4,7 +4,9 @@ import {
   BRACKET_STRUCTURAL_EMPTY_ADVANCE,
   createTournament,
   defaultBracketSeedingMode,
+  defaultBracketSeedingModeForTournament,
   defaultBracketSeedingModeFromMeta,
+  supportsExtendedClosedFormBracketSeeding,
   forfeitPlayer,
   forfeitTeam,
   generateBracket,
@@ -20,6 +22,10 @@ import {
   formatBracketSlotPlayerLabel,
   materializeReadyNextRoundBracketSlots,
   orderParticipantsForGroupBalancedBracket,
+  resolveClosedFormBracketSeedingKind,
+  splitParticipantsTopFourPerGroup,
+  applyPlayInWinnersToRoundOne,
+  propagateBracketSeedsFromChildWinners,
   singleEliminationPlacementRows,
   bracketMatchLoser,
   bracketPlayerMatchId,
@@ -27,10 +33,10 @@ import {
   bracketEffectiveWinner,
   bracketRoundHasOpenEliminationPairings,
   eliminateLowestRankedPlayersInBracketRound,
+  findGroupForPlayer,
   matchPlayersResolvedForBracketPhaseList,
   settleBracketWinners,
   settleBracketWinnersIn,
-  propagateBracketSeedsFromChildWinners,
   scheduleRound,
   canMutateBracketPlayerMatch,
 } from '../src/model';
@@ -608,7 +614,10 @@ describe('Group-balanced bracket seeding', () => {
     expect(balancedBracketVirtualGridTarget(6, 4)).toEqual({ G_tgt: 8, S_tgt: 4 });
     expect(balancedBracketVirtualGridTarget(3, 4)).toEqual({ G_tgt: 4, S_tgt: 4 });
     expect(balancedBracketVirtualGridTarget(2, 2)).toEqual({ G_tgt: 2, S_tgt: 4 });
-    expect(balancedBracketVirtualGridTarget(9, 4)).toBeNull();
+    expect(balancedBracketVirtualGridTarget(9, 4)).toEqual({ G_tgt: 16, S_tgt: 4 });
+    expect(balancedBracketVirtualGridTarget(10, 4)).toEqual({ G_tgt: 16, S_tgt: 4 });
+    expect(balancedBracketVirtualGridTarget(16, 4)).toEqual({ G_tgt: 16, S_tgt: 4 });
+    expect(balancedBracketVirtualGridTarget(17, 4)).toBeNull();
     expect(balancedBracketVirtualGridTarget(4, 5)).toBeNull();
   });
 
@@ -684,7 +693,45 @@ describe('Group-balanced bracket seeding', () => {
     expect(pair(7)).toEqual(new Set(['p2', 'p15']));
   });
 
-  it('2×4: cross-group first round (winner vs other group 4th, etc.)', () => {
+  it('extend_closed_form when 11 players in 4 uneven groups (max size 3)', () => {
+    const t = createTournament();
+    for (let i = 1; i <= 11; i++) {
+      const id = `p${i}`;
+      t.players[id] = { id, name: `P${i}`, handicap: 0 };
+    }
+    addGroupRR3(t, 'ga', ['p1', 'p2', 'p3']);
+    addGroupRR3(t, 'gb', ['p4', 'p5', 'p6']);
+    addGroupRR3(t, 'gc', ['p7', 'p8', 'p9']);
+    t.groups['gd'] = { id: 'gd', playerIds: ['p10', 'p11'] };
+    t.matches['m-gd-p10-p11'] = {
+      id: 'm-gd-p10-p11',
+      playerA: 'p10',
+      playerB: 'p11',
+      scores: [],
+      status: 'finished',
+      winner: 'p10',
+      groupId: 'gd',
+    };
+    t.seedings = Array.from({ length: 11 }, (_, i) => `p${i + 1}`);
+
+    expect(resolveClosedFormBracketSeedingKind(t, t.seedings, undefined)).toBeNull();
+    expect(supportsExtendedClosedFormBracketSeeding(t, t.seedings, undefined)).toBe(true);
+    expect(defaultBracketSeedingModeForTournament(t, t.seedings, undefined)).toBe('extend_closed_form');
+
+    const ordered = orderParticipantsForGroupBalancedBracket(t, t.seedings, undefined, 'virtual');
+    expect(ordered).not.toBeNull();
+    expect(ordered!.length).toBe(16);
+    expect(ordered!.some((pid) => pid === 'BYE')).toBe(true);
+
+    const bracket = generateBracket([...t.seedings], t, {
+      fillByes: true,
+      shuffleKey: 'ignored',
+      bracketSeedingMode: 'extend_closed_form',
+    });
+    expect(bracket.filter((m) => bracketMatchRound(m) === 1)).toHaveLength(8);
+  });
+
+  it('2×4: cross-group R1 with group winners in opposite halves', () => {
     const t = createTournament();
     for (let i = 1; i <= 8; i++) {
       const id = `p${i}`;
@@ -693,6 +740,16 @@ describe('Group-balanced bracket seeding', () => {
     addGroupRR4(t, 'ga', ['p1', 'p2', 'p3', 'p4']);
     addGroupRR4(t, 'gb', ['p5', 'p6', 'p7', 'p8']);
     t.seedings = Array.from({ length: 8 }, (_, i) => `p${i + 1}`);
+    expect(orderParticipantsForGroupBalancedBracket(t, t.seedings, undefined)).toEqual([
+      'p1',
+      'p5',
+      'p7',
+      'p3',
+      'p6',
+      'p2',
+      'p4',
+      'p8',
+    ]);
     const bracket = generateBracket([...t.seedings], t, {
       fillByes: false,
       shuffleKey: 'ignored-when-balanced',
@@ -700,10 +757,256 @@ describe('Group-balanced bracket seeding', () => {
     });
     const r1 = bracket.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
     const pair = (i: number) => new Set([r1[i]!.seedA, r1[i]!.seedB]);
+    // Half 1: G1P1–G2P4, G1P3–G2P2
     expect(pair(0)).toEqual(new Set(['p1', 'p8']));
-    expect(pair(1)).toEqual(new Set(['p2', 'p7']));
-    expect(pair(2)).toEqual(new Set(['p3', 'p6']));
-    expect(pair(3)).toEqual(new Set(['p4', 'p5']));
+    expect(pair(1)).toEqual(new Set(['p3', 'p6']));
+    // Half 2: G2P1–G1P4, G2P3–G1P2
+    expect(pair(2)).toEqual(new Set(['p5', 'p4']));
+    expect(pair(3)).toEqual(new Set(['p7', 'p2']));
+    expect(areTopSeedsSeparated(bracket, 'p1', 'p2')).toBe(true);
+    expect(areTopSeedsSeparated(bracket, 'p1', 'p5')).toBe(true);
+    for (const m of r1) {
+      const ga = findGroupForPlayer(t, m.seedA!, undefined)!.id;
+      const gb = findGroupForPlayer(t, m.seedB!, undefined)!.id;
+      expect(ga).not.toBe(gb);
+    }
+  });
+
+  function addGroupRR5(t: ReturnType<typeof createTournament>, gid: string, pids: [string, string, string, string, string]): void {
+    const [a, b, c, d, e] = pids;
+    t.groups[gid] = { id: gid, playerIds: [...pids] };
+    const add = (pa: string, pb: string, w: string) => {
+      const id = `m-${gid}-${pa}-${pb}`;
+      t.matches[id] = {
+        id,
+        playerA: pa,
+        playerB: pb,
+        scores: [],
+        status: 'finished',
+        winner: w,
+        groupId: gid,
+      };
+    };
+    add(a, b, a);
+    add(a, c, a);
+    add(a, d, a);
+    add(a, e, a);
+    add(b, c, b);
+    add(b, d, b);
+    add(b, e, b);
+    add(c, d, c);
+    add(c, e, c);
+    add(d, e, d);
+  }
+
+  it('closed_form with crop: top four per group in main draw, fifth places via cross-group play-in', () => {
+    const t = createTournament();
+    for (let i = 1; i <= 20; i++) {
+      const id = `p${i}`;
+      t.players[id] = { id, name: `P${i}`, handicap: 0 };
+    }
+    addGroupRR5(t, 'ga', ['p1', 'p2', 'p3', 'p4', 'p5']);
+    addGroupRR5(t, 'gb', ['p6', 'p7', 'p8', 'p9', 'p10']);
+    addGroupRR5(t, 'gc', ['p11', 'p12', 'p13', 'p14', 'p15']);
+    addGroupRR5(t, 'gd', ['p16', 'p17', 'p18', 'p19', 'p20']);
+    t.seedings = Array.from({ length: 20 }, (_, i) => `p${i + 1}`);
+    expect(resolveClosedFormBracketSeedingKind(t, t.seedings, undefined)).toBe('crop');
+    const split = splitParticipantsTopFourPerGroup(t, t.seedings, undefined);
+    expect(split?.qualified.sort()).toEqual(
+      ['p1', 'p2', 'p3', 'p4', 'p6', 'p7', 'p8', 'p9', 'p11', 'p12', 'p13', 'p14', 'p16', 'p17', 'p18', 'p19'].sort(),
+    );
+    expect(new Set(split?.culled)).toEqual(new Set(['p5', 'p10', 'p15', 'p20']));
+
+    const bracket = generateBracket([...t.seedings], t, {
+      fillByes: false,
+      shuffleKey: 'ignored',
+      bracketSeedingMode: 'closed_form',
+    });
+    const r1 = bracket.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
+    const r2 = bracket.filter((m) => bracketMatchRound(m) === 2).sort(compareBracketMatchId);
+    const crosses = r1.filter((m) => m.seedA && m.seedB && !m.playInFor);
+    expect(crosses).toHaveLength(4);
+    expect(r2).toHaveLength(8);
+
+    for (const m of crosses) {
+      const ga = findGroupForPlayer(t, m.seedA!, undefined)!.id;
+      const gb = findGroupForPlayer(t, m.seedB!, undefined)!.id;
+      expect(ga).not.toBe(gb);
+    }
+
+    const byeWalks = r1.filter((m) => m.winner && !m.seedB);
+    expect(byeWalks.length).toBeGreaterThanOrEqual(4);
+
+    crosses[0]!.winner = crosses[0]!.seedA;
+    applyPlayInWinnersToRoundOne(bracket);
+    propagateBracketSeedsFromChildWinners(bracket);
+    const host0 = r2.find((x) => x.seedA === crosses[0]!.winner || x.seedB === crosses[0]!.winner);
+    expect(host0).toBeDefined();
+  });
+
+  function addGroupRRn(t: ReturnType<typeof createTournament>, gid: string, pids: string[]): void {
+    t.groups[gid] = { id: gid, playerIds: [...pids] };
+    for (let a = 0; a < pids.length; a++) {
+      for (let b = a + 1; b < pids.length; b++) {
+        const pa = pids[a]!;
+        const pb = pids[b]!;
+        const id = `m-${gid}-${pa}-${pb}`;
+        t.matches[id] = {
+          id,
+          playerA: pa,
+          playerB: pb,
+          scores: [],
+          status: 'finished',
+          winner: pa,
+          groupId: gid,
+        };
+      }
+    }
+  }
+
+  it('closed_form crop with 11 players in 2 groups (6+5): intra-group play-in, all 11 in bracket', () => {
+    const t = createTournament();
+    for (let i = 1; i <= 11; i++) {
+      const id = `p${i}`;
+      t.players[id] = { id, name: `P${i}`, handicap: 0 };
+    }
+    addGroupRRn(t, 'ga', ['p1', 'p2', 'p3', 'p4', 'p5', 'p6']);
+    addGroupRRn(t, 'gb', ['p7', 'p8', 'p9', 'p10', 'p11']);
+    t.seedings = Array.from({ length: 11 }, (_, i) => `p${i + 1}`);
+    expect(resolveClosedFormBracketSeedingKind(t, t.seedings, undefined)).toBe('crop');
+
+    const bracket = generateBracket([...t.seedings], t, {
+      fillByes: true,
+      bracketSeedingMode: 'closed_form',
+    });
+    const r1 = bracket.filter((m) => bracketMatchRound(m) === 1);
+    const r2 = bracket.filter((m) => bracketMatchRound(m) === 2);
+    expect(r1.length).toBeGreaterThanOrEqual(7);
+    expect(r2).toHaveLength(4);
+
+    const allPids = new Set<string>();
+    for (const m of r1) {
+      if (m.seedA) allPids.add(m.seedA);
+      if (m.seedB) allPids.add(m.seedB);
+    }
+    expect(allPids.size).toBe(11);
+
+    const intra = r1.find((m) => {
+      const pair = new Set([m.seedA, m.seedB]);
+      return pair.has('p5') && pair.has('p6');
+    });
+    expect(intra).toBeDefined();
+    expect(intra!.playInFor).toBeDefined();
+    expect(intra!.playInFor!.side).toBe('a');
+
+    const byeWalks = r1.filter((m) => m.winner && !m.seedB);
+    expect(byeWalks.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('closed_form crop when 21 players are split across 4 groups (uneven sizes)', () => {
+    const t = createTournament();
+    for (let i = 1; i <= 21; i++) {
+      const id = `p${i}`;
+      t.players[id] = { id, name: `P${i}`, handicap: 0 };
+    }
+    const sizes = [6, 5, 5, 5];
+    const gids = ['ga', 'gb', 'gc', 'gd'];
+    let pid = 1;
+    for (let gi = 0; gi < 4; gi++) {
+      const n = sizes[gi]!;
+      const pids: string[] = [];
+      for (let j = 0; j < n; j++) pids.push(`p${pid++}`);
+      t.groups[gids[gi]!] = { id: gids[gi]!, playerIds: pids };
+      for (let a = 0; a < pids.length; a++) {
+        for (let b = a + 1; b < pids.length; b++) {
+          const pa = pids[a]!;
+          const pb = pids[b]!;
+          const id = `m-${gids[gi]}-${pa}-${pb}`;
+          t.matches[id] = {
+            id,
+            playerA: pa,
+            playerB: pb,
+            scores: [],
+            status: 'finished',
+            winner: pa,
+            groupId: gids[gi],
+          };
+        }
+      }
+    }
+    t.seedings = Array.from({ length: 21 }, (_, i) => `p${i + 1}`);
+    expect(resolveClosedFormBracketSeedingKind(t, t.seedings, undefined)).toBe('crop');
+    const bracket = generateBracket([...t.seedings], t, {
+      fillByes: false,
+      bracketSeedingMode: 'closed_form',
+    });
+    expect(bracket.filter((m) => bracketMatchRound(m) === 1 && m.playInFor).length).toBeGreaterThanOrEqual(1);
+    expect(bracket.filter((m) => bracketMatchRound(m) === 2).length).toBe(8);
+  });
+
+  it('16×4: stacks four 4×4-style quarters on groups 0–3, 4–7, 8–11, and 12–15', () => {
+    const t = createTournament();
+    for (let i = 1; i <= 64; i++) {
+      const id = `p${i}`;
+      t.players[id] = { id, name: `P${i}`, handicap: 0 };
+    }
+    const gids = Array.from({ length: 16 }, (_, i) => `g${i}`);
+    for (let gi = 0; gi < 16; gi++) {
+      const base = gi * 4;
+      addGroupRR4(t, gids[gi]!, [
+        `p${base + 1}`,
+        `p${base + 2}`,
+        `p${base + 3}`,
+        `p${base + 4}`,
+      ] as [string, string, string, string]);
+    }
+    t.seedings = Array.from({ length: 64 }, (_, i) => `p${i + 1}`);
+    const bracket = generateBracket([...t.seedings], t, {
+      fillByes: false,
+      shuffleKey: 'ignored-when-balanced',
+      bracketSeedingMode: 'extend_closed_form',
+    });
+    const r1 = bracket.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
+    const pair = (i: number) => new Set([r1[i]!.seedA, r1[i]!.seedB]);
+    expect(pair(0)).toEqual(new Set(['p1', 'p40']));
+    expect(pair(1)).toEqual(new Set(['p48', 'p25']));
+    expect(pair(2)).toEqual(new Set(['p64', 'p9']));
+    expect(pair(3)).toEqual(new Set(['p49', 'p24']));
+    expect(pair(4)).toEqual(new Set(['p6', 'p35']));
+    expect(pair(5)).toEqual(new Set(['p43', 'p30']));
+    expect(pair(6)).toEqual(new Set(['p59', 'p14']));
+    expect(pair(7)).toEqual(new Set(['p54', 'p19']));
+    expect(pair(8)).toEqual(new Set(['p41', 'p28']));
+    expect(pair(9)).toEqual(new Set(['p4', 'p33']));
+    expect(pair(10)).toEqual(new Set(['p52', 'p17']));
+    expect(pair(11)).toEqual(new Set(['p57', 'p12']));
+    expect(pair(12)).toEqual(new Set(['p46', 'p31']));
+    expect(pair(13)).toEqual(new Set(['p7', 'p38']));
+    expect(pair(14)).toEqual(new Set(['p55', 'p22']));
+    expect(pair(15)).toEqual(new Set(['p62', 'p15']));
+    expect(pair(16)).toEqual(new Set(['p45', 'p32']));
+    expect(pair(17)).toEqual(new Set(['p8', 'p37']));
+    expect(pair(18)).toEqual(new Set(['p56', 'p21']));
+    expect(pair(19)).toEqual(new Set(['p61', 'p16']));
+    expect(pair(20)).toEqual(new Set(['p42', 'p27']));
+    expect(pair(21)).toEqual(new Set(['p3', 'p34']));
+    expect(pair(22)).toEqual(new Set(['p51', 'p18']));
+    expect(pair(23)).toEqual(new Set(['p58', 'p11']));
+    expect(pair(24)).toEqual(new Set(['p5', 'p36']));
+    expect(pair(25)).toEqual(new Set(['p44', 'p29']));
+    expect(pair(26)).toEqual(new Set(['p60', 'p13']));
+    expect(pair(27)).toEqual(new Set(['p53', 'p20']));
+    expect(pair(28)).toEqual(new Set(['p2', 'p39']));
+    expect(pair(29)).toEqual(new Set(['p47', 'p26']));
+    expect(pair(30)).toEqual(new Set(['p63', 'p10']));
+    expect(pair(31)).toEqual(new Set(['p50', 'p23']));
+    for (const m of r1) {
+      const ga = findGroupForPlayer(t, m.seedA!, undefined)?.id;
+      const gb = findGroupForPlayer(t, m.seedB!, undefined)?.id;
+      expect(ga).toBeDefined();
+      expect(gb).toBeDefined();
+      expect(ga).not.toBe(gb);
+    }
   });
 
   it('8×4: stacks two 4×4-style halves on groups 0–3 and 4–7', () => {
@@ -731,20 +1034,20 @@ describe('Group-balanced bracket seeding', () => {
     const r1 = bracket.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
     const pair = (i: number) => new Set([r1[i]!.seedA, r1[i]!.seedB]);
     expect(pair(0)).toEqual(new Set(['p1', 'p32']));
-    expect(pair(1)).toEqual(new Set(['p16', 'p17']));
-    expect(pair(2)).toEqual(new Set(['p6', 'p27']));
+    expect(pair(1)).toEqual(new Set(['p6', 'p27']));
+    expect(pair(2)).toEqual(new Set(['p16', 'p17']));
     expect(pair(3)).toEqual(new Set(['p11', 'p22']));
     expect(pair(4)).toEqual(new Set(['p9', 'p20']));
-    expect(pair(5)).toEqual(new Set(['p4', 'p25']));
-    expect(pair(6)).toEqual(new Set(['p14', 'p23']));
+    expect(pair(5)).toEqual(new Set(['p14', 'p23']));
+    expect(pair(6)).toEqual(new Set(['p4', 'p25']));
     expect(pair(7)).toEqual(new Set(['p7', 'p30']));
     expect(pair(8)).toEqual(new Set(['p13', 'p24']));
-    expect(pair(9)).toEqual(new Set(['p8', 'p29']));
-    expect(pair(10)).toEqual(new Set(['p10', 'p19']));
+    expect(pair(9)).toEqual(new Set(['p10', 'p19']));
+    expect(pair(10)).toEqual(new Set(['p8', 'p29']));
     expect(pair(11)).toEqual(new Set(['p3', 'p26']));
     expect(pair(12)).toEqual(new Set(['p5', 'p28']));
-    expect(pair(13)).toEqual(new Set(['p12', 'p21']));
-    expect(pair(14)).toEqual(new Set(['p2', 'p31']));
+    expect(pair(13)).toEqual(new Set(['p2', 'p31']));
+    expect(pair(14)).toEqual(new Set(['p12', 'p21']));
     expect(pair(15)).toEqual(new Set(['p15', 'p18']));
   });
 
@@ -1065,10 +1368,11 @@ describe('bracketRoundHasOpenEliminationPairings', () => {
 });
 
 describe('defaultBracketSeedingMode', () => {
-  it('prefers closed_form on exact 2×4 / 4×4 / 8×4 grids', () => {
+  it('prefers closed_form on exact 2×4 / 4×4 / 8×4 / 16×4 grids', () => {
     expect(defaultBracketSeedingMode(2, 4)).toBe('closed_form');
     expect(defaultBracketSeedingMode(4, 4)).toBe('closed_form');
     expect(defaultBracketSeedingMode(8, 4)).toBe('closed_form');
+    expect(defaultBracketSeedingMode(16, 4)).toBe('closed_form');
   });
 
   it('prefers extend_closed_form when only padding places within existing groups', () => {

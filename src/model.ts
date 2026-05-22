@@ -312,12 +312,12 @@ export function partitionPlayerCountIntoGroupSizes(playerCount: number, targetSi
   return partitionPlayerCountIntoGroupCount(playerCount, g);
 }
 
-/** Players per group for closed-form bracket layouts (2×4, 4×4, 8×4). */
+/** Players per group for closed-form bracket layouts (2×4, 4×4, 8×4, 16×4). */
 export const CLOSED_FORM_PLAYERS_PER_GROUP = 4;
 
-const CLOSED_FORM_GROUP_COUNT_OPTIONS = [2, 4, 8] as const;
+const CLOSED_FORM_GROUP_COUNT_OPTIONS = [2, 4, 8, 16] as const;
 
-/** Smallest supported closed-form group count (2, 4, or 8) that fits `ceil(playerCount / 4)`. */
+/** Smallest supported closed-form group count (2, 4, 8, or 16) that fits `ceil(playerCount / 4)`. */
 export function closedFormGroupCountForPlayerCount(playerCount: number): number {
   const n = Math.max(0, Math.floor(playerCount));
   if (n === 0) return CLOSED_FORM_GROUP_COUNT_OPTIONS[0];
@@ -571,12 +571,17 @@ export function isTeamMatchScoreLegal(
   return isMatchScoreLegal(teamMatch.scores, bestOf, pointTarget);
 }
 
+/** Round-0 play-in feeds its winner into one slot on a round-1 {@link BracketMatch}. */
+export type BracketPlayInTarget = { matchId: string; side: 'a' | 'b' };
+
 export interface BracketMatch {
   id: string;
   seedA?: string;
   seedB?: string;
   winner?: string;
   round: number;
+  /** When set, {@link applyPlayInFeeders} copies the winner into another match in the same round (intra-group play-in chain). */
+  playInFor?: BracketPlayInTarget;
 }
 
 /**
@@ -603,7 +608,7 @@ export function bracketFeederPairForMatchIn(
 ): [BracketMatch | undefined, BracketMatch | undefined] {
   const r = bracketMatchRound(bm);
   if (!Number.isFinite(r) || r <= 1) return [undefined, undefined];
-  const prev = bracketMatchesSortedForRound(bracketMatches, r - 1);
+  const prev = bracketMatchesSortedForPairing(bracketMatches, r - 1);
   const cur = bracketMatchesSortedForRound(bracketMatches, r);
   const idx = cur.findIndex((x) => x.id === bm.id);
   if (idx < 0) return [undefined, undefined];
@@ -641,9 +646,22 @@ export function bracketMatchRound(m: BracketMatch): number {
  * {@link generateBracket} always emits exactly `slotCount / 2` round-1 matches for a power-of-two `slotCount`.
  */
 export function inferBracketSlotCountFromRoundOne(bracketMatches: BracketMatch[]): number | undefined {
-  const r1 = bracketMatches.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
-  if (r1.length === 0) return undefined;
-  const slotCount = r1.length * 2;
+  const r1All = bracketMatches.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
+  if (r1All.length === 0) return undefined;
+
+  const r1Pairing = bracketMatchesSortedForPairing(bracketMatches, 1);
+  const usesPreliminaryPairing = r1Pairing.length > 0 && r1Pairing.length < r1All.length;
+
+  if (usesPreliminaryPairing) {
+    const r2 = bracketMatches.filter((m) => bracketMatchRound(m) === 2).sort(compareBracketMatchId);
+    if (r2.length === 0) return undefined;
+    const slotCount = r2.length * 2;
+    if (slotCount < 2) return undefined;
+    if ((slotCount & (slotCount - 1)) !== 0) return undefined;
+    return slotCount;
+  }
+
+  const slotCount = r1All.length * 2;
   if (slotCount < 2) return undefined;
   if ((slotCount & (slotCount - 1)) !== 0) return undefined;
   return slotCount;
@@ -655,7 +673,7 @@ function bracketRoundAggregatesFromExistingOnly(
   const byRound = new Map<number, BracketMatch[]>();
   for (const bm of bracketMatches) {
     const r = bracketMatchRound(bm);
-    if (!Number.isFinite(r) || r < 1) continue;
+    if (!Number.isFinite(r) || r < 0) continue;
     const list = byRound.get(r) ?? [];
     list.push(bm);
     byRound.set(r, list);
@@ -857,14 +875,14 @@ function bracketLayoutDummyFullPid(groupIndex: number, place: number): PlayerId 
 }
 
 const BALANCED_LAYOUT_S = 4;
-const BALANCED_LAYOUT_G_OPTIONS = [2, 4, 8] as const;
+const BALANCED_LAYOUT_G_OPTIONS = [2, 4, 8, 16] as const;
 
 /**
- * Smallest supported **G × 4** grid (G ∈ {2,4,8}) that fits all real groups and has enough slots for every
+ * Smallest supported **G × 4** grid (G ∈ {2,4,8,16}) that fits all real groups and has enough slots for every
  * real player. Used to pad with dummy rows and dummy groups for {@link orderParticipantsForGroupBalancedBracket}.
  */
 export function balancedBracketVirtualGridTarget(G: number, S: number): { G_tgt: number; S_tgt: number } | null {
-  if (S < 2 || S > BALANCED_LAYOUT_S || G < 1 || G > 8) return null;
+  if (S < 2 || S > BALANCED_LAYOUT_S || G < 1 || G > 16) return null;
   for (const G_tgt of BALANCED_LAYOUT_G_OPTIONS) {
     if (G_tgt < G) continue;
     if (G_tgt * BALANCED_LAYOUT_S < G * S) continue;
@@ -875,16 +893,79 @@ export function balancedBracketVirtualGridTarget(G: number, S: number): { G_tgt:
 
 /** Equal-sized group grid for the given bracket scope, or `null` if groups are missing or uneven. */
 export function equalSizedGroupBracketMeta(tournament: Tournament, classId: string | undefined): { G: number; S: number } | null {
-  const groupsRecord = groupRecordForBracketScope(tournament, classId);
-  const groups = sortGroupDefinitionsStable(groupsRecord);
-  if (groups.length === 0) return null;
-  const sizes = groups.map((g) => g.playerIds.length);
-  const S = sizes[0]!;
-  if (!sizes.every((sz) => sz === S) || S < 2) return null;
-  return { G: groups.length, S };
+  const scope = bracketGroupLayoutScopeFromGroupsOnly(tournament, classId);
+  if (!scope || !scope.equalSized) return null;
+  return { G: scope.G, S: scope.maxGroupSize };
 }
 
-/** True when **G×S** exactly matches a built-in closed layout (2×4, 4×4, or 8×4). */
+export type BracketGroupLayoutScope = {
+  G: number;
+  /** Largest group; equals uniform group size when {@link BracketGroupLayoutScope.equalSized}. */
+  maxGroupSize: number;
+  minGroupSize: number;
+  equalSized: boolean;
+  playerCount: number;
+};
+
+function bracketGroupLayoutScopeFromGroupsOnly(
+  tournament: Tournament,
+  classId: string | undefined,
+): BracketGroupLayoutScope | null {
+  const groups = sortGroupDefinitionsStable(groupRecordForBracketScope(tournament, classId));
+  if (groups.length === 0) return null;
+  const sizes = groups.map((g) => g.playerIds.length);
+  const minGroupSize = Math.min(...sizes);
+  const maxGroupSize = Math.max(...sizes);
+  if (minGroupSize < 2) return null;
+  return {
+    G: groups.length,
+    maxGroupSize,
+    minGroupSize,
+    equalSized: sizes.every((sz) => sz === sizes[0]),
+    playerCount: sizes.reduce((sum, sz) => sum + sz, 0),
+  };
+}
+
+/**
+ * Group grid metadata when `participantIds` is exactly the union of all group members (typical seedings).
+ */
+export function bracketGroupLayoutScope(
+  tournament: Tournament,
+  participantIds: readonly PlayerId[],
+  classId: string | undefined,
+): BracketGroupLayoutScope | null {
+  const scope = bracketGroupLayoutScopeFromGroupsOnly(tournament, classId);
+  if (!scope) return null;
+
+  const pset = new Set(participantIds);
+  if (pset.size !== participantIds.length) return null;
+
+  const groups = sortGroupDefinitionsStable(groupRecordForBracketScope(tournament, classId));
+  const union = new Set<PlayerId>();
+  for (const g of groups) {
+    for (const pid of g.playerIds) union.add(pid);
+  }
+  if (scope.playerCount !== participantIds.length || union.size !== participantIds.length) return null;
+  if (![...union].every((id) => pset.has(id))) return null;
+  for (const pid of participantIds) {
+    if (!findGroupForPlayer(tournament, pid, classId)) return null;
+  }
+  return scope;
+}
+
+/** Virtual closed layout without adding dummy groups (only pads places within existing groups). */
+export function supportsExtendedClosedFormBracketSeeding(
+  tournament: Tournament,
+  participantIds: readonly PlayerId[],
+  classId: string | undefined,
+): boolean {
+  const scope = bracketGroupLayoutScope(tournament, participantIds, classId);
+  if (!scope) return false;
+  const grid = balancedBracketVirtualGridTarget(scope.G, scope.maxGroupSize);
+  return Boolean(grid && grid.G_tgt === scope.G);
+}
+
+/** True when **G×S** exactly matches a built-in closed layout (2×4, 4×4, 8×4, or 16×4). */
 export function isExactClosedFormBracketGrid(G: number, S: number): boolean {
   const grid = balancedBracketVirtualGridTarget(G, S);
   return Boolean(grid && grid.G_tgt === G && grid.S_tgt === S);
@@ -911,8 +992,44 @@ export function defaultBracketSeedingModeFromMeta(meta: { G: number; S: number }
   return defaultBracketSeedingMode(meta.G, meta.S);
 }
 
+/** Like {@link defaultBracketSeedingModeFromMeta} but also enables closed-form when crop play-in applies. */
+export function defaultBracketSeedingModeForTournament(
+  tournament: Tournament,
+  participantIds: readonly PlayerId[],
+  classId: string | undefined,
+): BracketSeedingMode {
+  if (resolveClosedFormBracketSeedingKind(tournament, participantIds, classId)) return 'closed_form';
+  if (supportsExtendedClosedFormBracketSeeding(tournament, participantIds, classId)) {
+    return 'extend_closed_form';
+  }
+  const meta = equalSizedGroupBracketMeta(tournament, classId);
+  return defaultBracketSeedingModeFromMeta(meta);
+}
+
 function mapLayoutDummiesToBye(ids: readonly PlayerId[]): PlayerId[] {
   return ids.map((pid) => (isBracketLayoutDummyPid(pid) ? 'BYE' : pid));
+}
+
+/**
+ * Within each 8-player bracket quarter (4 R1 matches), swap the middle two matches so each
+ * four-match block has one P1–P4 and one P2–P3 cross-group pairing (not two of the same type).
+ * Applied for **G×4** layouts with **G ≥ 8** after {@link balancedOrderFromPidFor} fills slots.
+ */
+function swapClosedFormQuarterMiddleMatches(participants: PlayerId[], slotCount: number): void {
+  const sp = seedPositions(slotCount);
+  for (let q = 0; q < slotCount / 8; q++) {
+    const i0 = 8 * q + 2;
+    const a = sp[i0]! - 1;
+    const b = sp[i0 + 1]! - 1;
+    const c = sp[i0 + 2]! - 1;
+    const d = sp[i0 + 3]! - 1;
+    const tmpA = participants[a]!;
+    const tmpB = participants[b]!;
+    participants[a] = participants[c]!;
+    participants[b] = participants[d]!;
+    participants[c] = tmpA;
+    participants[d] = tmpB;
+  }
 }
 
 function balancedOrderFromPidFor(
@@ -939,15 +1056,18 @@ function balancedOrderFromPidFor(
     [3, 4],
   ];
 
-  /** Two groups of four: cross-group R1 (winner vs other group’s 4th, etc.). */
+  /**
+   * Two groups of four. After {@link seedPositions}, one half is
+   * G0P1–G1P4 and G0P3–G1P2; the other is G1P1–G0P4 and G1P3–G0P2 (group indices 0 and 1).
+   */
   const layout2x4: ReadonlyArray<readonly [number, number]> = [
     [0, 1],
-    [0, 3],
-    [0, 4],
-    [0, 2],
-    [1, 3],
     [1, 1],
+    [1, 3],
+    [0, 3],
     [1, 2],
+    [0, 2],
+    [0, 4],
     [1, 4],
   ];
 
@@ -957,16 +1077,15 @@ function balancedOrderFromPidFor(
   if (G_tgt === 4 && BALANCED_LAYOUT_S === 4) {
     return layout4x4.map(([gi, pl]) => pidFor(gi, pl));
   }
-  if (G_tgt === 8 && BALANCED_LAYOUT_S === 4) {
+  if (G_tgt % 4 === 0 && G_tgt >= 8 && BALANCED_LAYOUT_S === 4) {
     const out: PlayerId[] = [];
-    for (let i = 0; i < 16; i++) {
-      const [lg, pl] = layout4x4[i]!;
-      out.push(pidFor(lg, pl));
+    for (let block = 0; block < G_tgt / 4; block++) {
+      const goff = 4 * block;
+      for (const [lg, pl] of layout4x4) {
+        out.push(pidFor(goff + lg, pl));
+      }
     }
-    for (let i = 0; i < 16; i++) {
-      const [lg, pl] = layout4x4[i]!;
-      out.push(pidFor(4 + lg, pl));
-    }
+    swapClosedFormQuarterMiddleMatches(out, G_tgt * BALANCED_LAYOUT_S);
     return out;
   }
   throw new Error(`balancedOrderFromPidFor: unsupported G_tgt=${G_tgt}`);
@@ -978,9 +1097,10 @@ function balancedOrderFromPidFor(
  * the single-elimination tree: winners meet as late as possible, same-group players are separated, and
  * round‑1 pairs prefer **winner vs loser from different groups** when a closed layout exists.
  *
- * Built-in layouts: **2×4**, **4×4**, and **8×4** (two independent 4×4-style halves on group index ranges 0–3 and 4–7).
+ * Built-in layouts: **2×4**, **4×4**, **8×4**, and **16×4** (each stacks independent 4×4-style quarters on
+ * consecutive groups of four: 0–3, 4–7, 8–11, 12–15).
  *
- * When **G × S** is not exactly one of those shapes but still fits **S ≤ 4**, **G ≤ 8**, and **G·S ≤ 32**,
+ * When **G × S** is not exactly one of those shapes but still fits **S ≤ 4**, **G ≤ 16**, and **G·S ≤ 64**,
  * the function conceptually pads each real group with synthetic `--empty--#…` players (last places) and
  * appends all-dummy groups until the field matches the smallest applicable virtual **G′ × 4** grid
  * ({@link balancedBracketVirtualGridTarget}); those dummies are returned as **`BYE`** so {@link generateBracket}
@@ -998,23 +1118,11 @@ export function orderParticipantsForGroupBalancedBracket(
   const groups = sortGroupDefinitionsStable(groupsRecord);
   if (groups.length === 0) return null;
 
-  const sizes = groups.map((g) => g.playerIds.length);
-  const S = sizes[0]!;
-  if (!sizes.every((sz) => sz === S) || S < 2) return null;
-  const G = groups.length;
-  if (G * S !== participantIds.length) return null;
-
-  const pset = new Set(participantIds);
-  if (pset.size !== participantIds.length) return null;
-
-  for (const pid of participantIds) {
-    if (!findGroupForPlayer(tournament, pid, classId)) return null;
-  }
-  for (const g of groups) {
-    for (const pid of g.playerIds) {
-      if (!pset.has(pid)) return null;
-    }
-  }
+  const scope = bracketGroupLayoutScope(tournament, participantIds, classId);
+  if (!scope) return null;
+  const { G, maxGroupSize } = scope;
+  const equalSized = scope.equalSized;
+  const S = maxGroupSize;
 
   const grid = balancedBracketVirtualGridTarget(G, S);
   if (!grid) return null;
@@ -1033,7 +1141,8 @@ export function orderParticipantsForGroupBalancedBracket(
   /** Virtual **G_tgt × S_tgt** grid: real groups first (padded to `S_tgt`), then all-dummy groups. */
   const pidForVirtual = (gi: number, place: number): PlayerId => {
     if (gi < G) {
-      if (place <= S) return pidForReal(gi, place);
+      const groupSize = groups[gi]!.playerIds.length;
+      if (place <= groupSize) return pidForReal(gi, place);
       if (place <= S_tgt) return bracketLayoutDummyPadPid(groups[gi]!.id, place);
       throw new Error(`place ${place} out of range for padded group`);
     }
@@ -1043,11 +1152,48 @@ export function orderParticipantsForGroupBalancedBracket(
     throw new Error(`virtual group index ${gi} or place ${place} out of range`);
   };
 
-  if (G === G_tgt && S === S_tgt) {
+  if (G === G_tgt && equalSized && S === S_tgt) {
     return balancedOrderFromPidFor(G_tgt, pidForReal);
   }
   if (layoutMode === 'exact') return null;
   return mapLayoutDummiesToBye(balancedOrderFromPidFor(G_tgt, pidForVirtual));
+}
+
+/**
+ * Closed-form order for exactly the top four per group (G×4). Used by {@link BracketSeedingMode} `crop_closed_form`.
+ * `participantIds` must be precisely those qualifiers (see {@link splitParticipantsTopFourPerGroup}).
+ */
+export function orderTopFourPerGroupForClosedFormBracket(
+  tournament: Tournament,
+  participantIds: readonly PlayerId[],
+  classId: string | undefined,
+): PlayerId[] | null {
+  const groups = sortGroupDefinitionsStable(groupRecordForBracketScope(tournament, classId));
+  if (groups.length === 0) return null;
+
+  const G = groups.length;
+  const S = CLOSED_FORM_PLAYERS_PER_GROUP;
+  if (!isExactClosedFormBracketGrid(G, S)) return null;
+  if (participantIds.length !== G * S) return null;
+
+  const pset = new Set(participantIds);
+  if (pset.size !== participantIds.length) return null;
+
+  for (const g of groups) {
+    const rows = groupStandingsRowsForBracket(tournament, g, classId);
+    if (rows.length < S) return null;
+    for (let place = 1; place <= S; place++) {
+      if (!pset.has(rows[place - 1]!.pid)) return null;
+    }
+  }
+
+  const pidForReal = (gi: number, place: number): PlayerId => {
+    const g = groups[gi]!;
+    const rows = groupStandingsRowsForBracket(tournament, g, classId);
+    return rows[place - 1]!.pid;
+  };
+
+  return balancedOrderFromPidFor(G, pidForReal);
 }
 
 /** Tunable bipartition penalties for {@link bestEffortOrderParticipantsForGroupBracket}. */
@@ -1505,7 +1651,293 @@ export function cullSeedingsByGroupPlacement(
   return seedings.filter((pid) => remaining.has(pid));
 }
 
-export type BracketSeedingMode = 'closed_form' | 'extend_closed_form' | 'heuristic';
+export type BracketSeedingMode = 'closed_form' | 'extend_closed_form' | 'crop_closed_form' | 'heuristic';
+
+/** True when `G` is a built-in closed-form group count (2, 4, 8, or 16). */
+export function isClosedFormGroupCount(G: number): boolean {
+  return (CLOSED_FORM_GROUP_COUNT_OPTIONS as readonly number[]).includes(G);
+}
+
+/** Exact **G×4** closed layout with **S ≥ 4**; extra in-group places enter via a preliminary bracket round. */
+export function supportsCropClosedFormBracketGrid(G: number, S: number): boolean {
+  return S >= CLOSED_FORM_PLAYERS_PER_GROUP && isExactClosedFormBracketGrid(G, CLOSED_FORM_PLAYERS_PER_GROUP);
+}
+
+/**
+ * Splits qualifiers into top four per group (by standings) and everyone else (play-in candidates).
+ * Groups may differ in size; each must have at least `topN` players and decided standings.
+ */
+export function splitParticipantsTopFourPerGroup(
+  tournament: Tournament,
+  participantIds: readonly PlayerId[],
+  classId: string | undefined,
+  topN = CLOSED_FORM_PLAYERS_PER_GROUP,
+): { qualified: PlayerId[]; culled: PlayerId[] } | null {
+  const groupsRecord = groupRecordForBracketScope(tournament, classId);
+  const groups = sortGroupDefinitionsStable(groupsRecord);
+  if (groups.length === 0) return null;
+
+  const pset = new Set(participantIds);
+  if (pset.size !== participantIds.length) return null;
+
+  const union = new Set<PlayerId>();
+  let sumSizes = 0;
+  for (const g of groups) {
+    if (g.playerIds.length < topN) return null;
+    sumSizes += g.playerIds.length;
+    for (const pid of g.playerIds) union.add(pid);
+  }
+  if (sumSizes !== participantIds.length || union.size !== participantIds.length) return null;
+
+  const qualified: PlayerId[] = [];
+  const culled: PlayerId[] = [];
+  for (const g of groups) {
+    const rows = groupStandingsRowsForBracket(tournament, g, classId);
+    if (rows.length !== g.playerIds.length) return null;
+    for (let i = 0; i < rows.length; i++) {
+      const pid = rows[i]!.pid;
+      if (!pset.has(pid)) return null;
+      if (i < topN) qualified.push(pid);
+      else culled.push(pid);
+    }
+  }
+  return { qualified, culled };
+}
+
+/**
+ * Whether closed-form seeding applies and if extra in-group places use a preliminary play-in round (`crop`).
+ * `participantIds` must be exactly the union of all group members in scope (typical tournament seedings).
+ */
+export function resolveClosedFormBracketSeedingKind(
+  tournament: Tournament,
+  participantIds: readonly PlayerId[],
+  classId: string | undefined,
+): 'exact' | 'crop' | null {
+  const groups = sortGroupDefinitionsStable(groupRecordForBracketScope(tournament, classId));
+  if (groups.length === 0) return null;
+
+  const G = groups.length;
+  if (!isClosedFormGroupCount(G) || !isExactClosedFormBracketGrid(G, CLOSED_FORM_PLAYERS_PER_GROUP)) {
+    return null;
+  }
+  if (groups.some((g) => g.playerIds.length < CLOSED_FORM_PLAYERS_PER_GROUP)) return null;
+
+  const pset = new Set(participantIds);
+  if (pset.size !== participantIds.length) return null;
+
+  const union = new Set<PlayerId>();
+  for (const g of groups) {
+    for (const pid of g.playerIds) union.add(pid);
+  }
+  if (union.size !== participantIds.length || ![...union].every((id) => pset.has(id))) return null;
+
+  for (const pid of participantIds) {
+    if (!findGroupForPlayer(tournament, pid, classId)) return null;
+  }
+
+  const split = splitParticipantsTopFourPerGroup(tournament, participantIds, classId);
+  if (!split || split.qualified.length !== G * CLOSED_FORM_PLAYERS_PER_GROUP) return null;
+
+  const meta = equalSizedGroupBracketMeta(tournament, classId);
+  if (
+    meta &&
+    isExactClosedFormBracketGrid(meta.G, meta.S) &&
+    meta.G * meta.S === participantIds.length &&
+    split.culled.length === 0
+  ) {
+    return 'exact';
+  }
+  return split.culled.length > 0 ? 'crop' : null;
+}
+
+function groupIdForBracketPlayer(
+  tournament: Tournament,
+  playerId: PlayerId,
+  classId: string | undefined,
+): string | undefined {
+  return findGroupForPlayer(tournament, playerId, classId)?.id;
+}
+
+function placementByPlayerForBracketScope(
+  tournament: Tournament,
+  participantIds: readonly PlayerId[],
+  classId: string | undefined,
+): Map<PlayerId, number> | null {
+  const groupsRecord = groupRecordForBracketScope(tournament, classId);
+  const groups = sortGroupDefinitionsStable(groupsRecord);
+  const pset = new Set(participantIds);
+  const out = new Map<PlayerId, number>();
+  for (const g of groups) {
+    const rows = groupStandingsRowsForBracket(tournament, g, classId);
+    for (let i = 0; i < rows.length; i++) {
+      const pid = rows[i]!.pid;
+      if (pset.has(pid)) out.set(pid, i + 1);
+    }
+  }
+  for (const pid of participantIds) {
+    if (!out.has(pid)) return null;
+  }
+  return out;
+}
+
+/**
+ * Applies same-round play-in feeders onto their {@link BracketMatch.playInFor} targets (e.g. intra-group → cross).
+ * Call before pairing a round for advance / propagation.
+ */
+export function applyPlayInFeeders(bracketMatches: BracketMatch[]): void {
+  const byId = new Map(bracketMatches.map((m) => [m.id, m] as const));
+  for (const pm of bracketMatches) {
+    if (!pm.playInFor) continue;
+    const w = bracketWinnerToNextRoundSeed(pm.winner);
+    if (!w) continue;
+    const target = byId.get(pm.playInFor.matchId);
+    if (!target) continue;
+    if (bracketMatchRound(target) !== bracketMatchRound(pm)) continue;
+    if (pm.playInFor.side === 'a') target.seedA = w;
+    else target.seedB = w;
+  }
+}
+
+/** @deprecated Use {@link applyPlayInFeeders}. */
+export const applyPlayInWinnersToRoundOne = applyPlayInFeeders;
+
+/** Round `round` rows that participate in standard pairwise advance (excludes play-in feeder-only rows). */
+export function bracketMatchesSortedForPairing(
+  bracketMatches: BracketMatch[],
+  round: number,
+): BracketMatch[] {
+  return bracketMatchesSortedForRound(bracketMatches, round).filter((m) => !m.playInFor);
+}
+
+/**
+ * Inserts a preliminary bracket round for crop play-ins: former round 1 becomes round 2+, play-in rows are
+ * round 1, and each direct opponent of a play-in receives a bye in that preliminary round.
+ */
+export function attachPreroundPlayInMatches(
+  tournament: Tournament,
+  bracketMatches: BracketMatch[],
+  culled: readonly PlayerId[],
+  qualified: readonly PlayerId[],
+  classId: string | undefined,
+): BracketMatch[] {
+  if (culled.length === 0) return bracketMatches;
+
+  const topN = CLOSED_FORM_PLAYERS_PER_GROUP;
+  const placement = placementByPlayerForBracketScope(tournament, [...qualified, ...culled], classId);
+  if (!placement) return bracketMatches;
+
+  for (const m of bracketMatches) {
+    m.round = bracketMatchRound(m) + 1;
+  }
+  const hosts = [...bracketMatches].sort(compareBracketMatchId);
+
+  const culledByGroup = new Map<string, PlayerId[]>();
+  for (const pid of culled) {
+    const gid = groupIdForBracketPlayer(tournament, pid, classId);
+    if (!gid) continue;
+    const list = culledByGroup.get(gid) ?? [];
+    list.push(pid);
+    culledByGroup.set(gid, list);
+  }
+  for (const list of culledByGroup.values()) {
+    list.sort((a, b) => (placement.get(b) ?? 0) - (placement.get(a) ?? 0) || a.localeCompare(b));
+  }
+
+  const claimedFourthSlots = new Set<PlayerId>();
+  let nextId = nextBracketMatchNumericId(bracketMatches);
+  const allocId = () => `m${nextId++}`;
+
+  const crossByGroup = new Map<string, BracketMatch>();
+  const internalsByCrossId = new Map<string, BracketMatch[]>();
+  type HostCrop = { cross: BracketMatch; directQual: PlayerId };
+  const cropByHostId = new Map<string, HostCrop>();
+
+  for (const [groupId, players] of culledByGroup) {
+    if (players.length === 0) continue;
+
+    const crossId = allocId();
+    const cross: BracketMatch = { id: crossId, round: 1 };
+    crossByGroup.set(groupId, cross);
+
+    if (players.length === 1) {
+      cross.seedA = players[0];
+    } else {
+      const internalIds = Array.from({ length: players.length - 1 }, () => allocId());
+      const internals: BracketMatch[] = [];
+      for (let i = 0; i < players.length - 1; i++) {
+        const feedTarget = i === players.length - 2 ? crossId : internalIds[i + 1]!;
+        internals.push({
+          id: internalIds[i]!,
+          seedA: i === 0 ? players[i] : undefined,
+          seedB: players[i + 1],
+          round: 1,
+          playInFor: { matchId: feedTarget, side: 'a' },
+        });
+      }
+      internalsByCrossId.set(crossId, internals);
+    }
+  }
+
+  for (const [culledGroupId, cross] of crossByGroup) {
+    const opponents = qualified
+      .filter((pid) => groupIdForBracketPlayer(tournament, pid, classId) !== culledGroupId)
+      .filter((pid) => (placement.get(pid) ?? 0) === topN)
+      .filter((pid) => !claimedFourthSlots.has(pid))
+      .sort((a, b) => a.localeCompare(b));
+    const opponent = opponents[0];
+    if (!opponent) continue;
+
+    const host = hosts.find((m) => m.seedA === opponent || m.seedB === opponent);
+    if (!host) continue;
+
+    const hostSide: 'a' | 'b' = host.seedA === opponent ? 'a' : 'b';
+    const directQual = hostSide === 'a' ? host.seedB : host.seedA;
+    if (!directQual) continue;
+
+    claimedFourthSlots.add(opponent);
+    cross.seedB = opponent;
+    cropByHostId.set(host.id, { cross, directQual });
+  }
+
+  const preliminary: BracketMatch[] = [];
+  for (const host of hosts) {
+    const crop = cropByHostId.get(host.id);
+    if (crop) {
+      const internals = internalsByCrossId.get(crop.cross.id) ?? [];
+      preliminary.push(...internals.sort(compareBracketMatchId));
+      preliminary.push(crop.cross);
+      preliminary.push({
+        id: allocId(),
+        round: 1,
+        seedA: crop.directQual,
+        seedB: undefined,
+        winner: crop.directQual,
+      });
+      host.seedA = undefined;
+      host.seedB = undefined;
+      continue;
+    }
+    if (!host.seedA || !host.seedB) continue;
+    preliminary.push({
+      id: allocId(),
+      round: 1,
+      seedA: host.seedA,
+      seedB: undefined,
+      winner: host.seedA,
+    });
+    preliminary.push({
+      id: allocId(),
+      round: 1,
+      seedA: host.seedB,
+      seedB: undefined,
+      winner: host.seedB,
+    });
+    host.seedA = undefined;
+    host.seedB = undefined;
+  }
+
+  return [...preliminary, ...hosts];
+}
 
 export type GenerateBracketOptions = {
   fillByes?: boolean;
@@ -1589,24 +2021,46 @@ export function generateBracket(
   }
 
   let heuristicBipartitionLeafOrder = false;
+  let cropPlayIn: { qualified: PlayerId[]; culled: PlayerId[] } | undefined;
 
   if (tournament) {
     const mode = opts.bracketSeedingMode ?? 'heuristic';
     const beKey = opts.shuffleKey !== undefined ? String(opts.shuffleKey).trim() || 'Tournament' : 'Tournament';
 
-    if (mode === 'closed_form') {
-      const ordered = orderParticipantsForGroupBalancedBracket(tournament, participants, opts.classId, 'exact');
-      if (!ordered) {
+    if (mode === 'closed_form' || mode === 'crop_closed_form') {
+      const kind = resolveClosedFormBracketSeedingKind(tournament, participants, opts.classId);
+      if (!kind) {
         throw new Error(
-          'Closed-form bracket seeding requires equal-sized groups matching an exact 2×4, 4×4, or 8×4 grid (no virtual padding).',
+          'Closed-form bracket seeding requires G groups (G ∈ {2,4,8,16}) with at least four players each, decided standings, and a supported G×4 layout.',
         );
       }
-      participants = ordered;
+      if (kind === 'exact') {
+        const ordered = orderParticipantsForGroupBalancedBracket(tournament, participants, opts.classId, 'exact');
+        if (!ordered) {
+          throw new Error(
+            'Closed-form bracket seeding requires equal-sized groups matching an exact 2×4, 4×4, 8×4, or 16×4 grid.',
+          );
+        }
+        participants = ordered;
+      } else {
+        const split = splitParticipantsTopFourPerGroup(tournament, participants, opts.classId);
+        if (!split) {
+          throw new Error(
+            'Closed-form bracket seeding requires every player in exactly one group with decided standings.',
+          );
+        }
+        const ordered = orderTopFourPerGroupForClosedFormBracket(tournament, split.qualified, opts.classId);
+        if (!ordered) {
+          throw new Error('Closed-form bracket seeding could not build the G×4 layout for the top four per group.');
+        }
+        participants = ordered;
+        cropPlayIn = split;
+      }
     } else if (mode === 'extend_closed_form') {
       const ordered = orderParticipantsForGroupBalancedBracket(tournament, participants, opts.classId, 'virtual');
       if (!ordered) {
         throw new Error(
-          'Extended closed-form bracket seeding requires equal-sized groups that fit a supported virtual layout (S ≤ 4, G ≤ 8, G·S ≤ 32).',
+          'Extended closed-form bracket seeding requires equal-sized groups that fit a supported virtual layout (S ≤ 4, G ≤ 16, G·S ≤ 64).',
         );
       }
       participants = ordered;
@@ -1674,6 +2128,16 @@ export function generateBracket(
     matches.push(match);
   }
 
+  if (tournament && cropPlayIn) {
+    return attachPreroundPlayInMatches(
+      tournament,
+      matches,
+      cropPlayIn.culled,
+      cropPlayIn.qualified,
+      opts.classId,
+    );
+  }
+
   return matches;
 }
 
@@ -1703,7 +2167,8 @@ export function materializeReadyNextRoundBracketSlots(bracketMatches: BracketMat
     if (maxR < 1) break;
 
     for (let R = 1; R <= maxR; R++) {
-      const parents = bracketMatches.filter((m) => roundOf(m) === R).sort(compareBracketMatchId);
+      applyPlayInFeeders(bracketMatches);
+      const parents = bracketMatchesSortedForPairing(bracketMatches, R);
       if (parents.length < 2) continue;
 
       for (let j = 0; j + 1 < parents.length; j += 2) {
@@ -1740,10 +2205,9 @@ export function materializeReadyNextRoundBracketSlots(bracketMatches: BracketMat
 }
 
 export function advanceBracketRound(tournament: Tournament): Tournament {
+  applyPlayInFeeders(tournament.bracketMatches);
   const currentRound = Math.max(0, ...tournament.bracketMatches.map((m) => bracketMatchRound(m)));
-  const currentMatches = tournament.bracketMatches
-    .filter((m) => bracketMatchRound(m) === currentRound)
-    .sort(compareBracketMatchId);
+  const currentMatches = bracketMatchesSortedForPairing(tournament.bracketMatches, currentRound);
   if (currentMatches.length <= 1) {
     return tournament;
   }
@@ -1981,9 +2445,10 @@ export function canMutateBracketPlayerMatch(
 /** Copy feeder winners into round ≥2 seeds (same geometry as {@link advanceBracketRound}). */
 export function propagateBracketSeedsFromChildWinners(bracketMatches: BracketMatch[]): void {
   if (bracketMatches.length === 0) return;
+  applyPlayInFeeders(bracketMatches);
   const maxRound = Math.max(...bracketMatches.map((m) => bracketMatchRound(m)));
   for (let r = 2; r <= maxRound; r++) {
-    const prev = bracketMatchesSortedForRound(bracketMatches, r - 1);
+    const prev = bracketMatchesSortedForPairing(bracketMatches, r - 1);
     const cur = bracketMatchesSortedForRound(bracketMatches, r);
     for (let j = 0; j < cur.length; j++) {
       const left = prev[j * 2];
@@ -2390,24 +2855,29 @@ export function singleEliminationPlacementRows(
   const runnerUp = finalWinner ? runnerUpFromFinal(tournament, fm, finalWinner) : undefined;
   if (!finalWinner || !runnerUp) return null;
 
+  /** Tree depth from round-1 size; duplicate materialized finals can inflate raw {@link maxRound}. */
+  const slotCount = inferBracketSlotCountFromRoundOne(ms);
+  const depthRound =
+    slotCount !== undefined && slotCount >= 2 ? Math.trunc(Math.log2(slotCount)) : maxRound;
+
   const places = new Map<PlayerId, number>();
   places.set(finalWinner, 1);
   places.set(runnerUp, 2);
 
-  for (let r = maxRound - 1; r >= 1; r--) {
+  for (let r = depthRound - 1; r >= 1; r--) {
     const roundMs = ms.filter((m) => roundOf(m) === r && placementBracketWinner(tournament, m)).sort(compareBracketMatchId);
     const rows: Array<{ loser: PlayerId; wp: number }> = [];
     for (const m of roundMs) {
       const w = placementBracketWinner(tournament, m);
       if (!w) continue;
       const loser = w === m.seedA ? m.seedB : m.seedA;
-      if (!loser) continue;
+      if (!loser || places.has(loser)) continue;
       const wp = places.get(w);
       if (wp === undefined) continue;
       rows.push({ loser, wp });
     }
     rows.sort((a, b) => a.wp - b.wp || a.loser.localeCompare(b.loser));
-    const start = 2 ** (maxRound - r) + 1;
+    const start = 2 ** (depthRound - r) + 1;
     for (let i = 0; i < rows.length; i++) {
       places.set(rows[i]!.loser, start + i);
     }
