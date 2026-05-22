@@ -581,14 +581,14 @@ describe('CommandRunner dependency-aware undo', () => {
     expect(mids.length).toBe(1);
   });
 
-  it('balances group counts for a target size (S or S−1)', () => {
-    expect(partitionPlayerCountIntoGroupSizes(10, 3)).toEqual([3, 3, 2, 2]);
-    expect(partitionPlayerCountIntoGroupSizes(7, 3)).toEqual([3, 2, 2]);
-    expect(partitionPlayerCountIntoGroupSizes(4, 3)).toEqual([2, 2]);
+  it('uses floor(playerCount / targetSize) groups with uniform sizes', () => {
+    expect(partitionPlayerCountIntoGroupSizes(10, 3)).toEqual([4, 3, 3]);
+    expect(partitionPlayerCountIntoGroupSizes(7, 3)).toEqual([4, 3]);
+    expect(partitionPlayerCountIntoGroupSizes(21, 4)).toEqual([5, 4, 4, 4, 4]);
+    expect(partitionPlayerCountIntoGroupSizes(4, 3)).toEqual([4]);
     expect(partitionPlayerCountIntoGroupSizes(4, 10)).toEqual([4]);
     expect(buildNumberedGroupsFromPlayerOrder(['a', 'b', 'c', 'd'], 3)).toEqual([
-      { id: '1', label: 'Group 1', playerIds: ['a', 'b'] },
-      { id: '2', label: 'Group 2', playerIds: ['c', 'd'] },
+      { id: '1', label: 'Group 1', playerIds: ['a', 'b', 'c', 'd'] },
     ]);
   });
 

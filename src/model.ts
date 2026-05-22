@@ -301,20 +301,15 @@ export function roundRobinPairs(playerIds: PlayerId[]): Array<[PlayerId, PlayerI
 }
 
 /**
- * Partition N players into consecutive group sizes, each between S−1 and S (when N > S),
- * or a single group of N when N ≤ S. Used for “target group size” with balanced fill.
+ * Partition N players into `floor(N / S)` groups (minimum 1), sizes differing by at most one
+ * (first groups get the extra player when remainder). Used for “target group size” in the UI.
  */
 export function partitionPlayerCountIntoGroupSizes(playerCount: number, targetSize: number): number[] {
   if (playerCount <= 0) return [];
   const S = Math.max(1, Math.floor(targetSize));
   if (S === 1) return Array.from({ length: playerCount }, () => 1);
-  if (playerCount <= S) return [playerCount];
-  const g = Math.ceil(playerCount / S);
-  const kLarge = playerCount - g * (S - 1);
-  const sizes: number[] = [];
-  for (let i = 0; i < kLarge; i++) sizes.push(S);
-  for (let i = 0; i < g - kLarge; i++) sizes.push(S - 1);
-  return sizes;
+  const g = Math.max(1, Math.floor(playerCount / S));
+  return partitionPlayerCountIntoGroupCount(playerCount, g);
 }
 
 /** Players per group for closed-form bracket layouts (2×4, 4×4, 8×4). */
@@ -1055,66 +1050,207 @@ export function orderParticipantsForGroupBalancedBracket(
   return mapLayoutDummiesToBye(balancedOrderFromPidFor(G_tgt, pidForVirtual));
 }
 
-/** Round (1 … log₂N) where two bracket leaves first meet if both advance; assumes N is a power of two. */
-function earliestMeetingRoundForLeaves(leafA: number, leafB: number): number {
-  const x = leafA ^ leafB;
-  if (x === 0) return 999;
-  return Math.floor(Math.log2(x)) + 1;
+/** Tunable bipartition penalties for {@link bestEffortOrderParticipantsForGroupBracket}. */
+export type BracketBipartitionPenaltyConfig = {
+  /** Per existing set member from the same group as the player being placed. */
+  sameGroupPenalty: number;
+  /** Base term added for every existing set member before the rank-distance addend. */
+  crossRankBasePenalty: number;
+};
+
+export const DEFAULT_BRACKET_BIPARTITION_PENALTIES: BracketBipartitionPenaltyConfig = {
+  sameGroupPenalty: 10,
+  crossRankBasePenalty: 1,
+};
+
+type BracketPartitionEntry = {
+  pid: PlayerId;
+  groupIndex: number;
+  /** 1-based in-group rank (1 = best). */
+  place: number;
+};
+
+function crossRankPlacementPenalty(
+  placeA: number,
+  placeB: number,
+  base: number,
+): number {
+  const diff = Math.abs(placeA - placeB);
+  return base + 1 / Math.max(1, diff);
 }
 
-function buildParticipantLeafMappings(positions: readonly number[]): {
-  participantToLeaf: number[];
-  leafToParticipant: number[];
-} {
-  const n = positions.length;
-  const participantToLeaf = new Array<number>(n);
-  const leafToParticipant = new Array<number>(n);
-  for (let leaf = 0; leaf < n; leaf++) {
-    const pIdx = positions[leaf]! - 1;
-    participantToLeaf[pIdx] = leaf;
-    leafToParticipant[leaf] = pIdx;
+function scoreBracketPartitionAssign(
+  entry: BracketPartitionEntry,
+  set: readonly BracketPartitionEntry[],
+  cfg: BracketBipartitionPenaltyConfig,
+): number {
+  let score = 0;
+  for (const other of set) {
+    if (other.groupIndex === entry.groupIndex) {
+      score += cfg.sameGroupPenalty;
+    }
+    score += crossRankPlacementPenalty(entry.place, other.place, cfg.crossRankBasePenalty);
   }
-  return { participantToLeaf, leafToParticipant };
-}
-
-/** Rank indices (0 = winner) in visit order: winner, last, 2nd, second-to-last, … */
-function buildRankWaveOrder(maxS: number): number[] {
-  if (maxS <= 1) return [0];
-  const out: number[] = [0, maxS - 1];
-  let L = 1;
-  let R = maxS - 2;
-  while (L <= R) {
-    out.push(L++);
-    if (L <= R) out.push(R--);
-  }
-  return out;
-}
-
-function emptyParticipantSlots(slots: readonly (PlayerId | null)[]): number[] {
-  const out: number[] = [];
-  for (let i = 0; i < slots.length; i++) {
-    if (slots[i] === null) out.push(i);
-  }
-  return out;
+  return score;
 }
 
 /**
- * When no ideal group-balanced layout applies, builds a length-**nextPow2** participant list (rest `BYE`)
- * using group standings: random winner order with farthest-point-first leaf placement, then last-place
- * players from largest groups opposite winners where possible, then alternating rank waves from the
- * top and bottom of each group with heuristic R1 preferences (including placing each group’s **2nd**
- * in the **opposite bracket half** from that group’s winner when a free slot allows). Whenever a slot
- * is still available whose **round‑1 opponent is empty**, placement prefers that slot so real players
- * tend to get a first-round bye when padding leaves empty leaves.
- *
- * Returns `null` when group data does not match `participantIds` (same rules as ideal layout: every
- * bracket player must appear in exactly one scoped group and every group member must qualify).
+ * Greedy bipartition by alternating draft picks: A chooses the lowest-penalty unassigned player for
+ * itself, then B, then A, … Subset sizes differ by at most one (`ceil(n/2)` vs `floor(n/2)`).
+ * Tie-break among equal pick costs: earlier in rank / group / pid sort order.
+ */
+export function bipartitionBracketPlayers(
+  entries: readonly BracketPartitionEntry[],
+  cfg: BracketBipartitionPenaltyConfig = DEFAULT_BRACKET_BIPARTITION_PENALTIES,
+): [BracketPartitionEntry[], BracketPartitionEntry[]] {
+  const sorted = [...entries].sort(
+    (a, b) => a.place - b.place || a.groupIndex - b.groupIndex || a.pid.localeCompare(b.pid),
+  );
+  const setA: BracketPartitionEntry[] = [];
+  const setB: BracketPartitionEntry[] = [];
+  const unassigned = new Set<BracketPartitionEntry>(sorted);
+  let pickA = true;
+
+  while (unassigned.size > 0) {
+    const target = pickA ? setA : setB;
+    let best: BracketPartitionEntry | undefined;
+    let bestScore = Infinity;
+    for (const entry of sorted) {
+      if (!unassigned.has(entry)) continue;
+      const score = scoreBracketPartitionAssign(entry, target, cfg);
+      if (score <= bestScore) {
+        bestScore = score;
+        best = entry;
+      }
+    }
+    if (!best) break;
+    target.push(best);
+    unassigned.delete(best);
+    pickA = !pickA;
+  }
+  return [setA, setB];
+}
+
+/** Binary partition tree before BYE insertion and power-of-two leaf padding. */
+export type BracketPartitionTree =
+  | { kind: 'terminal'; entries: BracketPartitionEntry[] }
+  | { kind: 'branch'; left: BracketPartitionTree; right: BracketPartitionTree };
+
+export type BracketPartitionTerminal = {
+  /** Bipartition depth from the root (0 = stopped at the root). */
+  depth: number;
+  entries: BracketPartitionEntry[];
+};
+
+/** Recursively bipartition until each subset has at most two players (no BYEs yet). */
+export function buildBracketPartitionTree(
+  entries: readonly BracketPartitionEntry[],
+  cfg: BracketBipartitionPenaltyConfig = DEFAULT_BRACKET_BIPARTITION_PENALTIES,
+): BracketPartitionTree {
+  if (entries.length <= 2) {
+    return { kind: 'terminal', entries: [...entries] };
+  }
+  const [left, right] = bipartitionBracketPlayers(entries, cfg);
+  return {
+    kind: 'branch',
+    left: buildBracketPartitionTree(left, cfg),
+    right: buildBracketPartitionTree(right, cfg),
+  };
+}
+
+/** All terminal subsets with their bipartition depth (pre-BYE, pre-depth equalization). */
+export function collectBracketPartitionTerminals(
+  node: BracketPartitionTree,
+  depth = 0,
+): BracketPartitionTerminal[] {
+  if (node.kind === 'terminal') {
+    return [{ depth, entries: node.entries }];
+  }
+  return [
+    ...collectBracketPartitionTerminals(node.left, depth + 1),
+    ...collectBracketPartitionTerminals(node.right, depth + 1),
+  ];
+}
+
+export function maxBracketPartitionTerminalDepth(terminals: readonly BracketPartitionTerminal[]): number {
+  return terminals.reduce((max, t) => Math.max(max, t.depth), 0);
+}
+
+/**
+ * Any 2-player terminal not at {@link maxBracketPartitionTerminalDepth} becomes two 1-player terminals
+ * (sibling leaves under a branch) so every partition path can reach the same depth before BYEs.
+ */
+export function equalizeBracketPartitionTreeDepths(
+  node: BracketPartitionTree,
+  depth: number,
+  maxDepth: number,
+): BracketPartitionTree {
+  if (node.kind === 'terminal') {
+    if (node.entries.length === 2 && depth < maxDepth) {
+      return {
+        kind: 'branch',
+        left: { kind: 'terminal', entries: [node.entries[0]!] },
+        right: { kind: 'terminal', entries: [node.entries[1]!] },
+      };
+    }
+    return node;
+  }
+  return {
+    kind: 'branch',
+    left: equalizeBracketPartitionTreeDepths(node.left, depth + 1, maxDepth),
+    right: equalizeBracketPartitionTreeDepths(node.right, depth + 1, maxDepth),
+  };
+}
+
+/** In-order leaf slots: 1-player terminals become `[player, BYE]`; 2-player terminals stay paired. */
+export function flattenBracketPartitionTreeToLeafOrder(node: BracketPartitionTree): PlayerId[] {
+  if (node.kind === 'terminal') {
+    if (node.entries.length === 0) return [];
+    if (node.entries.length === 1) {
+      return [node.entries[0]!.pid, 'BYE'];
+    }
+    return node.entries.map((e) => e.pid);
+  }
+  return [
+    ...flattenBracketPartitionTreeToLeafOrder(node.left),
+    ...flattenBracketPartitionTreeToLeafOrder(node.right),
+  ];
+}
+
+/**
+ * Heuristic leaf order: bipartition → equalize terminal depths → BYE on 1-player terminals → pad to
+ * the next power of two. Round‑1 pairings are adjacent leaves (no {@link seedPositions} remap).
+ */
+export function buildBracketLeafOrderByBipartition(
+  entries: readonly BracketPartitionEntry[],
+  cfg: BracketBipartitionPenaltyConfig = DEFAULT_BRACKET_BIPARTITION_PENALTIES,
+): PlayerId[] {
+  if (entries.length === 0) return [];
+
+  const tree = buildBracketPartitionTree(entries, cfg);
+  const terminals = collectBracketPartitionTerminals(tree);
+  const maxDepth = maxBracketPartitionTerminalDepth(terminals);
+  const equalized = equalizeBracketPartitionTreeDepths(tree, 0, maxDepth);
+
+  let leaves = flattenBracketPartitionTreeToLeafOrder(equalized);
+  const slotCount = nextPowerOfTwo(leaves.length);
+  while (leaves.length < slotCount) {
+    leaves.push('BYE');
+  }
+  return leaves;
+}
+
+/**
+ * When no ideal group-balanced layout applies, builds a power-of-two leaf-order list via bipartition
+ * (see {@link buildBracketLeafOrderByBipartition}). Returns `null` when group data does not match
+ * `participantIds` (same rules as ideal layout: every bracket player must appear in exactly one scoped
+ * group and every group member must qualify).
  */
 export function bestEffortOrderParticipantsForGroupBracket(
   tournament: Tournament,
   participantIds: readonly PlayerId[],
   classId: string | undefined,
-  shuffleKey: string,
+  _shuffleKey: string,
 ): PlayerId[] | null {
   const groupsRecord = groupRecordForBracketScope(tournament, classId);
   const groups = sortGroupDefinitionsStable(groupsRecord);
@@ -1128,10 +1264,8 @@ export function bestEffortOrderParticipantsForGroupBracket(
 
   const union = new Set<PlayerId>();
   let sumSizes = 0;
-  const sizes: number[] = [];
   for (const g of groups) {
     sumSizes += g.playerIds.length;
-    sizes.push(g.playerIds.length);
     for (const pid of g.playerIds) union.add(pid);
   }
   if (sumSizes !== P || union.size !== P || ![...union].every((id) => pset.has(id))) {
@@ -1141,215 +1275,17 @@ export function bestEffortOrderParticipantsForGroupBracket(
     if (!findGroupForPlayer(tournament, pid, classId)) return null;
   }
 
-  const maxS = Math.max(...sizes);
-  const N = nextPowerOfTwo(P);
-  const logN = Math.round(Math.log2(N));
-
-  const positions = seedPositions(N);
-  const { participantToLeaf, leafToParticipant } = buildParticipantLeafMappings(positions);
-
-  const key = shuffleKey.trim() || 'Tournament';
-  const rng = mulberry32(hashStringToSeed(`${key}:best-effort`) >>> 0);
-
-  const slots: Array<PlayerId | null> = Array.from({ length: N }, () => null);
-  const pidToSlot = new Map<PlayerId, number>();
-
-  const groupRows: PlayerId[][] = groups.map((g) =>
-    groupStandingsRowsForBracket(tournament, g, classId).map((r) => r.pid),
-  );
+  const entries: BracketPartitionEntry[] = [];
   for (let gi = 0; gi < groups.length; gi++) {
-    if (groupRows[gi]!.length !== groups[gi]!.playerIds.length) return null;
-  }
-
-  const pidToGroupIndex = new Map<PlayerId, number>();
-  for (let gi = 0; gi < groups.length; gi++) {
-    for (const pid of groups[gi]!.playerIds) pidToGroupIndex.set(pid, gi);
-  }
-
-  const assign = (pIdx: number, pid: PlayerId) => {
-    slots[pIdx] = pid;
-    pidToSlot.set(pid, pIdx);
-  };
-
-  const r1OppPIdx = (pIdx: number): number => {
-    const leaf = participantToLeaf[pIdx]!;
-    return leafToParticipant[leaf ^ 1]!;
-  };
-
-  const r1OppPid = (pIdx: number): PlayerId | null => {
-    const o = r1OppPIdx(pIdx);
-    return slots[o];
-  };
-
-  const r1OpponentSlotEmpty = (pIdx: number): boolean => r1OppPid(pIdx) === null;
-
-  /** Score bump so we prefer any still-empty R1 neighbour over almost all soft constraints (not hard bans). */
-  const preferR1ByeSlotBonus = 750;
-
-  const pickPreferringR1ByeAmong = (pool: number[]): number => {
-    const bye = pool.filter((p) => r1OpponentSlotEmpty(p));
-    const use = bye.length > 0 ? bye : pool;
-    return use[Math.floor(rng() * use.length)]!;
-  };
-
-  const rankWaves = buildRankWaveOrder(maxS);
-  const winnerPids = groupRows.map((row) => row[0]!);
-
-  // --- Wave 0: group winners (random order), farthest-point-first in participant indices ---
-  const winnerOrder = shuffleDeterministic([...winnerPids], `${key}:be:winners`);
-  const winnerLeaves: number[] = [];
-  for (const w of winnerOrder) {
-    const empty = emptyParticipantSlots(slots);
-    if (empty.length === 0) break;
-    let bestMin = -1;
-    const bestIdx: number[] = [];
-    for (const pIdx of empty) {
-      const leaf = participantToLeaf[pIdx]!;
-      let minR = winnerLeaves.length === 0 ? logN + 2 : Infinity;
-      for (const wl of winnerLeaves) {
-        minR = Math.min(minR, earliestMeetingRoundForLeaves(leaf, wl));
-      }
-      if (minR > bestMin) {
-        bestMin = minR;
-        bestIdx.length = 0;
-        bestIdx.push(pIdx);
-      } else if (minR === bestMin) bestIdx.push(pIdx);
-    }
-    const pick = pickPreferringR1ByeAmong(bestIdx);
-    assign(pick, w);
-    winnerLeaves.push(participantToLeaf[pick]!);
-  }
-
-  const winnerSet = new Set(winnerPids);
-
-  // --- Remaining waves ---
-  for (let wi = 1; wi < rankWaves.length; wi++) {
-    const r = rankWaves[wi]!;
-    const onlyMaxSized = r === maxS - 1 && maxS >= 2;
-
-    const wavePlayers: PlayerId[] = [];
-    for (let gi = 0; gi < groups.length; gi++) {
-      const sz = groups[gi]!.playerIds.length;
-      if (onlyMaxSized && sz !== maxS) continue;
-      if (sz <= r) continue;
-      wavePlayers.push(groupRows[gi]![r]!);
-    }
-
-    const waveOrder = shuffleDeterministic(wavePlayers, `${key}:be:wave${wi}:r${r}`);
-
-    for (const pid of waveOrder) {
-      if (pidToSlot.has(pid)) continue;
-      const empty = emptyParticipantSlots(slots);
-      if (empty.length === 0) break;
-
-      const gi = pidToGroupIndex.get(pid)!;
-      const ownWinner = groupRows[gi]![0]!;
-
-      // Last-rank wave (largest groups only): sit in R1 opposite some group winner when possible.
-      if (onlyMaxSized) {
-        let placed = false;
-        const tryWinners = shuffleDeterministic([...winnerPids], `${key}:be:losers:${pid}`);
-        for (const w of tryWinners) {
-          const wP = pidToSlot.get(w);
-          if (wP === undefined) continue;
-          const oppP = r1OppPIdx(wP);
-          if (slots[oppP] === null) {
-            assign(oppP, pid);
-            placed = true;
-            break;
-          }
-        }
-        if (placed) continue;
-        assign(pickPreferringR1ByeAmong(empty), pid);
-        continue;
-      }
-
-      // Rank 1: avoid R1 vs any group winner if possible; never vs own winner. Prefer the bracket half
-      // opposite this group’s winner (first meeting only in the final) when that slot is still free.
-      if (r === 1) {
-        const half = (leaf: number) => (leaf < N / 2 ? 0 : 1);
-        const wSlot = pidToSlot.get(ownWinner);
-        const wLeaf = wSlot !== undefined ? participantToLeaf[wSlot]! : undefined;
-
-        let best = -1e9;
-        const cand: number[] = [];
-        for (const pIdx of empty) {
-          const opp = r1OppPid(pIdx);
-          let score = 0;
-          if (opp === null) score += preferR1ByeSlotBonus;
-          if (opp === ownWinner) score -= 1_000_000;
-          else if (opp !== null && winnerSet.has(opp)) score -= 500;
-          else if (opp !== null && pidToGroupIndex.get(opp) === gi) score -= 50;
-          else score += rng() * 0.001;
-
-          if (wLeaf !== undefined) {
-            const cLeaf = participantToLeaf[pIdx]!;
-            if (half(cLeaf) !== half(wLeaf)) score += 400;
-          }
-
-          if (score > best) {
-            best = score;
-            cand.length = 0;
-            cand.push(pIdx);
-          } else if (score === best) cand.push(pIdx);
-        }
-        assign(pickPreferringR1ByeAmong(cand), pid);
-        continue;
-      }
-
-      // Second-to-last rank (index maxS - 2): prefer R1 vs any group winner, then vs any group’s 2nd place.
-      if (r === maxS - 2 && maxS >= 3) {
-        let best = -1e9;
-        const cand: number[] = [];
-        for (const pIdx of empty) {
-          const opp = r1OppPid(pIdx);
-          let score = rng() * 0.0001;
-          if (opp === null) score += preferR1ByeSlotBonus;
-          if (opp !== null && winnerSet.has(opp)) score += 100;
-          else if (opp !== null) {
-            const og = pidToGroupIndex.get(opp);
-            if (og !== undefined && groupRows[og]!.length >= 2 && groupRows[og]![1] === opp) score += 50;
-          }
-          if (opp !== null && pidToGroupIndex.get(opp) === gi && winnerSet.has(opp)) score -= 200;
-          if (score > best) {
-            best = score;
-            cand.length = 0;
-            cand.push(pIdx);
-          } else if (score === best) cand.push(pIdx);
-        }
-        assign(pickPreferringR1ByeAmong(cand), pid);
-        continue;
-      }
-
-      // Other ranks: mild preference to avoid same-group R1 neighbour.
-      let best = -1e9;
-      const cand: number[] = [];
-      for (const pIdx of empty) {
-        const opp = r1OppPid(pIdx);
-        let score = rng() * 0.0001;
-        if (opp === null) score += preferR1ByeSlotBonus;
-        if (opp !== null && pidToGroupIndex.get(opp) === gi) score -= 30;
-        if (opp === ownWinner) score -= 200;
-        if (score > best) {
-          best = score;
-          cand.length = 0;
-          cand.push(pIdx);
-        } else if (score === best) cand.push(pIdx);
-      }
-      assign(pickPreferringR1ByeAmong(cand), pid);
+    const g = groups[gi]!;
+    const rows = groupStandingsRowsForBracket(tournament, g, classId);
+    if (rows.length !== g.playerIds.length) return null;
+    for (let place = 1; place <= rows.length; place++) {
+      entries.push({ pid: rows[place - 1]!.pid, groupIndex: gi, place });
     }
   }
 
-  for (const pid of participantIds) {
-    if (!pidToSlot.has(pid)) {
-      const emp = emptyParticipantSlots(slots);
-      if (emp.length === 0) return null;
-      assign(pickPreferringR1ByeAmong(emp), pid);
-    }
-  }
-
-  const out: PlayerId[] = slots.map((s) => (s === null ? 'BYE' : s));
-  return out;
+  return buildBracketLeafOrderByBipartition(entries);
 }
 
 /**
@@ -1580,6 +1516,8 @@ export function generateBracket(
     }
   }
 
+  let heuristicBipartitionLeafOrder = false;
+
   if (tournament) {
     const mode = opts.bracketSeedingMode ?? 'heuristic';
     const beKey = opts.shuffleKey !== undefined ? String(opts.shuffleKey).trim() || 'Tournament' : 'Tournament';
@@ -1604,6 +1542,7 @@ export function generateBracket(
       const best = bestEffortOrderParticipantsForGroupBracket(tournament, participants, opts.classId, beKey);
       if (best) {
         participants = best;
+        heuristicBipartitionLeafOrder = true;
       } else if (opts.shuffleKey !== undefined) {
         const key = String(opts.shuffleKey).trim() || 'Tournament';
         if (participants.length > 1) {
@@ -1623,13 +1562,16 @@ export function generateBracket(
     throw new Error('Cannot generate non-power-of-two bracket without fillByes');
   }
 
-  // Include byes as empty slots
-  while (participants.length < slotCount) {
-    participants.push('BYE');
+  // Pad to power of two for standard seeding; heuristic bipartition already pads at end of partitioning.
+  if (!heuristicBipartitionLeafOrder) {
+    while (participants.length < slotCount) {
+      participants.push('BYE');
+    }
   }
 
-  const positions = seedPositions(slotCount);
-  const seeded = positions.map((seedIndex) => participants[seedIndex - 1]);
+  const seeded = heuristicBipartitionLeafOrder
+    ? participants
+    : seedPositions(slotCount).map((seedIndex) => participants[seedIndex - 1]!);
 
   const matches: BracketMatch[] = [];
   let idCounter = 1;

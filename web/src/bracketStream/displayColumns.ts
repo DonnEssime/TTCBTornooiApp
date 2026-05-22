@@ -3,6 +3,7 @@ import {
   bracketMatchRound,
   bracketWinnerToNextRoundSeed,
   compareBracketMatchId,
+  inferBracketSlotCountFromRoundOne,
 } from 'ttc-tornooiapp';
 import { bracketTreeFromColumns, type BracketBNode } from './buildTree';
 
@@ -17,8 +18,9 @@ function syntheticBracketRound(round: number, count: number): BracketMatch[] {
 export function buildBracketColumnsForDisplay(matches: BracketMatch[]): BracketMatch[][] {
   const r1 = matches.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
   if (r1.length === 0) return [];
-  const leafSlots = r1.length * 2;
-  const depth = Math.round(Math.log2(leafSlots));
+  const leafSlots = inferBracketSlotCountFromRoundOne(matches);
+  if (!leafSlots) return [];
+  const depth = Math.trunc(Math.log2(leafSlots));
   const cols: BracketMatch[][] = [];
   for (let r = 1; r <= depth; r++) {
     const expected = leafSlots / 2 ** r;

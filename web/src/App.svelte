@@ -19,7 +19,6 @@
     compareBracketMatchId,
     compareBracketMatchIdString,
     bracketMatchRound,
-    bracketWinnerToNextRoundSeed,
     bracketPlayerMatchId,
     canMutateBracketPlayerMatch,
     canMutateExistingGroupPhaseMatchScores,
@@ -53,9 +52,9 @@
     matchIdOnTable,
   } from 'ttc-tornooiapp';
   import BracketStreamView from './BracketStreamView.svelte';
+  import { displayBracketColumns } from './bracketStream/displayColumns';
   import PlayerName from './PlayerName.svelte';
   import TournamentOverview from './TournamentOverview.svelte';
-  import { bracketTreeFromColumns, type BracketBNode } from './bracketStream/buildTree';
   import {
     deleteTournament,
     importTournamentJsonl,
@@ -72,7 +71,7 @@
   const DEBUG_UI = true;
 
   /** Draft count for [DEBUG] Fill players (parsed on click). */
-  let debugFillPlayerCount = $state('8');
+  let debugFillPlayerCount = $state('21');
 
   /** How to order participants before single-elimination seeding (see {@link generateBracket}). */
   let bracketSeedingChoice = $state<BracketSeedingMode>('heuristic');
@@ -1420,71 +1419,6 @@
       matches.map((m) => bracketMatchRound(m)).filter((r) => Number.isFinite(r) && r >= 1),
     );
     return [...set].sort((a, b) => a - b);
-  }
-
-  function syntheticBracketRound(round: number, count: number): BracketMatch[] {
-    return Array.from({ length: count }, (_, i) => ({
-      id: `__ph-${round}-${i}`,
-      round,
-    }));
-  }
-
-  /** Full knockout column layout: real rounds plus synthetic later rounds until final. */
-  function buildBracketColumnsForDisplay(matches: BracketMatch[]): BracketMatch[][] {
-    const r1 = matches.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
-    if (r1.length === 0) return [];
-    const leafSlots = r1.length * 2;
-    const depth = Math.round(Math.log2(leafSlots));
-    const cols: BracketMatch[][] = [];
-    for (let r = 1; r <= depth; r++) {
-      const expected = leafSlots / 2 ** r;
-      const real = matches.filter((m) => bracketMatchRound(m) === r).sort(compareBracketMatchId);
-      if (real.length === expected) {
-        cols.push(real);
-        continue;
-      }
-      if (real.length === 0) {
-        cols.push(syntheticBracketRound(r, expected));
-        continue;
-      }
-      // Some bracket states legitimately contain a *partial* later round (e.g. byes / best-effort
-      // materialization). For display we must still provide a full column, otherwise `buildTree`
-      // indexes beyond the array and rendering hard-crashes.
-      if (real.length < expected) {
-        const ph = syntheticBracketRound(r, expected - real.length).map((m, i) => ({
-          ...m,
-          id: `__ph-${r}-${real.length + i}`,
-        }));
-        cols.push([...real, ...ph]);
-        continue;
-      }
-      cols.push(real);
-    }
-    return cols;
-  }
-
-  /** Copy display columns and fill parent slots from feeder match winners before the next round exists in state. */
-  function displayBracketColumns(matches: BracketMatch[]): BracketMatch[][] {
-    const cols = buildBracketColumnsForDisplay(matches);
-    if (cols.length === 0) return cols;
-    const colsCopy = cols.map((c) => c.map((m) => ({ ...m })));
-    const root = bracketTreeFromColumns(colsCopy);
-    function applyFeederWinners(node: BracketBNode): void {
-      if (!node.left || !node.right) return;
-      applyFeederWinners(node.left);
-      applyFeederWinners(node.right);
-      const m = node.match;
-      if (!m.seedA) {
-        const w = bracketWinnerToNextRoundSeed(node.left.match.winner);
-        if (w) m.seedA = w;
-      }
-      if (!m.seedB) {
-        const w = bracketWinnerToNextRoundSeed(node.right.match.winner);
-        if (w) m.seedB = w;
-      }
-    }
-    if (root) applyFeederWinners(root);
-    return colsCopy;
   }
 
   function previewBracketColumns(

@@ -1,11 +1,22 @@
 import { describe, it, expect } from 'vitest';
 import {
   bestEffortOrderParticipantsForGroupBracket,
+  bipartitionBracketPlayers,
+  bracketMatchRound,
+  buildBracketLeafOrderByBipartition,
+  buildBracketPartitionTree,
+  collectBracketPartitionTerminals,
   createTournament,
+  currentGroupPlace1Based,
+  equalizeBracketPartitionTreeDepths,
+  findGroupForPlayer,
   generateBracket,
+  inferBracketSlotCountFromRoundOne,
+  maxBracketPartitionTerminalDepth,
   nextPowerOfTwo,
   orderParticipantsForGroupBalancedBracket,
   shuffleDeterministic,
+  type BracketMatch,
   type BracketSeedingMode,
 } from '../src/model';
 
@@ -63,6 +74,207 @@ function addGroupRRDominant(t: ReturnType<typeof createTournament>, gid: string,
   }
 }
 
+type PartitionEntry = { pid: string; groupIndex: number; place: number };
+
+/** Players with a round-1 walkover (one real seed, other side empty / BYE). */
+function round1WalkoverPlayerIds(bracket: BracketMatch[]): string[] {
+  const out: string[] = [];
+  for (const m of bracket) {
+    if (bracketMatchRound(m) !== 1) continue;
+    const hasA = Boolean(m.seedA);
+    const hasB = Boolean(m.seedB);
+    if (hasA === hasB) continue;
+    out.push((hasA ? m.seedA : m.seedB)!);
+  }
+  return out;
+}
+
+function inGroupPlaceByPlayer(
+  t: ReturnType<typeof createTournament>,
+  playerIds: readonly string[],
+  classId: string | undefined,
+): Map<string, number> {
+  const places = new Map<string, number>();
+  for (const pid of playerIds) {
+    const g = findGroupForPlayer(t, pid, classId);
+    if (!g) throw new Error(`no group for ${pid}`);
+    places.set(pid, currentGroupPlace1Based(t, g, pid, classId));
+  }
+  return places;
+}
+
+/**
+ * If any player at in-group place `p` has an R1 bye, every player at every place `< p` must also have one.
+ * Later bracket rounds must not contain one-sided (bye) slots.
+ */
+function expectByesOnlyForTopRanksAndRound1(
+  bracket: BracketMatch[],
+  places: Map<string, number>,
+  allPlayerIds: readonly string[],
+): void {
+  const byeSet = new Set(round1WalkoverPlayerIds(bracket));
+
+  for (const pid of byeSet) {
+    const place = places.get(pid)!;
+    for (const other of allPlayerIds) {
+      const otherPlace = places.get(other)!;
+      if (otherPlace < place) {
+        expect(byeSet.has(other)).toBe(true);
+      }
+    }
+  }
+
+  for (const m of bracket) {
+    const r = bracketMatchRound(m);
+    if (r <= 1) continue;
+    const hasA = Boolean(m.seedA);
+    const hasB = Boolean(m.seedB);
+    expect(hasA && hasB).toBe(true);
+  }
+}
+
+function terminalDepthSpread(terminals: ReturnType<typeof collectBracketPartitionTerminals>): number {
+  if (terminals.length === 0) return 0;
+  const depths = terminals.map((t) => t.depth);
+  return Math.max(...depths) - Math.min(...depths);
+}
+
+function buildSevenGroupsOfThree(t: ReturnType<typeof createTournament>): string[] {
+  const seed: string[] = [];
+  for (let g = 0; g < 7; g++) {
+    const pids = [`p${g * 3 + 1}`, `p${g * 3 + 2}`, `p${g * 3 + 3}`];
+    for (const id of pids) {
+      t.players[id] = { id, name: id, handicap: 0 };
+      seed.push(id);
+    }
+    addGroupRRDominant(t, `g${g}`, pids);
+  }
+  return seed;
+}
+
+describe('bipartition bracket leaf order', () => {
+  it('pre-BYE terminal partition depths differ by at most one (bipartition invariant)', () => {
+    const cases: PartitionEntry[][] = [
+      Array.from({ length: 21 }, (_, i) => ({
+        pid: `p${i + 1}`,
+        groupIndex: i % 7,
+        place: (i % 3) + 1,
+      })),
+      [
+        { pid: 'p1', groupIndex: 0, place: 1 },
+        { pid: 'p2', groupIndex: 0, place: 2 },
+        { pid: 'p3', groupIndex: 0, place: 3 },
+      ],
+      Array.from({ length: 27 }, (_, i) => ({
+        pid: `p${i + 1}`,
+        groupIndex: i % 9,
+        place: (i % 3) + 1,
+      })),
+    ];
+    for (const entries of cases) {
+      const tree = buildBracketPartitionTree(entries);
+      const terminals = collectBracketPartitionTerminals(tree);
+      expect(terminalDepthSpread(terminals)).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('splits shallow 2-player terminals before BYEs so only max-depth leaves stay paired', () => {
+    const entries: PartitionEntry[] = Array.from({ length: 21 }, (_, i) => ({
+      pid: `p${i + 1}`,
+      groupIndex: i % 7,
+      place: (i % 3) + 1,
+    }));
+    const tree = buildBracketPartitionTree(entries);
+    const maxDepth = maxBracketPartitionTerminalDepth(collectBracketPartitionTerminals(tree));
+    const equalized = equalizeBracketPartitionTreeDepths(tree, 0, maxDepth);
+    const after = collectBracketPartitionTerminals(equalized);
+    const maxAfter = maxBracketPartitionTerminalDepth(after);
+    for (const term of after) {
+      if (term.entries.length === 2) {
+        expect(term.depth).toBe(maxAfter);
+      }
+    }
+    const leafOrder = buildBracketLeafOrderByBipartition(entries);
+    expect(leafOrder.length).toBe(32);
+  });
+
+  it('alternating subset picks keep sizes equal or one apart (21 → 11|10)', () => {
+    const entries: PartitionEntry[] = Array.from({ length: 21 }, (_, i) => ({
+      pid: `p${i + 1}`,
+      groupIndex: i % 7,
+      place: (i % 3) + 1,
+    }));
+    const [left, right] = bipartitionBracketPlayers(entries);
+    expect(left.length).toBe(11);
+    expect(right.length).toBe(10);
+    expect(Math.abs(left.length - right.length)).toBeLessThanOrEqual(1);
+  });
+
+  it('adds BYE only at terminal one-player partitions (3 → 4 leaves, one BYE)', () => {
+    const entries: PartitionEntry[] = [
+      { pid: 'p1', groupIndex: 0, place: 1 },
+      { pid: 'p2', groupIndex: 0, place: 2 },
+      { pid: 'p3', groupIndex: 0, place: 3 },
+    ];
+    const leafOrder = buildBracketLeafOrderByBipartition(entries);
+    expect(leafOrder).toHaveLength(4);
+    expect(leafOrder.filter((x) => x === 'BYE')).toEqual(['BYE']);
+    expect(new Set(leafOrder.filter((x) => x !== 'BYE'))).toEqual(new Set(['p1', 'p2', 'p3']));
+  });
+
+  it('splits 4 players into cross-group R1 pairings at the leaves', () => {
+    const entries = [
+      { pid: 'a1', groupIndex: 0, place: 1 },
+      { pid: 'a2', groupIndex: 0, place: 2 },
+      { pid: 'b1', groupIndex: 1, place: 1 },
+      { pid: 'b2', groupIndex: 1, place: 2 },
+    ];
+    const [left, right] = bipartitionBracketPlayers(entries);
+    expect(left.map((e) => e.pid).sort()).toEqual(['a1', 'b2']);
+    expect(right.map((e) => e.pid).sort()).toEqual(['a2', 'b1']);
+    expect(buildBracketLeafOrderByBipartition(entries)).toEqual(['a1', 'b2', 'b1', 'a2']);
+  });
+
+  it('only gives round-1 byes to top in-group ranks, tiered (fails until bye placement is rank-aware)', () => {
+    const t = createTournament();
+    const seed = buildSevenGroupsOfThree(t);
+    const places = inGroupPlaceByPlayer(t, seed, undefined);
+    const bracket = generateBracket([...seed], t, {
+      fillByes: true,
+      shuffleKey: 'Cup-21',
+      bracketSeedingMode: 'heuristic',
+    });
+    expect(bracket.length).toBe(16);
+    expect(inferBracketSlotCountFromRoundOne(bracket)).toBe(32);
+    expectByesOnlyForTopRanksAndRound1(bracket, places, seed);
+  });
+
+  it('does not give last-place finishers a round-1 bye when byes can pair with each other (2×3)', () => {
+    const t = createTournament();
+    for (let i = 1; i <= 6; i++) {
+      const id = `p${i}`;
+      t.players[id] = { id, name: id, handicap: 0 };
+    }
+    addGroupRRDominant(t, 'g0', ['p1', 'p2', 'p3']);
+    addGroupRRDominant(t, 'g1', ['p4', 'p5', 'p6']);
+    const seed = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6'];
+    const bracket = generateBracket([...seed], t, {
+      fillByes: true,
+      shuffleKey: 'Cup',
+      bracketSeedingMode: 'heuristic',
+    });
+    const r1ByePids = bracket
+      .filter((m) => (m.seedA && !m.seedB) || (!m.seedA && m.seedB))
+      .flatMap((m) => [m.seedA, m.seedB])
+      .filter((x): x is string => Boolean(x));
+    expect(r1ByePids).toEqual([]);
+    for (const pid of seed) {
+      const row = bracket.find((m) => m.seedA === pid || m.seedB === pid);
+      expect(row?.seedA && row?.seedB).toBe(true);
+    }
+  });
+});
+
 describe('bestEffortOrderParticipantsForGroupBracket', () => {
   it('returns null when participants are not exactly the union of group members', () => {
     const t = createTournament();
@@ -88,7 +300,8 @@ describe('bestEffortOrderParticipantsForGroupBracket', () => {
     const b = bestEffortOrderParticipantsForGroupBracket(t, seed, undefined, 'MyKey');
     expect(a).toEqual(b);
     expect(a).not.toBeNull();
-    expect(a!.length).toBe(nextPowerOfTwo(27));
+    expect(a!.filter((x) => x !== 'BYE').length).toBe(27);
+    expect(new Set(a!.filter((x) => x !== 'BYE'))).toEqual(new Set(seed));
   });
 
   it('random stress: always finite, correct length, bijection onto seed players', () => {
@@ -112,6 +325,7 @@ describe('bestEffortOrderParticipantsForGroupBracket', () => {
       const r = bestEffortOrderParticipantsForGroupBracket(t, all, undefined, key);
       expect(r).not.toBeNull();
       expect(r!.length % 2).toBe(0);
+      expect(r!.length).toBe(nextPowerOfTwo(r!.length));
       const nonBye = r!.filter((x) => x !== 'BYE');
       expect(nonBye.length).toBe(all.length);
       expect(new Set(nonBye).size).toBe(all.length);

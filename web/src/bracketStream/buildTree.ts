@@ -14,14 +14,15 @@ export function bracketTreeFromColumns(cols: BracketMatch[][]): BracketBNode | n
   if (cols.length === 0) return null;
   const depth = cols.length;
 
-  function nodeAt(ri: number, j: number): BracketBNode {
-    const m = cols[ri]![j]!;
+  function nodeAt(ri: number, j: number): BracketBNode | null {
+    const col = cols[ri];
+    const m = col?.[j];
+    if (!m) return null;
     if (ri === 0) return { match: m };
-    return {
-      match: m,
-      left: nodeAt(ri - 1, 2 * j),
-      right: nodeAt(ri - 1, 2 * j + 1),
-    };
+    const left = nodeAt(ri - 1, 2 * j);
+    const right = nodeAt(ri - 1, 2 * j + 1);
+    if (!left || !right) return null;
+    return { match: m, left, right };
   }
 
   return nodeAt(depth - 1, 0);
