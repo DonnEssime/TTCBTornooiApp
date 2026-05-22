@@ -35,7 +35,7 @@ export const commandCatalog = {
   'command.playerNotFound': t('Player not found', 'Speler niet gevonden'),
   'command.teamVsTeamWithPlayerBracket': t(
     'Team vs team matches cannot be used alongside a player bracket',
-    'Ploeg-tegen-ploeg-wedstrijden kunnen niet samen met een spelersbracket worden gebruikt',
+    'Ploeg-tegen-ploeg-wedstrijden kunnen niet samen met een spelerstabel worden gebruikt',
   ),
   'command.onlyOneTeamVsTeamMatch': t(
     'Only one team vs team match is allowed per tournament',
@@ -49,10 +49,10 @@ export const commandCatalog = {
     'This match was already decided without entering game scores (forfeit / elimination).',
     'Deze wedstrijd is al beslist zonder gamescores in te geven (opgeven / eliminatie).',
   ),
-  'command.bracketRoundLocked': t('Bracket round {{round}} is locked', 'Afvallingsronde {{round}} is vergrendeld'),
+  'command.bracketRoundLocked': t('{{round}} is locked', '{{round}} is vergrendeld'),
   'command.bracketMatchCannotChange': t(
     'This bracket match cannot be changed: a later knockout match already has scores, or the round is locked.',
-    'Deze bracketwedstrijd kan niet worden gewijzigd: een latere knockoutwedstrijd heeft al scores, of de ronde is vergrendeld.',
+    'Deze afvallingswedstrijd kan niet worden gewijzigd: een latere knockoutwedstrijd heeft al scores, of de ronde is vergrendeld.',
   ),
   'command.groupResultCannotChange': t(
     'This group result cannot be changed: a knockout match in this track already has recorded play.',
@@ -73,7 +73,7 @@ export const commandCatalog = {
   ),
   'command.bracketMatchCannotClear': t(
     'This bracket match cannot be cleared: a later knockout match already has scores, or the round is locked.',
-    'Deze bracketwedstrijd kan niet worden gewist: een latere knockoutwedstrijd heeft al scores, of de ronde is vergrendeld.',
+    'Deze afvallingswedstrijd kan niet worden gewist: een latere knockoutwedstrijd heeft al scores, of de ronde is vergrendeld.',
   ),
   'command.teamMatchNotFound': t('Team match not found', 'Ploegwedstrijd niet gevonden'),
   'command.teamGroupForfeitsNotSupported': t(
@@ -97,7 +97,7 @@ export const commandCatalog = {
   'command.classesMustBeArray': t('classes must be an array', 'classes moet een array zijn'),
   'command.classNeedsDisplayName': t(
     'Each class needs a non-empty display name',
-    'Elke klasse heeft een niet-lege weergavenaam nodig',
+    'Elke reeks heeft een niet-lege weergavenaam nodig',
   ),
   'command.duplicateClassId': t('Duplicate class id', 'Dubbele reeks-ID'),
   'command.defineTwoClassesBeforePlayers': t(
@@ -106,12 +106,12 @@ export const commandCatalog = {
   ),
   'command.cannotChangeClassesWhilePlayersExist': t(
     'Cannot add or remove a competition class while players exist.',
-    'Kan geen wedstrijdklasse toevoegen of verwijderen zolang er spelers zijn.',
+    'Kan geen wedstrijdreeks toevoegen of verwijderen zolang er spelers zijn.',
   ),
   'command.flagsObjectRequired': t('flags object required', 'flags-object is verplicht'),
   'command.useSetClassGroupsFromClassTab': t(
     'Use SetClassGroups from each class tab when multiple competition classes are defined',
-    'Gebruik SetClassGroups vanuit elk klassetabblad wanneer meerdere reeksen zijn gedefinieerd',
+    'Gebruik SetClassGroups vanuit elk reekstabblad wanneer meerdere reeksen zijn gedefinieerd',
   ),
   'command.groupsNotAvailableWithTeamMatch': t(
     'Groups are not available alongside a team vs team match',
@@ -161,7 +161,7 @@ export const commandCatalog = {
   ),
   'command.playerNotInClassSeedingList': t(
     'Player {{pid}} is not in this class seeding list',
-    'Speler {{pid}} staat niet in deze klasserangschikking',
+    'Speler {{pid}} staat niet in deze reeksrangschikking',
   ),
   'command.setClassGroupsRequiresOneOf': t(
     'SetClassGroups requires groups, targetGroupSize + playerIds, or targetGroupCount + playerIds',
@@ -169,11 +169,11 @@ export const commandCatalog = {
   ),
   'command.classIdRequiredForGroupMatches': t(
     'classId is required and must be valid to generate group matches for a class track',
-    'classId is verplicht en moet geldig zijn om poule-wedstrijden te genereren voor een klasstraject',
+    'classId is verplicht en moet geldig zijn om poule-wedstrijden te genereren voor een reekstraject',
   ),
   'command.classIdMustNotBeSetSingleClass': t(
     'classId must not be set when only one competition class is in use',
-    'classId mag niet worden ingesteld wanneer slechts één wedstrijdklasse in gebruik is',
+    'classId mag niet worden ingesteld wanneer slechts één wedstrijdreeks in gebruik is',
   ),
   'command.groupRoundRobinNotWithTeamMatch': t(
     'Group round robin is not available alongside a team vs team match',
@@ -185,19 +185,19 @@ export const commandCatalog = {
   ),
   'command.globalBracketDisabledMultiClass': t(
     'Global bracket is disabled when multiple competition classes are defined; generate a bracket from each class tab instead.',
-    'Globale bracket is uitgeschakeld wanneer meerdere reeksen zijn gedefinieerd; genereer in plaats daarvan een bracket vanuit elk klassetabblad.',
+    'Globale afvallingstabel is uitgeschakeld wanneer meerdere reeksen zijn gedefinieerd; genereer in plaats daarvan een afvallingstabel vanuit elk reekstabblad.',
   ),
   'command.cannotGenerateBracketWithTeamMatch': t(
     'Cannot generate bracket while a team vs team match exists',
-    'Kan geen bracket genereren zolang er een ploeg-tegen-ploeg-wedstrijd bestaat',
+    'Kan geen afvallingstabel genereren zolang er een ploeg-tegen-ploeg-wedstrijd bestaat',
   ),
   'command.cannotClearBracketWithTeamMatch': t(
     'Cannot clear bracket while a team vs team match exists',
-    'Kan bracket niet wissen zolang er een ploeg-tegen-ploeg-wedstrijd bestaat',
+    'Kan afvallingstabel niet wissen zolang er een ploeg-tegen-ploeg-wedstrijd bestaat',
   ),
   'command.globalBracketActionsDisabledMultiClass': t(
     'Global bracket actions are disabled when multiple competition classes are defined; use the class track controls instead.',
-    'Globale bracketacties zijn uitgeschakeld wanneer meerdere reeksen zijn gedefinieerd; gebruik in plaats daarvan de bediening per klasstraject.',
+    'Globale afvallingsacties zijn uitgeschakeld wanneer meerdere reeksen zijn gedefinieerd; gebruik in plaats daarvan de bediening per reekstraject.',
   ),
   'command.bracketEliminationNotWithTeamMatch': t(
     'Bracket elimination is not available alongside a team vs team match',

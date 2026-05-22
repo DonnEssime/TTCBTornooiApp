@@ -42,3 +42,8 @@ export function missingNl(): MessageKey[] {
 }
 
 export { modelErrorToKey, modelErrorParams } from './model-error-map';
+export {
+  bracketKnockoutRoundMessageKey,
+  bracketKnockoutRoundLabel,
+  bracketKnockoutRoundParams,
+} from './bracket-round';

@@ -1285,6 +1285,8 @@ describe('Group → bracket placeholders', () => {
     };
     expect(formatBracketSlotPlayerLabel(t, 'p1', undefined)).toBe('Group 1 place 1');
     expect(formatBracketSlotPlayerLabel(t, 'p2', undefined)).toBe('Group 1 place 2');
+    expect(formatBracketSlotPlayerLabel(t, 'p1', undefined, 'nl')).toBe('Poule 1 plaats 1');
+    expect(formatBracketSlotPlayerLabel(t, 'p2', undefined, 'nl')).toBe('Poule 1 plaats 2');
     t.matches['gm-1-p1-p2']!.status = 'finished';
     t.matches['gm-1-p1-p2']!.scores = [
       { playerA: 11, playerB: 3 },

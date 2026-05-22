@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Tournament } from 'ttc-tornooiapp';
   import { formatBracketSlotPlayerLabel, isHandicapActive } from 'ttc-tornooiapp';
+  import { getLocale } from './i18n/locale.svelte';
 
   let {
     tournament,
@@ -20,12 +21,14 @@
     tag?: 'span' | 'strong';
   } = $props();
 
-  const name = $derived(
-    displayName ??
-      (labelMode === 'bracket-slot'
-        ? formatBracketSlotPlayerLabel(tournament, playerId, classId)
-        : (tournament.players[playerId]?.name ?? playerId)),
-  );
+  const name = $derived.by(() => {
+    if (displayName !== undefined) return displayName;
+    if (labelMode === 'bracket-slot') {
+      void getLocale();
+      return formatBracketSlotPlayerLabel(tournament, playerId, classId, getLocale());
+    }
+    return tournament.players[playerId]?.name ?? playerId;
+  });
   const handicap = $derived(
     isHandicapActive(tournament) ? (tournament.players[playerId]?.handicap ?? null) : null,
   );

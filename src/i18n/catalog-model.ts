@@ -16,17 +16,18 @@ export const modelCatalog = {
   'model.unknownClassId': t('Unknown class id.', 'Onbekend reeks-id.'),
   'model.clearBracketPerClassTrack': t(
     'Clear the bracket from each class track when multiple competition classes are defined.',
-    'Wis het knockout-schema per klasse wanneer er meerdere competitieklassen zijn ingesteld.',
+    'Wis de afvallingstabel per reeks wanneer er meerdere wedstrijdreeksen zijn ingesteld.',
   ),
   'model.noKnockoutBracketToRemove': t(
     'No knockout bracket to remove.',
     'Geen knockout-bracket om te verwijderen.',
   ),
-  'model.tieBreakSaltRequired': t('tieBreakSalt is required.', 'tieBreakSalt is verplicht.'),
-  'model.bracketRoundLockedWithPeriod': t(
-    'Bracket round {{round}} is locked.',
-    'Knockoutronde {{round}} is vergrendeld.',
+  'model.cannotRemoveKnockoutBracketWithPlayedMatches': t(
+    'Cannot remove the knockout bracket while any knockout match has results. Clear those match results first.',
+    'De afvallingstabel kan niet worden verwijderd als er al wedstrijden met uitslagen zijn. Wis die uitslagen eerst.',
   ),
+  'model.tieBreakSaltRequired': t('tieBreakSalt is required.', 'tieBreakSalt is verplicht.'),
+  'model.bracketRoundLockedWithPeriod': t('{{round}} is locked.', '{{round}} is vergrendeld.'),
   'model.noOpenPairingsForElimination': t(
     'No open pairings in that round could be resolved by elimination.',
     'In die ronde konden geen open koppels via eliminatie worden afgehandeld.',

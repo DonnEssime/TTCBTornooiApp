@@ -408,6 +408,9 @@ export function clearBracketFromTournament(tournament: Tournament, classId?: str
   if (bracketMatches.length === 0) {
     return { key: 'model.noKnockoutBracketToRemove' };
   }
+  if (anyBracketKnockoutMatchHasRecordedPlay(tournament, bracketMatches)) {
+    return { key: 'model.cannotRemoveKnockoutBracketWithPlayedMatches' };
+  }
 
   const matchIdsToRemove = new Set<string>();
   for (const bm of bracketMatches) {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { BracketMatch, GroupDefinition, Match, Tournament } from 'ttc-tornooiapp';
   import {
+    bracketKnockoutRoundParams,
     bracketMatchRound,
     bracketPhaseCountsIncludingFutureRounds,
     bracketPlayerMatchId,
@@ -383,10 +384,11 @@
     for (const tr of tracks) {
       for (const bm of readyBracketMatches(tournament, tr.bracketMatches, tr.classId)) {
         const r = bracketMatchRound(bm);
+        const roundParams = bracketKnockoutRoundParams(getLocale(), r, tr.bracketMatches);
         const meta =
           tr.classId !== undefined
-            ? msgText('ui.ov.readyBracketMetaClass', { track: tr.title, round: String(r) })
-            : msgText('ui.ov.bracketRound', { round: String(r) });
+            ? msgText('ui.ov.readyBracketMetaClass', { track: tr.title, ...roundParams })
+            : msgText('ui.ov.bracketRound', roundParams);
         list.push({ bm, meta, classId: tr.classId });
       }
     }
@@ -677,7 +679,9 @@
               {#each bracketRoundAggregatesIncludingFutureRounds(tr.bracketMatches) as row (row.round)}
                 <div class="ov-metric ov-metric-sub">
                   <div class="ov-metric-top">
-                    <span class="ov-metric-label">{tr.title} · Round {row.round}</span>
+                    <span class="ov-metric-label"
+                      >{tr.title} · {bracketKnockoutRoundParams(getLocale(), row.round, tr.bracketMatches).round}</span
+                    >
                     <span class="ov-progress-meta" title={progressBarAria(row.done, row.total)}>
                       <span class="ov-match-ratio">
                         <Msg key="ui.ov.matchesRatio" params={{ done: String(row.done), total: String(row.total) }} />

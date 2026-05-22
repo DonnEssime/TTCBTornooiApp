@@ -7,6 +7,8 @@ const MODEL_ERROR_TO_KEY: Record<string, MessageKey> = {
   'Clear the bracket from each class track when multiple competition classes are defined.':
     'model.clearBracketPerClassTrack',
   'No knockout bracket to remove.': 'model.noKnockoutBracketToRemove',
+  'Cannot remove the knockout bracket while any knockout match has results. Clear those match results first.':
+    'model.cannotRemoveKnockoutBracketWithPlayedMatches',
   'tieBreakSalt is required.': 'model.tieBreakSaltRequired',
   'No open pairings in that round could be resolved by elimination.': 'model.noOpenPairingsForElimination',
   'Match not found': 'command.matchNotFound',

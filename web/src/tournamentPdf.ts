@@ -253,9 +253,15 @@ function addPlacementList(
   doc.setFontSize(10);
   doc.setTextColor(0);
   for (const row of rows) {
-    y = nextY(doc, y, 6);
+    const isFirst = row.place === 1;
+    y = nextY(doc, y, isFirst ? 7 : 6);
+    doc.setFont('helvetica', isFirst ? 'bold' : 'normal');
+    doc.setFontSize(isFirst ? 11 : 10);
     doc.text(`${row.place}. ${playerName(t, row.playerId)}`, PAGE_MARGIN + 4, y);
-    y += 5;
+    y += isFirst ? 6 : 5;
+    if (row.place === 3) {
+      y += 5;
+    }
   }
   return y + SECTION_GAP;
 }

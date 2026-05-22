@@ -50,6 +50,7 @@
     isMatchScoreLegal,
     isPlayerDisplayNameTaken,
     matchWinner,
+    anyBracketKnockoutMatchHasRecordedPlay,
     shuffleDeterministic,
     DEFAULT_NUMERICAL_HANDICAP_CONFIG,
     buildDefaultTableIds,
@@ -71,10 +72,14 @@
     type TournamentMeta,
   } from './tournamentStorage';
   import { downloadTournamentPdf } from './tournamentPdf';
-  import type { MessageKey, ResolvedMessage } from 'ttc-tornooiapp';
+  import {
+    bracketKnockoutRoundParams,
+    type MessageKey,
+    type ResolvedMessage,
+  } from 'ttc-tornooiapp';
   import Msg from './i18n/Msg.svelte';
   import { getLocale, setLocale } from './i18n/locale.svelte';
-  import { commandFailureText, msg, msgText } from './i18n/msg';
+  import { commandFailureText, enrichBracketRoundParams, msg, msgText } from './i18n/msg';
 
   /** When true, show developer shortcuts (bulk players, simulated group scores). */
   const DEBUG_UI = true;
@@ -278,13 +283,33 @@
   function showError(message: string): void {
     showStatusKey('command.dynamicError', 'error', { message });
   }
+  function bracketRoundParams(
+    round: number,
+    matches: BracketMatch[] = tournament.bracketMatches,
+  ): { round: string } {
+    void getLocale();
+    return bracketKnockoutRoundParams(
+      getLocale(),
+      round,
+      matches,
+      inferBracketSlotCountFromRoundOne(matches),
+    );
+  }
+
   function showCommandError(
     r: { success: boolean; reason?: MessageKey; reasonParams?: Record<string, string> },
     fallbackKey: MessageKey,
     extraParams?: Record<string, string>,
   ): void {
     if (r.success) return;
-    showErrorKey(r.reason ?? fallbackKey, { ...r.reasonParams, ...extraParams });
+    const merged = { ...r.reasonParams, ...extraParams };
+    const params = enrichBracketRoundParams(
+      merged,
+      tournament.bracketMatches,
+      inferBracketSlotCountFromRoundOne(tournament.bracketMatches),
+      r.reason,
+    );
+    showErrorKey(r.reason ?? fallbackKey, params);
   }
   const storageAvailable = isTournamentStorageSupported();
   let recentTournaments = $state<TournamentMeta[]>([]);
@@ -352,7 +377,9 @@
   let deleteConfirmPhrase = $state('');
   let deleteTournamentBusy = $state(false);
   let deleteTournamentError = $state<string | null>(null);
-  const deleteConfirmOk = $derived(deleteConfirmPhrase === 'I understand');
+  const deleteConfirmOk = $derived(
+    deleteConfirmPhrase === 'I understand' || deleteConfirmPhrase === 'Ik begrijp het',
+  );
 
   let newName = $state('');
   let newHc = $state(0);
@@ -1345,7 +1372,10 @@
       return;
     }
 
-    showInfoKey('ui.toast.debugSimulatedBracket', { done: String(done), round: String(targetRound) });
+    showInfoKey('ui.toast.debugSimulatedBracket', {
+      done: String(done),
+      ...bracketRoundParams(targetRound),
+    });
   }
 
   function debugFillPlayers(): void {
@@ -1629,7 +1659,7 @@
   function bracketElimRoundButtonTitle(elimRound: number): string {
     if (useClassTabs) return msgText('ui.bracket.titleUsePerClass');
     if ((tournament.lockedBracketRounds ?? []).includes(elimRound)) return msgText('ui.bracket.titleRoundLocked');
-    return msgText('ui.bracket.titleEliminateRound', { round: String(elimRound) });
+    return msgText('ui.bracket.titleEliminateRound', bracketRoundParams(elimRound));
   }
 
   function debugSimulateBracketTitle(): string {
@@ -2248,6 +2278,10 @@
       showWarnKey('ui.no_knockout_bracket_to_remove');
       return;
     }
+    if (anyBracketKnockoutMatchHasRecordedPlay(tournament, tournament.bracketMatches)) {
+      showWarnKey('model.cannotRemoveKnockoutBracketWithPlayedMatches');
+      return;
+    }
     if (
       !confirm(msgText('ui.confirm.removeBracketLong'))
     ) {
@@ -2287,7 +2321,7 @@
       pull();
       return;
     }
-    showInfoKey('ui.toast.eliminatedRound', { round: String(round) });
+    showInfoKey('ui.toast.eliminatedRound', bracketRoundParams(round));
     pull();
   }
 
@@ -2572,7 +2606,7 @@
       case 'ClearBracket':
         return msg('ui.summary.removedBracket');
       case 'EliminateLowestBracketRound':
-        return msg('ui.summary.eliminatedRound', { round: String(cmd.payload.round) });
+        return msg('ui.summary.eliminatedRound', bracketRoundParams(cmd.payload.round));
       case 'GenerateGroupRoundRobin':
         return cmd.payload.classId
           ? msg('ui.summary.generatedRoundRobinClass')
@@ -2603,8 +2637,8 @@
         return msg('ui.summary.updatedClassFlags', { name: pn(cmd.payload.playerId) });
       case 'SetRoundLock':
         return cmd.payload.locked
-          ? msg('ui.summary.lockedRound', { round: String(cmd.payload.bracketRound) })
-          : msg('ui.summary.unlockedRound', { round: String(cmd.payload.bracketRound) });
+          ? msg('ui.summary.lockedRound', bracketRoundParams(cmd.payload.bracketRound))
+          : msg('ui.summary.unlockedRound', bracketRoundParams(cmd.payload.bracketRound));
       case 'AssignTables':
         return msg('ui.summary.assignedTables');
       case 'SetTournamentTables': {
@@ -3438,7 +3472,7 @@
                           title={bracketElimRoundButtonTitle(elimRound)}
                           onclick={() => eliminateBracketRoundByRanking(elimRound)}
                         >
-                          <Msg key="ui.bracket.eliminateLowestRound" params={{ round: String(elimRound) }} />
+                          <Msg key="ui.bracket.eliminateLowestRound" params={bracketRoundParams(elimRound)} />
                         </button>
                       {/each}
                     </div>
@@ -3454,7 +3488,7 @@
                         title={bracketElimRoundButtonTitle(elimRound)}
                         onclick={() => eliminateBracketRoundByRanking(elimRound)}
                       >
-                        <Msg key="ui.bracket.eliminateLowestRound" params={{ round: String(elimRound) }} />
+                        <Msg key="ui.bracket.eliminateLowestRound" params={bracketRoundParams(elimRound)} />
                       </button>
                     {/each}
                   </div>
@@ -3485,7 +3519,10 @@
                 {#if placementRows}
                   <ol class="plain-list placement-ol">
                     {#each placementRows as row (row.playerId)}
-                      <li>
+                      <li
+                        class:placement-first={row.place === 1}
+                        class:placement-after-podium={row.place === 3}
+                      >
                         <span class="placement-num">{row.place}.</span>
                         <PlayerName {tournament} playerId={row.playerId} />
                       </li>
@@ -3715,7 +3752,10 @@
                   {#if classPlacementRows}
                     <ol class="plain-list placement-ol">
                       {#each classPlacementRows as row (row.playerId)}
-                        <li>
+                        <li
+                          class:placement-first={row.place === 1}
+                          class:placement-after-podium={row.place === 3}
+                        >
                           <span class="placement-num">{row.place}.</span>
                           <PlayerName {tournament} playerId={row.playerId} />
                         </li>
@@ -5130,6 +5170,15 @@
   .placement-ol li {
     margin: 0.22rem 0;
     font-size: 0.95rem;
+  }
+
+  .placement-ol li.placement-first {
+    font-size: 1.08rem;
+    font-weight: 700;
+  }
+
+  .placement-ol li.placement-after-podium {
+    margin-bottom: 0.85rem;
   }
 
   .placement-num {

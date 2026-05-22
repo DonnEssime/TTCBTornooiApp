@@ -857,6 +857,29 @@ describe('ClearBracket', () => {
       reason: 'model.noKnockoutBracketToRemove',
     });
   });
+
+  it('fails when any knockout match has recorded play', () => {
+    const c = new TournamentController();
+    expect(c.createPlayer('p1', 'A', 0, 'cmd-p1')).toEqual({ success: true });
+    expect(c.createPlayer('p2', 'B', 0, 'cmd-p2')).toEqual({ success: true });
+    expect(c.setSeedings(['p1', 'p2'], ['cmd-p1', 'cmd-p2'], 'cmd-seed')).toEqual({ success: true });
+    expect(c.generateBracket(true, false, ['cmd-seed'], 'cmd-gen')).toEqual({ success: true });
+    expect(c.createMatch('match-m1', 'p1', 'p2', ['cmd-gen', 'cmd-p1', 'cmd-p2'], 'cmd-pair')).toEqual({
+      success: true,
+    });
+    const bo5 = [
+      { playerA: 11, playerB: 9 },
+      { playerA: 11, playerB: 6 },
+      { playerA: 11, playerB: 5 },
+    ];
+    expect(c.enterScore('match-m1', bo5, ['cmd-pair'], 'cmd-score')).toEqual({ success: true });
+    expect(c.clearBracket(['cmd-gen', 'cmd-score'], 'cmd-clear')).toEqual({
+      success: false,
+      reason: 'model.cannotRemoveKnockoutBracketWithPlayedMatches',
+    });
+    expect(c.getTournament().bracketMatches.length).toBeGreaterThan(0);
+    expect(c.getTournament().matches['match-m1']).toBeDefined();
+  });
 });
 
 describe('Bracket undoLast coalescing', () => {

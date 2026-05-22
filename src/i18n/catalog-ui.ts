@@ -8,7 +8,7 @@ export const uiCatalog = {
     'Voeg minstens één speler toe (en plaatsingen) voordat je groepen aanmaakt.',
   ),
   'ui.add_at_least_one_player_first': t('Add at least one player first.', 'Voeg eerst minstens één speler toe.'),
-  'ui.add_class_row': t('Add class row', 'Klasse toevoegen'),
+  'ui.add_class_row': t('Add class row', 'Reeks toevoegen'),
   'ui.add_player': t('Add player', 'Speler toevoegen'),
   'ui.append_undo_for_latest_undoable_step': t(
     'Append Undo for latest undoable step',
@@ -26,18 +26,18 @@ export const uiCatalog = {
     'Administratieve eliminatie (niet hetzelfde als opgave):',
   ),
   'ui.cancel': t('Cancel', 'Annuleren'),
-  'ui.class_display_name': t('Class display name', 'Weergavenaam klasse'),
+  'ui.class_display_name': t('Class display name', 'Weergavenaam reeks'),
   'ui.class_groups_require_two_or_more_competition_cla': t(
     'Class groups require two or more competition classes.',
-    'Klasgroepen vereisen twee of meer reeksen.',
+    'Reeksgroepen vereisen twee of meer reeksen.',
   ),
-  'ui.class_track_sections': t('Class track sections', 'Klassecties'),
+  'ui.class_track_sections': t('Class track sections', 'Reekssecties'),
   'ui.classification_based': t('Classification-based', 'Op classificatie gebaseerd'),
   'ui.cleared_groups_and_group_matches': t(
     'Cleared groups and group matches.',
     'Poules en poule-wedstrijden gewist.',
   ),
-  'ui.cleared_groups_for_this_class': t('Cleared groups for this class.', 'Groepen voor deze klasse gewist.'),
+  'ui.cleared_groups_for_this_class': t('Cleared groups for this class.', 'Groepen voor deze reeks gewist.'),
   'ui.close': t('Close', 'Sluiten'),
   'ui.close_delete_dialog': t('Close delete dialog', 'Verwijderdialoog sluiten'),
   'ui.close_score_dialog': t('Close score dialog', 'Scoredialoog sluiten'),
@@ -67,7 +67,7 @@ export const uiCatalog = {
   ),
   'ui.created_groups_and_round_robin_matches_for_this_': t(
     'Created groups and round‑robin matches for this class.',
-    'Groepen en poulewedstrijden voor deze klasse aangemaakt.',
+    'Groepen en poulewedstrijden voor deze reeks aangemaakt.',
   ),
   'ui.data': t('Data', 'Gegevens'),
   'ui.debug_fill_is_disabled_while_a_team_vs_team_matc': t(
@@ -77,7 +77,7 @@ export const uiCatalog = {
   'ui.decrease_number_of_tables': t('Decrease number of tables', 'Aantal tafels verlagen'),
   'ui.delete_saved_tournament': t('Delete saved tournament', 'Opgeslagen tornooi verwijderen'),
   'ui.delete_tournament': t('Delete tournament?', 'Tornooi verwijderen?'),
-  'ui.direct_to_brackets': t('Direct to brackets', 'Rechtstreeks naar Afvalling'),
+  'ui.direct_to_brackets': t('Direct to brackets', 'Directe afvalling'),
   'ui.display_name': t('Display name', 'Weergavenaam'),
   'ui.download_command_log_jsonl': t('Download command log (.jsonl)', 'Handelingslog downloaden (.jsonl)'),
   'ui.download_groups_bracket_and_results_summary_pdf': t(
@@ -155,7 +155,7 @@ export const uiCatalog = {
   ),
   'ui.no_knockout_bracket_for_this_class_yet': t(
     'No knockout bracket for this class yet.',
-    'Nog geen Afvallingstabel voor deze klasse.',
+    'Nog geen Afvallingstabel voor deze reeks.',
   ),
   'ui.no_knockout_bracket_to_remove': t('No knockout bracket to remove.', 'Geen Afvallingstabel om te verwijderen.'),
   'ui.no_knockout_bracket_yet_create_it_on_the_bracket': t(
@@ -169,18 +169,18 @@ export const uiCatalog = {
   'ui.no_match': t('No match', 'Geen wedstrijd'),
   'ui.no_players_in_this_class_yet_enable_the_class_fo': t(
     'No players in this class yet — enable the class for players on the Players tab.',
-    'Nog geen spelers in deze klasse — schakel de klasse in voor spelers op het tabblad Spelers.',
+    'Nog geen spelers in deze reeks — schakel de reeks in voor spelers op het tabblad Spelers.',
   ),
   'ui.no_tournament_in_this_tab': t('No tournament in this tab', 'Geen tornooi in dit tabblad'),
   'ui.number_of_players_to_add_debug': t('Number of players to add (debug)', 'Aantal spelers om toe te voegen (debug)'),
   'ui.number_of_tables': t('Number of tables', 'Aantal tafels'),
   'ui.numerical': t('Numerical', 'Numeriek'),
-  'ui.optimizing_bracket_draw': t('Optimizing bracket draw', 'Afvalling-loting optimaliseren'),
+  'ui.optimizing_bracket_draw': t('Optimizing bracket draw', 'Afvalling optimaliseren'),
   'ui.overall': t('Overall', 'Globaal'),
   'ui.overview': t('Overview', 'Overzicht'),
   'ui.per_class_bracket_generation_coming_soon': t(
     'Per-class bracket generation (coming soon)',
-    'Afvallingstabel per klasse (binnenkort)',
+    'Afvallingstabel per reeks (binnenkort)',
   ),
   'ui.player': t('Player', 'Speler'),
   'ui.players': t('Players', 'Spelers'),
@@ -199,17 +199,17 @@ export const uiCatalog = {
   'ui.target_number_of_groups': t('Target number of groups', 'Gewenst aantal groepen'),
   'ui.target_number_of_groups_for_class': t(
     'Target number of groups for class',
-    'Gewenst aantal groepen voor klasse',
+    'Gewenst aantal groepen voor reeks',
   ),
   'ui.target_players_per_group': t('Target players per group', 'Gewenst aantal spelers per groep'),
   'ui.target_players_per_group_for_class': t(
     'Target players per group for class',
-    'Gewenst aantal spelers per groep voor klasse',
+    'Gewenst aantal spelers per groep voor reeks',
   ),
   'ui.team_vs_team': t('Team vs team', 'Team tegen team'),
   'ui.this_tournament_has_multiple_competition_classes': t(
     'This tournament has multiple competition classes. Per-class bracket generation from each class tab will be added next; the global bracket control is disabled.',
-    'Dit tornooi heeft meerdere reeksen. Afvallingstabel per klasse vanuit elk klasse-tabblad volgt; de globale Afvalling-bediening is uitgeschakeld.',
+    'Dit tornooi heeft meerdere reeksen. Afvallingstabel per reeks vanuit elk reeks-tabblad volgt; de globale Afvalling-bediening is uitgeschakeld.',
   ),
   'ui.tornooiapp': t('Tourneyapp', 'Tornooiapp'),
   'ui.tournament_activity': t('Tournament activity', 'Tornooiactiviteit'),
@@ -232,7 +232,7 @@ export const uiCatalog = {
   'ui.undo': t('Undo', 'Ongedaan maken'),
   'ui.use_class_tabs_to_clear_class_groups': t(
     'Use class tabs to clear class groups.',
-    'Gebruik reeks-tabbladen om klasgroepen te wissen.',
+    'Gebruik reeks-tabbladen om reeksgroepen te wissen.',
   ),
   'ui.use_competition_classes': t('Use competition classes', 'Reeksen gebruiken'),
   'ui.with_multiple_competition_classes_use_each_class': t(
