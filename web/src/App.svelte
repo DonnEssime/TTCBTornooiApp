@@ -3666,7 +3666,7 @@
         >
           <div
             class="load-fill"
-            style={`width: ${tournamentLoadPct(bracketHeuristicSearch.done, bracketHeuristicSearch.total)}%`}
+            style:width="{tournamentLoadPct(bracketHeuristicSearch.done, bracketHeuristicSearch.total)}%"
           ></div>
         </div>
       </div>
@@ -3691,7 +3691,7 @@
           >
             <div
               class="load-fill"
-              style={`width: ${tournamentLoadPct(tournamentLoad.done, tournamentLoad.total)}%`}
+              style:width="{tournamentLoadPct(tournamentLoad.done, tournamentLoad.total)}%"
             ></div>
           </div>
         {:else}
@@ -5085,6 +5085,7 @@
   }
 
   .load-track {
+    width: 100%;
     height: 0.55rem;
     border-radius: 999px;
     background: #e2e8f0;
@@ -5092,10 +5093,11 @@
   }
 
   .load-fill {
+    display: block;
     height: 100%;
     border-radius: 999px;
     background: linear-gradient(90deg, #2563eb, #3b82f6);
-    transition: width 0.12s ease-out;
+    /* No width transition — heuristic trials update faster than 120ms apart. */
   }
 
   .load-track-indeterminate .load-fill-indeterminate {
