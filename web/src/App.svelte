@@ -15,6 +15,7 @@
     TournamentController,
     createTournament,
     exportCommandsAsJsonLines,
+    type ReplayExecuteProfile,
     tournamentControllerFromCommandLogAsync,
     compareBracketMatchId,
     compareBracketMatchIdString,
@@ -276,6 +277,29 @@
     return Math.min(100, Math.round((done / total) * 100));
   }
 
+  function logDebugReplayExecuteProfile(label: string, profile: ReplayExecuteProfile | undefined): void {
+    if (!DEBUG_UI || !profile) return;
+    const fmtMs = (ms: number) => `${ms.toFixed(3)} ms`;
+    console.group(`[DEBUG_UI] Replay execute profile — ${label}`);
+    console.log(`Commands replayed: ${profile.commandCount}`);
+    console.log(`Total execute time: ${fmtMs(profile.totalExecuteMs)}`);
+    console.log(`Average per command: ${fmtMs(profile.avgExecuteMs)}`);
+    console.log('Time by command type (sorted by total):');
+    console.table(
+      profile.byType.map((row) => ({
+        type: row.type,
+        count: row.count,
+        total: fmtMs(row.totalMs),
+        avg: fmtMs(row.avgMs),
+      })),
+    );
+    const s = profile.slowest;
+    console.log(
+      `Slowest command: ${s.commandType} id=${s.commandId} (${fmtMs(s.durationMs)})`,
+    );
+    console.groupEnd();
+  }
+
   async function buildControllerFromCommandLogWithProgress(
     text: string,
     label: string,
@@ -286,6 +310,7 @@
           tournamentLoad = { label, phase: 'replay', done, total };
         },
         yieldEvery: 32,
+        profileExecute: DEBUG_UI,
       });
     } finally {
       tournamentLoad = null;
@@ -538,6 +563,7 @@
       }
       const session = sessionFromController(fileId, label, next);
       activateSession(session);
+      logDebugReplayExecuteProfile(label, replay.executeProfile);
       showInfo(`Opened “${session.tournamentName}”.`);
     } catch (e) {
       tournamentLoad = null;
@@ -2236,6 +2262,7 @@
     }
     const session = sessionFromController(storageFileId, tournamentName, next);
     activateSession(session);
+    logDebugReplayExecuteProfile(tournamentName, replay.executeProfile);
     showInfo(`Imported ${file.name} (${replay.results.length} commands).`);
   }
 

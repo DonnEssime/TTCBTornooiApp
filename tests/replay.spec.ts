@@ -147,4 +147,24 @@ describe('Command replay and deterministic JSONL round-trip', () => {
     expect(asyncRes.controller.getTournament()).toEqual(sync.controller.getTournament());
     expect(progress.at(-1)).toEqual({ done: cmds.length, total: cmds.length });
   });
+
+  it('should attach execute profile when profileExecute is enabled', async () => {
+    const ts = '2026-02-01T00:00:00.000Z';
+    const cmds = [
+      { id: 'p1', type: 'CreatePlayer' as const, dependsOn: [] as string[], payload: { playerId: 'p1', name: 'A', handicap: 0 }, timestamp: ts },
+      { id: 'p2', type: 'CreatePlayer' as const, dependsOn: [], payload: { playerId: 'p2', name: 'B', handicap: 0 }, timestamp: ts },
+      { id: 'seed', type: 'SetSeedings' as const, dependsOn: ['p1', 'p2'], payload: { playerIds: ['p1', 'p2'] }, timestamp: ts },
+      { id: 'gen', type: 'GenerateBracket' as const, dependsOn: ['seed'], payload: { fillByes: true, cullToPowerOfTwo: false }, timestamp: ts },
+    ];
+    const lines = cmds.map(commandToJsonLine);
+    const replay = await replayCommandsFromJsonLinesAsync(lines, undefined, { profileExecute: true });
+    expect(replay.success).toBe(true);
+    const profile = replay.executeProfile;
+    expect(profile).toBeDefined();
+    expect(profile!.commandCount).toBe(4);
+    expect(profile!.totalExecuteMs).toBeGreaterThanOrEqual(0);
+    expect(profile!.byType).toHaveLength(4);
+    expect(profile!.slowest.commandId).toBeTruthy();
+    expect(profile!.byType.reduce((sum, row) => sum + row.count, 0)).toBe(4);
+  });
 });
