@@ -27,6 +27,7 @@ function expectedR1MatchCountAfterSeeding(
   shuffleKey: string,
   classId: string | undefined,
   mode: BracketSeedingMode = 'extend_closed_form',
+  tieBreakSalt = 'test-salt',
 ): number {
   let participants = [...participantIds];
   const beKey = shuffleKey.trim() || 'Tournament';
@@ -39,7 +40,7 @@ function expectedR1MatchCountAfterSeeding(
     if (!o) throw new Error('expectedR1MatchCountAfterSeeding: extend_closed_form not applicable');
     participants = o;
   } else {
-    const best = bestEffortOrderParticipantsForGroupBracket(t, participants, classId, beKey);
+    const best = bestEffortOrderParticipantsForGroupBracket(t, participants, classId, tieBreakSalt);
     if (best) {
       participants = best;
     } else if (participants.length > 1) {
@@ -267,6 +268,7 @@ describe('bipartition bracket leaf order', () => {
     const bracket = generateBracket([...seed], t, {
       fillByes: true,
       shuffleKey: 'Cup-21',
+      tieBreakSalt: 'Cup-21',
       bracketSeedingMode: 'heuristic',
     });
     expect(bracket.length).toBe(16);
@@ -286,6 +288,7 @@ describe('bipartition bracket leaf order', () => {
     const bracket = generateBracket([...seed], t, {
       fillByes: true,
       shuffleKey: 'Cup',
+      tieBreakSalt: 'Cup',
       bracketSeedingMode: 'heuristic',
     });
     const r1ByePids = bracket
@@ -310,7 +313,7 @@ describe('bestEffortOrderParticipantsForGroupBracket', () => {
     expect(r).toBeNull();
   });
 
-  it('is deterministic for the same shuffleKey', () => {
+  it('is deterministic for the same tieBreakSalt', () => {
     const t = createTournament();
     for (let i = 1; i <= 27; i++) {
       const id = `p${i}`;
@@ -380,7 +383,12 @@ describe('bestEffortOrderParticipantsForGroupBracket', () => {
     expect(orderParticipantsForGroupBalancedBracket(t, seed, undefined)).toBeNull();
     const be = bestEffortOrderParticipantsForGroupBracket(t, seed, undefined, 'Cup');
     expect(be).not.toBeNull();
-    const bracket = generateBracket([...seed], t, { fillByes: true, shuffleKey: 'Cup', bracketSeedingMode: 'heuristic' });
+    const bracket = generateBracket([...seed], t, {
+      fillByes: true,
+      shuffleKey: 'Cup',
+      tieBreakSalt: 'Cup',
+      bracketSeedingMode: 'heuristic',
+    });
     expect(bracket.length).toBe(16);
   });
 });

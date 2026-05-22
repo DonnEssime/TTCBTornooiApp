@@ -1493,10 +1493,52 @@ function bracketSetPenaltyForPlayer(
 
 function sortBracketPartitionEntries(
   entries: readonly BracketPartitionEntry[],
+  tieBreakSalt?: string,
 ): BracketPartitionEntry[] {
-  return [...entries].sort(
-    (a, b) => a.place - b.place || a.groupIndex - b.groupIndex || a.pid.localeCompare(b.pid),
-  );
+  const salt = tieBreakSalt?.trim();
+  if (!salt) {
+    return [...entries].sort(
+      (a, b) => a.place - b.place || a.groupIndex - b.groupIndex || a.pid.localeCompare(b.pid),
+    );
+  }
+  const byPlace = new Map<number, BracketPartitionEntry[]>();
+  for (const e of entries) {
+    const tier = byPlace.get(e.place) ?? [];
+    tier.push(e);
+    byPlace.set(e.place, tier);
+  }
+  const out: BracketPartitionEntry[] = [];
+  for (const place of [...byPlace.keys()].sort((a, b) => a - b)) {
+    out.push(...shuffleDeterministic(byPlace.get(place)!, `${salt}:place:${place}`));
+  }
+  return out;
+}
+
+function pickLowestPenaltyBracketEntry(
+  sorted: readonly BracketPartitionEntry[],
+  unassigned: ReadonlySet<BracketPartitionEntry>,
+  target: readonly BracketPartitionEntry[],
+  maxPlaceByGroup: ReadonlyMap<number, number>,
+  cfg: BracketBipartitionPenaltyConfig,
+  tieBreakSalt: string,
+  pickIndex: number,
+): BracketPartitionEntry | undefined {
+  let bestScore = Infinity;
+  const tied: BracketPartitionEntry[] = [];
+  for (const entry of sorted) {
+    if (!unassigned.has(entry)) continue;
+    const score = bracketSetPenaltyForPlayer(target, entry, maxPlaceByGroup, cfg);
+    if (score < bestScore) {
+      bestScore = score;
+      tied.length = 0;
+      tied.push(entry);
+    } else if (score === bestScore) {
+      tied.push(entry);
+    }
+  }
+  if (tied.length === 0) return undefined;
+  if (tied.length === 1) return tied[0];
+  return shuffleDeterministic(tied, `${tieBreakSalt}:pick:${pickIndex}`)[0];
 }
 
 function crossGroupPairCountInBracketSets(
@@ -1512,14 +1554,15 @@ function crossGroupPairCountInBracketSets(
 /** 4 → best+worst | middle pair; when ranks tie, prefer splits where both pairs are cross-group. */
 function bipartitionFourBracketPlayers(
   sorted: readonly BracketPartitionEntry[],
+  tieBreakSalt?: string,
 ): [BracketPartitionEntry[], BracketPartitionEntry[]] {
   const minPlace = sorted[0]!.place;
   const maxPlace = sorted[3]!.place;
   const highs = sorted.filter((e) => e.place === minPlace);
   const lows = sorted.filter((e) => e.place === maxPlace);
 
-  let best: [BracketPartitionEntry[], BracketPartitionEntry[]] | undefined;
   let bestCross = -1;
+  const tiedSplits: Array<[BracketPartitionEntry[], BracketPartitionEntry[]]> = [];
 
   for (const h of highs) {
     for (const l of [...lows].reverse()) {
@@ -1530,50 +1573,80 @@ function bipartitionFourBracketPlayers(
       const cross = crossGroupPairCountInBracketSets(setA, setB);
       if (cross > bestCross) {
         bestCross = cross;
-        best = [setA, setB];
+        tiedSplits.length = 0;
+        tiedSplits.push([setA, setB]);
+      } else if (cross === bestCross) {
+        tiedSplits.push([setA, setB]);
       }
     }
   }
 
-  return best ?? [[sorted[0]!, sorted[3]!], [sorted[1]!, sorted[2]!]];
+  if (tiedSplits.length > 0) {
+    const salt = tieBreakSalt?.trim();
+    if (salt && tiedSplits.length > 1) {
+      const keys = tiedSplits.map((split, i) => `${split[0].map((e) => e.pid).join(',')}|${i}`);
+      const pick = shuffleDeterministic(keys, `${salt}:four-way`)[0]!;
+      const idx = keys.indexOf(pick);
+      return tiedSplits[idx >= 0 ? idx : 0]!;
+    }
+    return tiedSplits[0]!;
+  }
+
+  return [[sorted[0]!, sorted[3]!], [sorted[1]!, sorted[2]!]];
 }
 
 /**
  * Greedy bipartition by alternating draft picks: A chooses the lowest-penalty unassigned player for
  * itself, then B, then A, … Subset sizes differ by at most one (`ceil(n/2)` vs `floor(n/2)`).
- * Tie-break among equal pick costs: earlier in rank / group / pid sort order.
+ * Tie-break among equal pick costs: {@link shuffleDeterministic} with `tieBreakSalt` when provided;
+ * otherwise stable rank / group / player id order.
  *
  * Fixed splits for small inputs (by in-group rank, best first): 3 → 1|2 (best alone); 4 → best+worst|middle pair.
  */
 export function bipartitionBracketPlayers(
   entries: readonly BracketPartitionEntry[],
   cfg: BracketBipartitionPenaltyConfig = DEFAULT_BRACKET_BIPARTITION_PENALTIES,
+  tieBreakSalt?: string,
 ): [BracketPartitionEntry[], BracketPartitionEntry[]] {
-  const sorted = sortBracketPartitionEntries(entries);
+  const sorted = sortBracketPartitionEntries(entries, tieBreakSalt);
   if (sorted.length === 3) {
     return [[sorted[0]!], [sorted[1]!, sorted[2]!]];
   }
   if (sorted.length === 4) {
-    return bipartitionFourBracketPlayers(sorted);
+    return bipartitionFourBracketPlayers(sorted, tieBreakSalt);
   }
   const maxPlaceByGroup = maxGroupRankByGroupIndex(entries);
   const setA: BracketPartitionEntry[] = [];
   const setB: BracketPartitionEntry[] = [];
   const unassigned = new Set<BracketPartitionEntry>(sorted);
   let pickA = true;
+  let pickIndex = 0;
 
   while (unassigned.size > 0) {
     const target = pickA ? setA : setB;
-    let best: BracketPartitionEntry | undefined;
-    let bestScore = Infinity;
-    for (const entry of sorted) {
-      if (!unassigned.has(entry)) continue;
-      const score = bracketSetPenaltyForPlayer(target, entry, maxPlaceByGroup, cfg);
-      if (score < bestScore) {
-        bestScore = score;
-        best = entry;
-      }
-    }
+    const best = tieBreakSalt?.trim()
+      ? pickLowestPenaltyBracketEntry(
+          sorted,
+          unassigned,
+          target,
+          maxPlaceByGroup,
+          cfg,
+          tieBreakSalt.trim(),
+          pickIndex++,
+        )
+      : (() => {
+          let pick: BracketPartitionEntry | undefined;
+          let bestScore = Infinity;
+          for (const entry of sorted) {
+            if (!unassigned.has(entry)) continue;
+            const score = bracketSetPenaltyForPlayer(target, entry, maxPlaceByGroup, cfg);
+            if (score < bestScore) {
+              bestScore = score;
+              pick = entry;
+            }
+          }
+          return pick;
+        })();
     if (!best) break;
     target.push(best);
     unassigned.delete(best);
@@ -1597,15 +1670,16 @@ export type BracketPartitionTerminal = {
 export function buildBracketPartitionTree(
   entries: readonly BracketPartitionEntry[],
   cfg: BracketBipartitionPenaltyConfig = DEFAULT_BRACKET_BIPARTITION_PENALTIES,
+  tieBreakSalt?: string,
 ): BracketPartitionTree {
   if (entries.length <= 2) {
     return { kind: 'terminal', entries: [...entries] };
   }
-  const [left, right] = bipartitionBracketPlayers(entries, cfg);
+  const [left, right] = bipartitionBracketPlayers(entries, cfg, tieBreakSalt);
   return {
     kind: 'branch',
-    left: buildBracketPartitionTree(left, cfg),
-    right: buildBracketPartitionTree(right, cfg),
+    left: buildBracketPartitionTree(left, cfg, tieBreakSalt),
+    right: buildBracketPartitionTree(right, cfg, tieBreakSalt),
   };
 }
 
@@ -1675,10 +1749,11 @@ export function flattenBracketPartitionTreeToLeafOrder(node: BracketPartitionTre
 export function buildBracketLeafOrderByBipartition(
   entries: readonly BracketPartitionEntry[],
   cfg: BracketBipartitionPenaltyConfig = DEFAULT_BRACKET_BIPARTITION_PENALTIES,
+  tieBreakSalt?: string,
 ): PlayerId[] {
   if (entries.length === 0) return [];
 
-  const tree = buildBracketPartitionTree(entries, cfg);
+  const tree = buildBracketPartitionTree(entries, cfg, tieBreakSalt);
   const terminals = collectBracketPartitionTerminals(tree);
   const maxDepth = maxBracketPartitionTerminalDepth(terminals);
   const equalized = equalizeBracketPartitionTreeDepths(tree, 0, maxDepth);
@@ -1701,7 +1776,7 @@ export function bestEffortOrderParticipantsForGroupBracket(
   tournament: Tournament,
   participantIds: readonly PlayerId[],
   classId: string | undefined,
-  _shuffleKey: string,
+  tieBreakSalt: string,
 ): PlayerId[] | null {
   const groupsRecord = groupRecordForBracketScope(tournament, classId);
   const groups = sortGroupDefinitionsStable(groupsRecord);
@@ -1736,7 +1811,7 @@ export function bestEffortOrderParticipantsForGroupBracket(
     }
   }
 
-  return buildBracketLeafOrderByBipartition(entries);
+  return buildBracketLeafOrderByBipartition(entries, DEFAULT_BRACKET_BIPARTITION_PENALTIES, tieBreakSalt);
 }
 
 /**
@@ -1990,6 +2065,11 @@ export type GenerateBracketOptions = {
   fillByes?: boolean;
   cullToPowerOfTwo?: boolean;
   shuffleKey?: string;
+  /**
+   * Salt for deterministic random tie-breaks in heuristic bipartition seeding.
+   * When omitted, {@link generateBracket} uses the current time in milliseconds.
+   */
+  tieBreakSalt?: string;
   /** When true (with `cullToPowerOfTwo` and `fillByes: false`), cull using group finishing order instead of seed order. */
   cullByGroupPlacement?: boolean;
   /** Scope for group standings when `cullByGroupPlacement` is set. */
@@ -2070,6 +2150,9 @@ export function generateBracket(
   let heuristicBipartitionLeafOrder = false;
   let cropClosedFormLeafOrder = false;
 
+  const tieBreakSalt =
+    (opts.tieBreakSalt !== undefined ? String(opts.tieBreakSalt).trim() : '') || String(Date.now());
+
   if (tournament) {
     const mode = opts.bracketSeedingMode ?? 'heuristic';
     const beKey = opts.shuffleKey !== undefined ? String(opts.shuffleKey).trim() || 'Tournament' : 'Tournament';
@@ -2113,7 +2196,12 @@ export function generateBracket(
       }
       participants = ordered;
     } else {
-      const best = bestEffortOrderParticipantsForGroupBracket(tournament, participants, opts.classId, beKey);
+      const best = bestEffortOrderParticipantsForGroupBracket(
+        tournament,
+        participants,
+        opts.classId,
+        tieBreakSalt,
+      );
       if (best) {
         participants = best;
         heuristicBipartitionLeafOrder = true;

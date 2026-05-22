@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { CommandRunner, CreatePlayerCommand, CreateMatchCommand } from '../src/command';
-import { commandToJsonLine, replayCommandsFromJsonLines, exportCommandsAsJsonLines } from '../src/storage';
-import { tournamentControllerFromCommandLog } from '../src/controller';
+import {
+  commandToJsonLine,
+  replayCommandsFromJsonLines,
+  replayCommandsFromJsonLinesAsync,
+  exportCommandsAsJsonLines,
+} from '../src/storage';
+import { tournamentControllerFromCommandLog, tournamentControllerFromCommandLogAsync } from '../src/controller';
 
 describe('Command replay and deterministic JSONL round-trip', () => {
   it('should round-trip command serialization and replay', () => {
@@ -120,5 +125,26 @@ describe('Command replay and deterministic JSONL round-trip', () => {
     const res = replayCommandsFromJsonLines(lines);
     expect(res.success).toBe(false);
     expect(res.results[0].success).toBe(false);
+  });
+
+  it('should match sync replay when replaying asynchronously', async () => {
+    const ts = '2026-02-01T00:00:00.000Z';
+    const cmds = [
+      { id: 'p1', type: 'CreatePlayer' as const, dependsOn: [] as string[], payload: { playerId: 'p1', name: 'A', handicap: 0 }, timestamp: ts },
+      { id: 'p2', type: 'CreatePlayer' as const, dependsOn: [], payload: { playerId: 'p2', name: 'B', handicap: 0 }, timestamp: ts },
+      { id: 'seed', type: 'SetSeedings' as const, dependsOn: ['p1', 'p2'], payload: { playerIds: ['p1', 'p2'] }, timestamp: ts },
+      { id: 'gen', type: 'GenerateBracket' as const, dependsOn: ['seed'], payload: { fillByes: true, cullToPowerOfTwo: false }, timestamp: ts },
+    ];
+    const text = exportCommandsAsJsonLines(cmds);
+    const sync = tournamentControllerFromCommandLog(text);
+    const progress: Array<{ done: number; total: number }> = [];
+    const asyncRes = await tournamentControllerFromCommandLogAsync(text, {}, {
+      yieldEvery: 1,
+      onProgress: (p) => progress.push(p),
+    });
+    expect(asyncRes.replay.success).toBe(true);
+    expect(sync.replay.success).toBe(true);
+    expect(asyncRes.controller.getTournament()).toEqual(sync.controller.getTournament());
+    expect(progress.at(-1)).toEqual({ done: cmds.length, total: cmds.length });
   });
 });

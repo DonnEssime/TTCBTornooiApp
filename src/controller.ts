@@ -31,7 +31,13 @@ import {
   type UndoCommand,
 } from './command';
 import { Tournament, type BracketSeedingMode, type HandicapConfig } from './model';
-import { replayCommandsFromJsonLines } from './storage';
+import {
+  parseCommandLogLines,
+  replayCommandsFromJsonLines,
+  replayCommandsFromJsonLinesAsync,
+  type ReplayAsyncOptions,
+  type ReplayResult,
+} from './storage';
 import { TournamentView } from './view';
 
 export interface ControllerOptions {
@@ -322,12 +328,18 @@ export class TournamentController {
     dependsOn: string[] = [],
     commandId?: string,
     shuffleKey?: string,
-    extras?: { cullByGroupPlacement?: boolean; classId?: string; bracketSeedingMode?: BracketSeedingMode },
+    extras?: {
+      cullByGroupPlacement?: boolean;
+      classId?: string;
+      bracketSeedingMode?: BracketSeedingMode;
+      tieBreakSalt?: string;
+    },
   ): CommandResult {
     const payload: {
       fillByes: boolean;
       cullToPowerOfTwo: boolean;
       shuffleKey?: string;
+      tieBreakSalt?: string;
       cullByGroupPlacement?: boolean;
       classId?: string;
       bracketSeedingMode?: BracketSeedingMode;
@@ -337,6 +349,9 @@ export class TournamentController {
     };
     if (shuffleKey !== undefined) {
       payload.shuffleKey = shuffleKey;
+    }
+    if (extras?.tieBreakSalt !== undefined) {
+      payload.tieBreakSalt = extras.tieBreakSalt;
     }
     if (extras?.cullByGroupPlacement) {
       payload.cullByGroupPlacement = true;
@@ -647,12 +662,21 @@ export class TournamentController {
 export function tournamentControllerFromCommandLog(
   text: string,
   options: ControllerOptions = {},
-): { controller: TournamentController; replay: ReturnType<typeof replayCommandsFromJsonLines> } {
-  const lines = text
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
+): { controller: TournamentController; replay: ReplayResult } {
+  const lines = parseCommandLogLines(text);
   const runner = new CommandRunner();
   const replay = replayCommandsFromJsonLines(lines, runner);
+  return { controller: new TournamentController(runner, options), replay };
+}
+
+/** Async variant that yields during replay so the UI can show progress. */
+export async function tournamentControllerFromCommandLogAsync(
+  text: string,
+  options: ControllerOptions = {},
+  replayOptions?: ReplayAsyncOptions,
+): Promise<{ controller: TournamentController; replay: ReplayResult }> {
+  const lines = parseCommandLogLines(text);
+  const runner = new CommandRunner();
+  const replay = await replayCommandsFromJsonLinesAsync(lines, runner, replayOptions);
   return { controller: new TournamentController(runner, options), replay };
 }

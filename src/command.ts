@@ -182,6 +182,8 @@ export interface GenerateBracketCommand extends CommandBase {
     fillByes: boolean;
     cullToPowerOfTwo: boolean;
     shuffleKey?: string;
+    /** Salt for random bipartition tie-breaks; stored for replay. When omitted, {@link generateBracket} uses current time. */
+    tieBreakSalt?: string;
     cullByGroupPlacement?: boolean;
     classId?: string;
     /** When omitted, defaults to heuristic ordering in {@link generateBracket}. */
@@ -1175,12 +1177,14 @@ export class CommandRunner {
         if (Object.keys(tournament.teamMatches).length > 0) {
           return { success: false, reason: 'Cannot generate bracket while a team vs team match exists' };
         }
-        const { cullToPowerOfTwo, shuffleKey, cullByGroupPlacement, classId, bracketSeedingMode } = command.payload;
+        const { cullToPowerOfTwo, shuffleKey, tieBreakSalt, cullByGroupPlacement, classId, bracketSeedingMode } =
+          command.payload;
         try {
           const bm = generateBracket(tournament.seedings, tournament, {
             fillByes: true,
             cullToPowerOfTwo: cullToPowerOfTwo ?? false,
             ...(shuffleKey !== undefined ? { shuffleKey } : {}),
+            ...(tieBreakSalt !== undefined ? { tieBreakSalt } : {}),
             ...(cullByGroupPlacement ? { cullByGroupPlacement: true } : {}),
             ...(classId !== undefined ? { classId } : {}),
             ...(bracketSeedingMode !== undefined ? { bracketSeedingMode } : {}),
