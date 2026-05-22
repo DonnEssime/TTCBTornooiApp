@@ -39,6 +39,9 @@
     singleEliminationPlacementRows,
     gameWinner,
     generateBracket,
+    searchBestHeuristicBracketOrderAsync,
+    logHeuristicBracketSearchDebug,
+    HEURISTIC_BRACKET_SEARCH_TRIALS,
     bracketRoundHasOpenEliminationPairings,
     groupNumberedTitle,
     tournamentUsesClassTabs,
@@ -267,6 +270,8 @@
     total: number;
   };
   let tournamentLoad = $state<TournamentLoadState | null>(null);
+
+  let bracketHeuristicSearch = $state<{ done: number; total: number } | null>(null);
 
   function tournamentLoadPct(done: number, total: number): number {
     if (total <= 0) return 0;
@@ -2078,7 +2083,7 @@
     pull();
   }
 
-  function generateKnockoutBracket(): void {
+  async function generateKnockoutBracket(): Promise<void> {
     clearStatus();
     const s = getActiveSession();
     if (!s) return;
@@ -2107,7 +2112,36 @@
     }
     const genId = `cmd-gen-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
     const shuffleKey = s.tournamentName.trim() || 'Tournament';
-    const tieBreakSalt = String(Date.now());
+    const baseSalt = String(Date.now());
+    let tieBreakSalt = baseSalt;
+
+    if (bracketSeedingChoice === 'heuristic') {
+      const participants = [...t.seedings];
+      bracketHeuristicSearch = { done: 0, total: HEURISTIC_BRACKET_SEARCH_TRIALS };
+      try {
+        const search = await searchBestHeuristicBracketOrderAsync(
+          t,
+          participants,
+          undefined,
+          baseSalt,
+          {
+            trials: HEURISTIC_BRACKET_SEARCH_TRIALS,
+            onProgress: (done, total) => {
+              bracketHeuristicSearch = { done, total };
+            },
+          },
+        );
+        if (!search) {
+          showError('Heuristic bracket seeding could not be computed from group standings.');
+          return;
+        }
+        tieBreakSalt = search.tieBreakSalt;
+        logHeuristicBracketSearchDebug(search, DEBUG_UI);
+      } finally {
+        bracketHeuristicSearch = null;
+      }
+    }
+
     runUiBatch(() => {
       const r = c.generateBracket(true, false, deps, genId, shuffleKey, {
         bracketSeedingMode: bracketSeedingChoice,
@@ -2138,7 +2172,11 @@
       if (c.getTournament().bracketMatches.length > 0) {
         patchActiveSession({ nav: { kind: 'single', inner: 'bracket' } });
       }
-      showInfo('Knockout bracket generated (byes filled) and round‑1 matches created.');
+      const trialsNote =
+        bracketSeedingChoice === 'heuristic'
+          ? ` (${HEURISTIC_BRACKET_SEARCH_TRIALS} heuristic draws compared)`
+          : '';
+      showInfo(`Knockout bracket generated${trialsNote} (byes filled) and round‑1 matches created.`);
     });
   }
 
@@ -3221,9 +3259,10 @@
                   <button
                     type="button"
                     class="btn primary"
-                    disabled={Object.keys(tournament.groups).length === 0 ||
+                    disabled={bracketHeuristicSearch !== null ||
+                      Object.keys(tournament.groups).length === 0 ||
                       eligibleGlobalGroupPlayerIds(tournament).length === 0}
-                    onclick={() => generateKnockoutBracket()}
+                    onclick={() => void generateKnockoutBracket()}
                   >
                     Create knockout bracket
                   </button>
@@ -3608,6 +3647,30 @@
         </button>
       </div>
     </footer>
+  {/if}
+
+  {#if bracketHeuristicSearch}
+    <div class="load-overlay" role="dialog" aria-modal="true" aria-labelledby="bracket-heuristic-search-title">
+      <div class="load-panel">
+        <h3 id="bracket-heuristic-search-title" class="load-title">Optimizing bracket draw</h3>
+        <p class="load-meta muted small">
+          Trying heuristic seeds — {bracketHeuristicSearch.done} / {bracketHeuristicSearch.total}
+        </p>
+        <div
+          class="load-track"
+          role="progressbar"
+          aria-valuenow={bracketHeuristicSearch.done}
+          aria-valuemin="0"
+          aria-valuemax={bracketHeuristicSearch.total}
+          aria-label={`${bracketHeuristicSearch.done} of ${bracketHeuristicSearch.total} heuristic trials`}
+        >
+          <div
+            class="load-fill"
+            style={`width: ${tournamentLoadPct(bracketHeuristicSearch.done, bracketHeuristicSearch.total)}%`}
+          ></div>
+        </div>
+      </div>
+    </div>
   {/if}
 
   {#if tournamentLoad}

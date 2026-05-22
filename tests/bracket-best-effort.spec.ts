@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   bestEffortOrderParticipantsForGroupBracket,
+  searchBestHeuristicBracketOrder,
   bipartitionBracketPlayers,
   bracketMatchRound,
   buildBracketLeafOrderByBipartition,
@@ -173,7 +174,7 @@ describe('bipartition bracket leaf order', () => {
       })),
     ];
     for (const entries of cases) {
-      const tree = buildBracketPartitionTree(entries);
+      const tree = buildBracketPartitionTree(entries).tree;
       const terminals = collectBracketPartitionTerminals(tree);
       expect(terminalDepthSpread(terminals)).toBeLessThanOrEqual(1);
     }
@@ -185,7 +186,7 @@ describe('bipartition bracket leaf order', () => {
       groupIndex: i % 7,
       place: (i % 3) + 1,
     }));
-    const tree = buildBracketPartitionTree(entries);
+    const tree = buildBracketPartitionTree(entries).tree;
     const maxDepth = maxBracketPartitionTerminalDepth(collectBracketPartitionTerminals(tree));
     const equalized = equalizeBracketPartitionTreeDepths(tree, 0, maxDepth);
     const after = collectBracketPartitionTerminals(equalized);
@@ -195,7 +196,7 @@ describe('bipartition bracket leaf order', () => {
         expect(term.depth).toBe(maxAfter);
       }
     }
-    const leafOrder = buildBracketLeafOrderByBipartition(entries);
+    const leafOrder = buildBracketLeafOrderByBipartition(entries).leaves;
     expect(leafOrder.length).toBe(32);
   });
 
@@ -205,7 +206,7 @@ describe('bipartition bracket leaf order', () => {
       groupIndex: i % 7,
       place: (i % 3) + 1,
     }));
-    const [left, right] = bipartitionBracketPlayers(entries);
+    const { left, right } = bipartitionBracketPlayers(entries);
     expect(left.length).toBe(11);
     expect(right.length).toBe(10);
     expect(Math.abs(left.length - right.length)).toBeLessThanOrEqual(1);
@@ -217,7 +218,7 @@ describe('bipartition bracket leaf order', () => {
       { pid: 'p1', groupIndex: 0, place: 1 },
       { pid: 'p2', groupIndex: 0, place: 2 },
     ];
-    const [left, right] = bipartitionBracketPlayers(entries);
+    const { left, right } = bipartitionBracketPlayers(entries);
     expect(left.map((e) => e.pid)).toEqual(['p1']);
     expect(right.map((e) => e.pid).sort()).toEqual(['p2', 'p3']);
   });
@@ -228,7 +229,7 @@ describe('bipartition bracket leaf order', () => {
       { pid: 'p2', groupIndex: 0, place: 2 },
       { pid: 'p3', groupIndex: 0, place: 3 },
     ];
-    const leafOrder = buildBracketLeafOrderByBipartition(entries);
+    const leafOrder = buildBracketLeafOrderByBipartition(entries).leaves;
     expect(leafOrder).toHaveLength(4);
     expect(leafOrder.filter((x) => x === 'BYE')).toEqual(['BYE']);
     expect(new Set(leafOrder.filter((x) => x !== 'BYE'))).toEqual(new Set(['p1', 'p2', 'p3']));
@@ -241,10 +242,10 @@ describe('bipartition bracket leaf order', () => {
       { pid: 'b1', groupIndex: 1, place: 1 },
       { pid: 'b2', groupIndex: 1, place: 2 },
     ];
-    const [left, right] = bipartitionBracketPlayers(entries);
+    const { left, right } = bipartitionBracketPlayers(entries);
     expect(left.map((e) => e.pid).sort()).toEqual(['a1', 'b2']);
     expect(right.map((e) => e.pid).sort()).toEqual(['a2', 'b1']);
-    expect(buildBracketLeafOrderByBipartition(entries)).toEqual(['a1', 'b2', 'b1', 'a2']);
+    expect(buildBracketLeafOrderByBipartition(entries).leaves).toEqual(['a1', 'b2', 'b1', 'a2']);
   });
 
   it('4-player bipartition with tied ranks prefers both pairs cross-group', () => {
@@ -254,7 +255,7 @@ describe('bipartition bracket leaf order', () => {
       { pid: 'x1', groupIndex: 0, place: 2 },
       { pid: 'y2', groupIndex: 1, place: 2 },
     ];
-    const [left, right] = bipartitionBracketPlayers(entries);
+    const { left, right } = bipartitionBracketPlayers(entries);
     expect(left.map((e) => e.pid).sort()).toEqual(['x2', 'y2']);
     expect(right.map((e) => e.pid).sort()).toEqual(['x1', 'y1']);
     expect(left[0]!.groupIndex).not.toBe(left[1]!.groupIndex);
@@ -311,6 +312,26 @@ describe('bestEffortOrderParticipantsForGroupBracket', () => {
     addGroupRRDominant(t, 'g1', ['p1', 'p2']);
     const r = bestEffortOrderParticipantsForGroupBracket(t, ['p1'], undefined, 'k');
     expect(r).toBeNull();
+  });
+
+  it('searchBestHeuristicBracketOrder picks the lowest penalty among trials', () => {
+    const t = createTournament();
+    for (let i = 1; i <= 12; i++) {
+      const id = `p${i}`;
+      t.players[id] = { id, name: id, handicap: 0 };
+    }
+    for (let g = 0; g < 4; g++) {
+      const base = g * 3 + 1;
+      addGroupRRDominant(t, `g${g}`, [`p${base}`, `p${base + 1}`, `p${base + 2}`]);
+    }
+    const seed = Array.from({ length: 12 }, (_, i) => `p${i + 1}`);
+    const result = searchBestHeuristicBracketOrder(t, seed, undefined, 'bench', 8);
+    expect(result).not.toBeNull();
+    expect(result!.runs).toBe(8);
+    expect(result!.trialPenalties).toHaveLength(8);
+    expect(result!.totalPenalty).toBe(Math.min(...result!.trialPenalties));
+    expect(result!.tieBreakSalt).toMatch(/^bench:trial:\d+$/);
+    expect(result!.order.filter((x) => x !== 'BYE').length).toBe(12);
   });
 
   it('is deterministic for the same tieBreakSalt', () => {

@@ -1518,7 +1518,7 @@ function pickLowestPenaltyBracketEntry(
   cfg: BracketBipartitionPenaltyConfig,
   tieBreakSalt: string,
   pickIndex: number,
-): BracketPartitionEntry | undefined {
+): { entry: BracketPartitionEntry; penalty: number } | undefined {
   let bestScore = Infinity;
   const tied: BracketPartitionEntry[] = [];
   for (const entry of sorted) {
@@ -1533,8 +1533,27 @@ function pickLowestPenaltyBracketEntry(
     }
   }
   if (tied.length === 0) return undefined;
-  if (tied.length === 1) return tied[0];
-  return shuffleDeterministic(tied, `${tieBreakSalt}:pick:${pickIndex}`)[0];
+  const entry =
+    tied.length === 1
+      ? tied[0]!
+      : shuffleDeterministic(tied, `${tieBreakSalt}:pick:${pickIndex}`)[0]!;
+  return { entry, penalty: bestScore };
+}
+
+/** Sum greedy pick penalties for placing {@link set} members in array order. */
+function bracketSequentialPlacementPenalty(
+  set: readonly BracketPartitionEntry[],
+  allEntries: readonly BracketPartitionEntry[],
+  cfg: BracketBipartitionPenaltyConfig,
+): number {
+  const maxPlaceByGroup = maxGroupRankByGroupIndex(allEntries);
+  let total = 0;
+  const built: BracketPartitionEntry[] = [];
+  for (const entry of set) {
+    total += bracketSetPenaltyForPlayer(built, entry, maxPlaceByGroup, cfg);
+    built.push(entry);
+  }
+  return total;
 }
 
 function crossGroupPairCountInBracketSets(
@@ -1550,8 +1569,9 @@ function crossGroupPairCountInBracketSets(
 /** 4 → best+worst | middle pair; when ranks tie, prefer splits where both pairs are cross-group. */
 function bipartitionFourBracketPlayers(
   sorted: readonly BracketPartitionEntry[],
+  cfg: BracketBipartitionPenaltyConfig,
   tieBreakSalt?: string,
-): [BracketPartitionEntry[], BracketPartitionEntry[]] {
+): { left: BracketPartitionEntry[]; right: BracketPartitionEntry[]; penalty: number } {
   const minPlace = sorted[0]!.place;
   const maxPlace = sorted[3]!.place;
   const highs = sorted.filter((e) => e.place === minPlace);
@@ -1577,18 +1597,24 @@ function bipartitionFourBracketPlayers(
     }
   }
 
+  let chosen: [BracketPartitionEntry[], BracketPartitionEntry[]];
   if (tiedSplits.length > 0) {
     const salt = tieBreakSalt?.trim();
     if (salt && tiedSplits.length > 1) {
       const keys = tiedSplits.map((split, i) => `${split[0].map((e) => e.pid).join(',')}|${i}`);
       const pick = shuffleDeterministic(keys, `${salt}:four-way`)[0]!;
       const idx = keys.indexOf(pick);
-      return tiedSplits[idx >= 0 ? idx : 0]!;
+      chosen = tiedSplits[idx >= 0 ? idx : 0]!;
+    } else {
+      chosen = tiedSplits[0]!;
     }
-    return tiedSplits[0]!;
+  } else {
+    chosen = [[sorted[0]!, sorted[3]!], [sorted[1]!, sorted[2]!]];
   }
-
-  return [[sorted[0]!, sorted[3]!], [sorted[1]!, sorted[2]!]];
+  const penalty =
+    bracketSequentialPlacementPenalty(chosen[0], sorted, cfg) +
+    bracketSequentialPlacementPenalty(chosen[1], sorted, cfg);
+  return { left: chosen[0], right: chosen[1], penalty };
 }
 
 /**
@@ -1603,13 +1629,21 @@ export function bipartitionBracketPlayers(
   entries: readonly BracketPartitionEntry[],
   cfg: BracketBipartitionPenaltyConfig = DEFAULT_BRACKET_BIPARTITION_PENALTIES,
   tieBreakSalt?: string,
-): [BracketPartitionEntry[], BracketPartitionEntry[]] {
+): { left: BracketPartitionEntry[]; right: BracketPartitionEntry[]; penalty: number } {
   const sorted = sortBracketPartitionEntries(entries, tieBreakSalt);
   if (sorted.length === 3) {
-    return [[sorted[0]!], [sorted[1]!, sorted[2]!]];
+    const left = [sorted[0]!];
+    const right = [sorted[1]!, sorted[2]!];
+    return {
+      left,
+      right,
+      penalty:
+        bracketSequentialPlacementPenalty(left, sorted, cfg) +
+        bracketSequentialPlacementPenalty(right, sorted, cfg),
+    };
   }
   if (sorted.length === 4) {
-    return bipartitionFourBracketPlayers(sorted, tieBreakSalt);
+    return bipartitionFourBracketPlayers(sorted, cfg, tieBreakSalt);
   }
   const maxPlaceByGroup = maxGroupRankByGroupIndex(entries);
   const setA: BracketPartitionEntry[] = [];
@@ -1617,10 +1651,11 @@ export function bipartitionBracketPlayers(
   const unassigned = new Set<BracketPartitionEntry>(sorted);
   let pickA = true;
   let pickIndex = 0;
+  let penalty = 0;
 
   while (unassigned.size > 0) {
     const target = pickA ? setA : setB;
-    const best = tieBreakSalt?.trim()
+    const picked = tieBreakSalt?.trim()
       ? pickLowestPenaltyBracketEntry(
           sorted,
           unassigned,
@@ -1631,24 +1666,25 @@ export function bipartitionBracketPlayers(
           pickIndex++,
         )
       : (() => {
-          let pick: BracketPartitionEntry | undefined;
+          let entry: BracketPartitionEntry | undefined;
           let bestScore = Infinity;
-          for (const entry of sorted) {
-            if (!unassigned.has(entry)) continue;
-            const score = bracketSetPenaltyForPlayer(target, entry, maxPlaceByGroup, cfg);
+          for (const candidate of sorted) {
+            if (!unassigned.has(candidate)) continue;
+            const score = bracketSetPenaltyForPlayer(target, candidate, maxPlaceByGroup, cfg);
             if (score < bestScore) {
               bestScore = score;
-              pick = entry;
+              entry = candidate;
             }
           }
-          return pick;
+          return entry === undefined ? undefined : { entry, penalty: bestScore };
         })();
-    if (!best) break;
-    target.push(best);
-    unassigned.delete(best);
+    if (!picked) break;
+    penalty += picked.penalty;
+    target.push(picked.entry);
+    unassigned.delete(picked.entry);
     pickA = !pickA;
   }
-  return [setA, setB];
+  return { left: setA, right: setB, penalty };
 }
 
 /** Binary partition tree before BYE insertion and power-of-two leaf padding. */
@@ -1667,15 +1703,20 @@ export function buildBracketPartitionTree(
   entries: readonly BracketPartitionEntry[],
   cfg: BracketBipartitionPenaltyConfig = DEFAULT_BRACKET_BIPARTITION_PENALTIES,
   tieBreakSalt?: string,
-): BracketPartitionTree {
+): { tree: BracketPartitionTree; penalty: number } {
   if (entries.length <= 2) {
-    return { kind: 'terminal', entries: [...entries] };
+    return { tree: { kind: 'terminal', entries: [...entries] }, penalty: 0 };
   }
-  const [left, right] = bipartitionBracketPlayers(entries, cfg, tieBreakSalt);
+  const part = bipartitionBracketPlayers(entries, cfg, tieBreakSalt);
+  const leftBuilt = buildBracketPartitionTree(part.left, cfg, tieBreakSalt);
+  const rightBuilt = buildBracketPartitionTree(part.right, cfg, tieBreakSalt);
   return {
-    kind: 'branch',
-    left: buildBracketPartitionTree(left, cfg, tieBreakSalt),
-    right: buildBracketPartitionTree(right, cfg, tieBreakSalt),
+    tree: {
+      kind: 'branch',
+      left: leftBuilt.tree,
+      right: rightBuilt.tree,
+    },
+    penalty: part.penalty + leftBuilt.penalty + rightBuilt.penalty,
   };
 }
 
@@ -1746,20 +1787,20 @@ export function buildBracketLeafOrderByBipartition(
   entries: readonly BracketPartitionEntry[],
   cfg: BracketBipartitionPenaltyConfig = DEFAULT_BRACKET_BIPARTITION_PENALTIES,
   tieBreakSalt?: string,
-): PlayerId[] {
-  if (entries.length === 0) return [];
+): { leaves: PlayerId[]; totalPenalty: number } {
+  if (entries.length === 0) return { leaves: [], totalPenalty: 0 };
 
-  const tree = buildBracketPartitionTree(entries, cfg, tieBreakSalt);
-  const terminals = collectBracketPartitionTerminals(tree);
+  const built = buildBracketPartitionTree(entries, cfg, tieBreakSalt);
+  const terminals = collectBracketPartitionTerminals(built.tree);
   const maxDepth = maxBracketPartitionTerminalDepth(terminals);
-  const equalized = equalizeBracketPartitionTreeDepths(tree, 0, maxDepth);
+  const equalized = equalizeBracketPartitionTreeDepths(built.tree, 0, maxDepth);
 
   let leaves = flattenBracketPartitionTreeToLeafOrder(equalized);
   const slotCount = nextPowerOfTwo(leaves.length);
   while (leaves.length < slotCount) {
     leaves.push('BYE');
   }
-  return leaves;
+  return { leaves, totalPenalty: built.penalty };
 }
 
 /**
@@ -1774,6 +1815,72 @@ export function bestEffortOrderParticipantsForGroupBracket(
   classId: string | undefined,
   tieBreakSalt: string,
 ): PlayerId[] | null {
+  const trial = bestEffortOrderWithPenaltyForGroupBracket(
+    tournament,
+    participantIds,
+    classId,
+    tieBreakSalt,
+  );
+  return trial?.order ?? null;
+}
+
+/** Default number of stochastic heuristic trials before picking the lowest-penalty draw. */
+export const HEURISTIC_BRACKET_SEARCH_TRIALS = 256;
+
+export type HeuristicBracketSearchResult = {
+  order: PlayerId[];
+  tieBreakSalt: string;
+  totalPenalty: number;
+  trialPenalties: readonly number[];
+  runs: number;
+  durationMs: number;
+};
+
+/** True when `DEBUG` / `VITE_DEBUG` is set in the environment (Node or Vite). */
+export function isHeuristicBracketDebugEnabled(force = false): boolean {
+  if (force) return true;
+  if (typeof process !== 'undefined' && process.env?.DEBUG) return true;
+  try {
+    const meta = import.meta as ImportMeta & { env?: { DEBUG?: string; VITE_DEBUG?: string } };
+    if (meta.env?.DEBUG || meta.env?.VITE_DEBUG) return true;
+  } catch {
+    /* not in an ESM bundler context */
+  }
+  return false;
+}
+
+function medianNumeric(values: readonly number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+}
+
+/** Log heuristic multi-run stats when {@link isHeuristicBracketDebugEnabled}. */
+export function logHeuristicBracketSearchDebug(
+  result: HeuristicBracketSearchResult,
+  force = false,
+): void {
+  if (!isHeuristicBracketDebugEnabled(force)) return;
+  const penalties = [...result.trialPenalties];
+  const min = Math.min(...penalties);
+  const max = Math.max(...penalties);
+  const avgMs = result.runs > 0 ? result.durationMs / result.runs : 0;
+  console.group('[DEBUG] Heuristic bracket search');
+  console.log('runs', result.runs);
+  console.log('durationMs', result.durationMs.toFixed(2));
+  console.log('avgMsPerRun', avgMs.toFixed(3));
+  console.log('penalty min / median / max', min, medianNumeric(penalties), max);
+  console.log('selected tieBreakSalt', result.tieBreakSalt);
+  console.log('selected totalPenalty', result.totalPenalty);
+  console.groupEnd();
+}
+
+function resolveBracketPartitionEntriesForBestEffort(
+  tournament: Tournament,
+  participantIds: readonly PlayerId[],
+  classId: string | undefined,
+): BracketPartitionEntry[] | null {
   const groupsRecord = groupRecordForBracketScope(tournament, classId);
   const groups = sortGroupDefinitionsStable(groupsRecord);
   if (groups.length === 0) return null;
@@ -1806,8 +1913,118 @@ export function bestEffortOrderParticipantsForGroupBracket(
       entries.push({ pid: rows[place - 1]!.pid, groupIndex: gi, place });
     }
   }
+  return entries;
+}
 
-  return buildBracketLeafOrderByBipartition(entries, DEFAULT_BRACKET_BIPARTITION_PENALTIES, tieBreakSalt);
+export function bestEffortOrderWithPenaltyForGroupBracket(
+  tournament: Tournament,
+  participantIds: readonly PlayerId[],
+  classId: string | undefined,
+  tieBreakSalt: string,
+  cfg: BracketBipartitionPenaltyConfig = DEFAULT_BRACKET_BIPARTITION_PENALTIES,
+): { order: PlayerId[]; totalPenalty: number } | null {
+  const entries = resolveBracketPartitionEntriesForBestEffort(tournament, participantIds, classId);
+  if (!entries) return null;
+  const built = buildBracketLeafOrderByBipartition(entries, cfg, tieBreakSalt);
+  return { order: built.leaves, totalPenalty: built.totalPenalty };
+}
+
+function heuristicTrialSalt(baseSalt: string, trialIndex: number): string {
+  return `${baseSalt}:trial:${trialIndex}`;
+}
+
+/**
+ * Run several stochastic heuristic draws and return the lowest-penalty leaf order.
+ * Each trial uses a distinct {@link heuristicTrialSalt}; the winning salt is returned for replay.
+ */
+export function searchBestHeuristicBracketOrder(
+  tournament: Tournament,
+  participantIds: readonly PlayerId[],
+  classId: string | undefined,
+  baseSalt: string,
+  trials: number = HEURISTIC_BRACKET_SEARCH_TRIALS,
+): HeuristicBracketSearchResult | null {
+  const runs = Math.max(1, Math.floor(trials));
+  const started = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const trialPenalties: number[] = [];
+  let best: { order: PlayerId[]; tieBreakSalt: string; totalPenalty: number } | undefined;
+
+  for (let i = 0; i < runs; i++) {
+    const salt = heuristicTrialSalt(baseSalt, i);
+    const trial = bestEffortOrderWithPenaltyForGroupBracket(tournament, participantIds, classId, salt);
+    if (!trial) return null;
+    trialPenalties.push(trial.totalPenalty);
+    if (!best || trial.totalPenalty < best.totalPenalty) {
+      best = { order: trial.order, tieBreakSalt: salt, totalPenalty: trial.totalPenalty };
+    }
+  }
+
+  const ended = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const result: HeuristicBracketSearchResult = {
+    order: best!.order,
+    tieBreakSalt: best!.tieBreakSalt,
+    totalPenalty: best!.totalPenalty,
+    trialPenalties,
+    runs,
+    durationMs: ended - started,
+  };
+  logHeuristicBracketSearchDebug(result);
+  return result;
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof setImmediate === 'function') {
+      setImmediate(resolve);
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
+/** Async variant of {@link searchBestHeuristicBracketOrder} that yields between trials for UI progress. */
+export async function searchBestHeuristicBracketOrderAsync(
+  tournament: Tournament,
+  participantIds: readonly PlayerId[],
+  classId: string | undefined,
+  baseSalt: string,
+  options: {
+    trials?: number;
+    onProgress?: (done: number, total: number) => void;
+    yieldEvery?: number;
+  } = {},
+): Promise<HeuristicBracketSearchResult | null> {
+  const runs = Math.max(1, Math.floor(options.trials ?? HEURISTIC_BRACKET_SEARCH_TRIALS));
+  const yieldEvery = Math.max(1, Math.floor(options.yieldEvery ?? 1));
+  const started = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const trialPenalties: number[] = [];
+  let best: { order: PlayerId[]; tieBreakSalt: string; totalPenalty: number } | undefined;
+
+  for (let i = 0; i < runs; i++) {
+    const salt = heuristicTrialSalt(baseSalt, i);
+    const trial = bestEffortOrderWithPenaltyForGroupBracket(tournament, participantIds, classId, salt);
+    if (!trial) return null;
+    trialPenalties.push(trial.totalPenalty);
+    if (!best || trial.totalPenalty < best.totalPenalty) {
+      best = { order: trial.order, tieBreakSalt: salt, totalPenalty: trial.totalPenalty };
+    }
+    options.onProgress?.(i + 1, runs);
+    if ((i + 1) % yieldEvery === 0 || i + 1 === runs) {
+      await yieldToEventLoop();
+    }
+  }
+
+  const ended = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const result: HeuristicBracketSearchResult = {
+    order: best!.order,
+    tieBreakSalt: best!.tieBreakSalt,
+    totalPenalty: best!.totalPenalty,
+    trialPenalties,
+    runs,
+    durationMs: ended - started,
+  };
+  logHeuristicBracketSearchDebug(result);
+  return result;
 }
 
 /**
@@ -2066,6 +2283,11 @@ export type GenerateBracketOptions = {
    * When omitted, {@link generateBracket} uses the current time in milliseconds.
    */
   tieBreakSalt?: string;
+  /**
+   * Stochastic heuristic trials before picking the lowest-penalty draw (`1` = single run with
+   * {@link tieBreakSalt} only). Defaults to {@link HEURISTIC_BRACKET_SEARCH_TRIALS} for heuristic mode.
+   */
+  heuristicSearchTrials?: number;
   /** When true (with `cullToPowerOfTwo` and `fillByes: false`), cull using group finishing order instead of seed order. */
   cullByGroupPlacement?: boolean;
   /** Scope for group standings when `cullByGroupPlacement` is set. */
@@ -2193,14 +2415,35 @@ export function generateBracket(
       participants = ordered;
       cropClosedFormLeafOrder = Boolean(split && split.culled.length > 0);
     } else {
-      const best = bestEffortOrderParticipantsForGroupBracket(
-        tournament,
-        participants,
-        opts.classId,
-        tieBreakSalt,
-      );
-      if (best) {
-        participants = best;
+      const trials = opts.heuristicSearchTrials ?? 1;
+      const search =
+        trials > 1
+          ? searchBestHeuristicBracketOrder(
+              tournament,
+              participants,
+              opts.classId,
+              tieBreakSalt,
+              trials,
+            )
+          : (() => {
+              const single = bestEffortOrderWithPenaltyForGroupBracket(
+                tournament,
+                participants,
+                opts.classId,
+                tieBreakSalt,
+              );
+              if (!single) return null;
+              return {
+                order: single.order,
+                tieBreakSalt,
+                totalPenalty: single.totalPenalty,
+                trialPenalties: [single.totalPenalty],
+                runs: 1,
+                durationMs: 0,
+              } satisfies HeuristicBracketSearchResult;
+            })();
+      if (search) {
+        participants = search.order;
         heuristicBipartitionLeafOrder = true;
       } else if (opts.shuffleKey !== undefined) {
         const key = String(opts.shuffleKey).trim() || 'Tournament';
