@@ -592,12 +592,13 @@ describe('CommandRunner dependency-aware undo', () => {
     ]);
   });
 
-  it('closedFormGroupCountForPlayerCount picks 2, 4, or 8 from ceil(n/4)', () => {
+  it('closedFormGroupCountForPlayerCount picks 2, 4, 8, or 16 from ceil(n/4)', () => {
     expect(closedFormGroupCountForPlayerCount(8)).toBe(2);
     expect(closedFormGroupCountForPlayerCount(9)).toBe(4);
     expect(closedFormGroupCountForPlayerCount(16)).toBe(4);
     expect(closedFormGroupCountForPlayerCount(32)).toBe(8);
-    expect(closedFormGroupCountForPlayerCount(33)).toBe(8);
+    expect(closedFormGroupCountForPlayerCount(33)).toBe(16);
+    expect(closedFormGroupCountForPlayerCount(64)).toBe(16);
   });
 
   it('partitions players across a fixed group count', () => {

@@ -1010,25 +1010,154 @@ function mapLayoutDummiesToBye(ids: readonly PlayerId[]): PlayerId[] {
   return ids.map((pid) => (isBracketLayoutDummyPid(pid) ? 'BYE' : pid));
 }
 
-/**
- * Within each 8-player bracket quarter (4 R1 matches), swap the middle two matches so each
- * four-match block has one P1–P4 and one P2–P3 cross-group pairing (not two of the same type).
- * Applied for **G×4** layouts with **G ≥ 8** after {@link balancedOrderFromPidFor} fills slots.
- */
-function swapClosedFormQuarterMiddleMatches(participants: PlayerId[], slotCount: number): void {
-  const sp = seedPositions(slotCount);
-  for (let q = 0; q < slotCount / 8; q++) {
-    const i0 = 8 * q + 2;
-    const a = sp[i0]! - 1;
-    const b = sp[i0 + 1]! - 1;
-    const c = sp[i0 + 2]! - 1;
-    const d = sp[i0 + 3]! - 1;
-    const tmpA = participants[a]!;
-    const tmpB = participants[b]!;
-    participants[a] = participants[c]!;
-    participants[b] = participants[d]!;
-    participants[c] = tmpA;
-    participants[d] = tmpB;
+/** Pre-{@link seedPositions} slot order: `(groupIndex, 1-based place)` for exact **2×4**. */
+const CLOSED_FORM_LAYOUT_2X4: ReadonlyArray<readonly [number, number]> = [
+  [0, 1],
+  [1, 1],
+  [1, 3],
+  [0, 3],
+  [1, 2],
+  [0, 2],
+  [0, 4],
+  [1, 4],
+];
+
+/** Pre-{@link seedPositions} slot order for exact **4×4**. */
+const CLOSED_FORM_LAYOUT_4X4: ReadonlyArray<readonly [number, number]> = [
+  [0, 1],
+  [3, 1],
+  [1, 1],
+  [2, 1],
+  [3, 2],
+  [0, 2],
+  [2, 2],
+  [1, 2],
+  [2, 3],
+  [0, 3],
+  [3, 3],
+  [1, 3],
+  [0, 4],
+  [2, 4],
+  [1, 4],
+  [3, 4],
+];
+
+/** Pre-{@link seedPositions} slot order for exact **8×4** (groups 0–7). */
+const CLOSED_FORM_LAYOUT_8X4: ReadonlyArray<readonly [number, number]> = [
+  [0, 1],
+  [3, 1],
+  [1, 1],
+  [2, 1],
+  [0, 4],
+  [2, 4],
+  [1, 4],
+  [3, 4],
+  [2, 3],
+  [0, 3],
+  [3, 3],
+  [1, 3],
+  [3, 2],
+  [0, 2],
+  [2, 2],
+  [1, 2],
+  [6, 3],
+  [4, 3],
+  [7, 3],
+  [5, 3],
+  [7, 2],
+  [4, 2],
+  [6, 2],
+  [5, 2],
+  [4, 1],
+  [7, 1],
+  [5, 1],
+  [6, 1],
+  [4, 4],
+  [6, 4],
+  [5, 4],
+  [7, 4],
+];
+
+/** Pre-{@link seedPositions} slot order for exact **16×4** (sorted group index 0–15). */
+const CLOSED_FORM_LAYOUT_16X4: ReadonlyArray<readonly [number, number]> = [
+  [0, 1],
+  [3, 1],
+  [1, 1],
+  [2, 1],
+  [0, 4],
+  [2, 4],
+  [1, 4],
+  [3, 4],
+  [6, 3],
+  [4, 3],
+  [7, 3],
+  [5, 3],
+  [4, 4],
+  [6, 4],
+  [5, 4],
+  [7, 4],
+  [2, 3],
+  [0, 3],
+  [3, 3],
+  [1, 3],
+  [7, 2],
+  [4, 2],
+  [6, 2],
+  [5, 2],
+  [4, 1],
+  [7, 1],
+  [5, 1],
+  [6, 1],
+  [3, 2],
+  [0, 2],
+  [2, 2],
+  [1, 2],
+  [14, 3],
+  [12, 3],
+  [15, 3],
+  [13, 3],
+  [8, 4],
+  [10, 4],
+  [9, 4],
+  [11, 4],
+  [10, 3],
+  [8, 3],
+  [11, 3],
+  [9, 3],
+  [15, 2],
+  [12, 2],
+  [14, 2],
+  [13, 2],
+  [8, 1],
+  [11, 1],
+  [9, 1],
+  [10, 1],
+  [11, 2],
+  [8, 2],
+  [10, 2],
+  [9, 2],
+  [12, 1],
+  [15, 1],
+  [13, 1],
+  [14, 1],
+  [12, 4],
+  [14, 4],
+  [13, 4],
+  [15, 4],
+];
+
+function closedFormLayoutFor(G_tgt: number): ReadonlyArray<readonly [number, number]> | null {
+  switch (G_tgt) {
+    case 2:
+      return CLOSED_FORM_LAYOUT_2X4;
+    case 4:
+      return CLOSED_FORM_LAYOUT_4X4;
+    case 8:
+      return CLOSED_FORM_LAYOUT_8X4;
+    case 16:
+      return CLOSED_FORM_LAYOUT_16X4;
+    default:
+      return null;
   }
 }
 
@@ -1036,59 +1165,11 @@ function balancedOrderFromPidFor(
   G_tgt: number,
   pidFor: (gi: number, place: number) => PlayerId,
 ): PlayerId[] {
-  /** Index in pre-{@link seedPositions} `participants[]` → (groupIndex, 1-based place). */
-  const layout4x4: ReadonlyArray<readonly [number, number]> = [
-    [0, 1],
-    [3, 1],
-    [1, 1],
-    [2, 1],
-    [3, 2],
-    [0, 2],
-    [2, 2],
-    [1, 2],
-    [2, 3],
-    [0, 3],
-    [3, 3],
-    [1, 3],
-    [0, 4],
-    [2, 4],
-    [1, 4],
-    [3, 4],
-  ];
-
-  /**
-   * Two groups of four. After {@link seedPositions}, one half is
-   * G0P1–G1P4 and G0P3–G1P2; the other is G1P1–G0P4 and G1P3–G0P2 (group indices 0 and 1).
-   */
-  const layout2x4: ReadonlyArray<readonly [number, number]> = [
-    [0, 1],
-    [1, 1],
-    [1, 3],
-    [0, 3],
-    [1, 2],
-    [0, 2],
-    [0, 4],
-    [1, 4],
-  ];
-
-  if (G_tgt === 2 && BALANCED_LAYOUT_S === 4) {
-    return layout2x4.map(([gi, pl]) => pidFor(gi, pl));
+  const layout = closedFormLayoutFor(G_tgt);
+  if (!layout) {
+    throw new Error(`balancedOrderFromPidFor: unsupported G_tgt=${G_tgt}`);
   }
-  if (G_tgt === 4 && BALANCED_LAYOUT_S === 4) {
-    return layout4x4.map(([gi, pl]) => pidFor(gi, pl));
-  }
-  if (G_tgt % 4 === 0 && G_tgt >= 8 && BALANCED_LAYOUT_S === 4) {
-    const out: PlayerId[] = [];
-    for (let block = 0; block < G_tgt / 4; block++) {
-      const goff = 4 * block;
-      for (const [lg, pl] of layout4x4) {
-        out.push(pidFor(goff + lg, pl));
-      }
-    }
-    swapClosedFormQuarterMiddleMatches(out, G_tgt * BALANCED_LAYOUT_S);
-    return out;
-  }
-  throw new Error(`balancedOrderFromPidFor: unsupported G_tgt=${G_tgt}`);
+  return layout.map(([gi, pl]) => pidFor(gi, pl));
 }
 
 /**
@@ -1097,8 +1178,7 @@ function balancedOrderFromPidFor(
  * the single-elimination tree: winners meet as late as possible, same-group players are separated, and
  * round‑1 pairs prefer **winner vs loser from different groups** when a closed layout exists.
  *
- * Built-in layouts: **2×4**, **4×4**, **8×4**, and **16×4** (each stacks independent 4×4-style quarters on
- * consecutive groups of four: 0–3, 4–7, 8–11, 12–15).
+ * Built-in layouts: **2×4**, **4×4**, **8×4**, and **16×4** (hardcoded pre-{@link seedPositions} slot tables).
  *
  * When **G × S** is not exactly one of those shapes but still fits **S ≤ 4**, **G ≤ 16**, and **G·S ≤ 64**,
  * the function conceptually pads each real group with synthetic `--empty--#…` players (last places) and

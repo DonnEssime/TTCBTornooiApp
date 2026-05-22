@@ -944,7 +944,7 @@ describe('Group-balanced bracket seeding', () => {
     expect(bracket.filter((m) => bracketMatchRound(m) === 2).length).toBe(8);
   });
 
-  it('16×4: stacks four 4×4-style quarters on groups 0–3, 4–7, 8–11, and 12–15', () => {
+  it('16×4: hardcoded closed-form layout on 16 groups', () => {
     const t = createTournament();
     for (let i = 1; i <= 64; i++) {
       const id = `p${i}`;
@@ -961,6 +961,12 @@ describe('Group-balanced bracket seeding', () => {
       ] as [string, string, string, string]);
     }
     t.seedings = Array.from({ length: 64 }, (_, i) => `p${i + 1}`);
+    expect(orderParticipantsForGroupBalancedBracket(t, t.seedings, undefined)).toEqual([
+      'p1', 'p45', 'p5', 'p41', 'p4', 'p44', 'p8', 'p48', 'p59', 'p51', 'p63', 'p55', 'p52', 'p60', 'p56', 'p64',
+      'p43', 'p3', 'p47', 'p7', 'p62', 'p50', 'p58', 'p54', 'p49', 'p61', 'p53', 'p57', 'p46', 'p2', 'p42', 'p6',
+      'p35', 'p27', 'p39', 'p31', 'p12', 'p20', 'p16', 'p24', 'p19', 'p11', 'p23', 'p15', 'p38', 'p26', 'p34', 'p30',
+      'p9', 'p21', 'p13', 'p17', 'p22', 'p10', 'p18', 'p14', 'p25', 'p37', 'p29', 'p33', 'p28', 'p36', 'p32', 'p40',
+    ]);
     const bracket = generateBracket([...t.seedings], t, {
       fillByes: false,
       shuffleKey: 'ignored-when-balanced',
@@ -969,35 +975,35 @@ describe('Group-balanced bracket seeding', () => {
     const r1 = bracket.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
     const pair = (i: number) => new Set([r1[i]!.seedA, r1[i]!.seedB]);
     expect(pair(0)).toEqual(new Set(['p1', 'p40']));
-    expect(pair(1)).toEqual(new Set(['p48', 'p25']));
+    expect(pair(1)).toEqual(new Set(['p6', 'p35']));
     expect(pair(2)).toEqual(new Set(['p64', 'p9']));
-    expect(pair(3)).toEqual(new Set(['p49', 'p24']));
-    expect(pair(4)).toEqual(new Set(['p6', 'p35']));
-    expect(pair(5)).toEqual(new Set(['p43', 'p30']));
+    expect(pair(3)).toEqual(new Set(['p43', 'p30']));
+    expect(pair(4)).toEqual(new Set(['p48', 'p25']));
+    expect(pair(5)).toEqual(new Set(['p49', 'p24']));
     expect(pair(6)).toEqual(new Set(['p59', 'p14']));
     expect(pair(7)).toEqual(new Set(['p54', 'p19']));
     expect(pair(8)).toEqual(new Set(['p41', 'p28']));
-    expect(pair(9)).toEqual(new Set(['p4', 'p33']));
+    expect(pair(9)).toEqual(new Set(['p46', 'p31']));
     expect(pair(10)).toEqual(new Set(['p52', 'p17']));
-    expect(pair(11)).toEqual(new Set(['p57', 'p12']));
-    expect(pair(12)).toEqual(new Set(['p46', 'p31']));
-    expect(pair(13)).toEqual(new Set(['p7', 'p38']));
+    expect(pair(11)).toEqual(new Set(['p7', 'p38']));
+    expect(pair(12)).toEqual(new Set(['p4', 'p33']));
+    expect(pair(13)).toEqual(new Set(['p57', 'p12']));
     expect(pair(14)).toEqual(new Set(['p55', 'p22']));
     expect(pair(15)).toEqual(new Set(['p62', 'p15']));
     expect(pair(16)).toEqual(new Set(['p45', 'p32']));
-    expect(pair(17)).toEqual(new Set(['p8', 'p37']));
+    expect(pair(17)).toEqual(new Set(['p42', 'p27']));
     expect(pair(18)).toEqual(new Set(['p56', 'p21']));
-    expect(pair(19)).toEqual(new Set(['p61', 'p16']));
-    expect(pair(20)).toEqual(new Set(['p42', 'p27']));
-    expect(pair(21)).toEqual(new Set(['p3', 'p34']));
+    expect(pair(19)).toEqual(new Set(['p3', 'p34']));
+    expect(pair(20)).toEqual(new Set(['p8', 'p37']));
+    expect(pair(21)).toEqual(new Set(['p61', 'p16']));
     expect(pair(22)).toEqual(new Set(['p51', 'p18']));
     expect(pair(23)).toEqual(new Set(['p58', 'p11']));
     expect(pair(24)).toEqual(new Set(['p5', 'p36']));
-    expect(pair(25)).toEqual(new Set(['p44', 'p29']));
+    expect(pair(25)).toEqual(new Set(['p2', 'p39']));
     expect(pair(26)).toEqual(new Set(['p60', 'p13']));
-    expect(pair(27)).toEqual(new Set(['p53', 'p20']));
-    expect(pair(28)).toEqual(new Set(['p2', 'p39']));
-    expect(pair(29)).toEqual(new Set(['p47', 'p26']));
+    expect(pair(27)).toEqual(new Set(['p47', 'p26']));
+    expect(pair(28)).toEqual(new Set(['p44', 'p29']));
+    expect(pair(29)).toEqual(new Set(['p53', 'p20']));
     expect(pair(30)).toEqual(new Set(['p63', 'p10']));
     expect(pair(31)).toEqual(new Set(['p50', 'p23']));
     for (const m of r1) {
@@ -1009,7 +1015,7 @@ describe('Group-balanced bracket seeding', () => {
     }
   });
 
-  it('8×4: stacks two 4×4-style halves on groups 0–3 and 4–7', () => {
+  it('8×4: hardcoded closed-form layout on groups 0–7', () => {
     const t = createTournament();
     for (let i = 1; i <= 32; i++) {
       const id = `p${i}`;

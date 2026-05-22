@@ -1,6 +1,7 @@
 import type { BracketMatch } from 'ttc-tornooiapp';
 import {
   bracketMatchRound,
+  bracketMatchesSortedForPairing,
   bracketWinnerToNextRoundSeed,
   compareBracketMatchId,
   inferBracketSlotCountFromRoundOne,
@@ -14,9 +15,18 @@ function syntheticBracketRound(round: number, count: number): BracketMatch[] {
   }));
 }
 
+function matchesInRoundForDisplay(matches: BracketMatch[], round: number): BracketMatch[] {
+  const all = matches.filter((m) => bracketMatchRound(m) === round).sort(compareBracketMatchId);
+  if (round === 1) {
+    const pairing = bracketMatchesSortedForPairing(matches, 1);
+    if (pairing.length > 0 && pairing.length < all.length) return pairing;
+  }
+  return all;
+}
+
 /** Full knockout column layout: real rounds plus synthetic later rounds until final. */
 export function buildBracketColumnsForDisplay(matches: BracketMatch[]): BracketMatch[][] {
-  const r1 = matches.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
+  const r1 = matchesInRoundForDisplay(matches, 1);
   if (r1.length === 0) return [];
   const leafSlots = inferBracketSlotCountFromRoundOne(matches);
   if (!leafSlots) return [];
@@ -24,7 +34,7 @@ export function buildBracketColumnsForDisplay(matches: BracketMatch[]): BracketM
   const cols: BracketMatch[][] = [];
   for (let r = 1; r <= depth; r++) {
     const expected = leafSlots / 2 ** r;
-    const real = matches.filter((m) => bracketMatchRound(m) === r).sort(compareBracketMatchId);
+    const real = matchesInRoundForDisplay(matches, r);
     if (real.length === expected) {
       cols.push(real);
       continue;

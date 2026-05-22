@@ -25,13 +25,13 @@
     clampPlayerHandicapValue,
     closedFormGroupCountForPlayerCount,
     CLOSED_FORM_PLAYERS_PER_GROUP,
-    defaultBracketSeedingModeFromMeta,
-    equalSizedGroupBracketMeta,
+    defaultBracketSeedingModeForTournament,
+    resolveClosedFormBracketSeedingKind,
     formatBracketSlotPlayerLabel,
     handicapValueBounds,
     isExactClosedFormBracketGrid,
     isHandicapActive,
-    supportsExtendedClosedFormBracketGrid,
+    supportsExtendedClosedFormBracketSeeding,
     matchPlayersResolvedForBracketPhaseList,
     normalizeHandicapConfig,
     randomPlayerHandicapValue,
@@ -136,14 +136,13 @@
   const handicapBounds = $derived(
     tournament.handicapConfig ? handicapValueBounds(tournament.handicapConfig) : { min: 0, max: 0 },
   );
-  const bracketGroupShapeMeta = $derived.by(() => equalSizedGroupBracketMeta(tournament, undefined));
-  const canPickClosedFormSeeding = $derived(
-    Boolean(bracketGroupShapeMeta && isExactClosedFormBracketGrid(bracketGroupShapeMeta.G, bracketGroupShapeMeta.S)),
+  const bracketSeedingParticipantIds = $derived(eligibleGlobalGroupPlayerIds(tournament));
+  const closedFormSeedingKind = $derived.by(() =>
+    resolveClosedFormBracketSeedingKind(tournament, bracketSeedingParticipantIds, undefined),
   );
+  const canPickClosedFormSeeding = $derived(closedFormSeedingKind !== null);
   const canPickExtendClosedFormSeeding = $derived(
-    Boolean(
-      bracketGroupShapeMeta && supportsExtendedClosedFormBracketGrid(bracketGroupShapeMeta.G, bracketGroupShapeMeta.S),
-    ),
+    supportsExtendedClosedFormBracketSeeding(tournament, bracketSeedingParticipantIds, undefined),
   );
   const globalGroupPlayerCount = $derived(eligibleGlobalGroupPlayerIds(tournament).length);
   const suggestedGlobalGroupTargetCount = $derived(
@@ -233,7 +232,11 @@
   /** Keep bracket-tab radios aligned with group grid while knockout not yet created. */
   $effect(() => {
     if (tournament.bracketMatches.length > 0) return;
-    bracketSeedingChoice = defaultBracketSeedingModeFromMeta(bracketGroupShapeMeta);
+    bracketSeedingChoice = defaultBracketSeedingModeForTournament(
+      tournament,
+      eligibleGlobalGroupPlayerIds(tournament),
+      undefined,
+    );
   });
   type StatusKind = 'info' | 'warn' | 'error';
   type AppStatus = { message: string; kind: StatusKind };
@@ -1416,7 +1419,7 @@
 
   function uniqueSortedRounds(matches: BracketMatch[]): number[] {
     const set = new Set(
-      matches.map((m) => bracketMatchRound(m)).filter((r) => Number.isFinite(r) && r >= 1),
+      matches.map((m) => bracketMatchRound(m)).filter((r) => Number.isFinite(r) && r >= 0),
     );
     return [...set].sort((a, b) => a - b);
   }
@@ -2276,7 +2279,7 @@
       case 'GenerateBracket': {
         const mode = cmd.payload.bracketSeedingMode ?? 'heuristic';
         const label =
-          mode === 'closed_form'
+          mode === 'closed_form' || mode === 'crop_closed_form'
             ? 'closed-form seeding'
             : mode === 'extend_closed_form'
               ? 'extended closed-form seeding'
@@ -3029,7 +3032,12 @@
                     <input type="radio" bind:group={bracketSeedingChoice} value="closed_form" disabled={!canPickClosedFormSeeding} />
                     <span>
                       <strong>Closed-form</strong>
-                      — built-in 2×4 / 4×4 / 8×4 layout (only when your group grid matches exactly).
+                      — built-in 2×4 / 4×4 / 8×4 / 16×4 layout when you have 2, 4, 8, or 16 groups (≥4 players each).
+                      {#if closedFormSeedingKind === 'crop'}
+                        Top four per group in the main draw; lower places enter via a preliminary round (play-in) against the lowest available cross-group finisher. Direct opponents receive a bye in that round.
+                      {:else if closedFormSeedingKind === 'exact'}
+                        Exact G×4 grid (every group has four players).
+                      {/if}
                     </span>
                   </label>
                   <label class="radio-line">
@@ -3043,7 +3051,7 @@
                     <input type="radio" bind:group={bracketSeedingChoice} value="heuristic" />
                     <span>
                       <strong>Heuristic</strong>
-                      — rule-based placement from group standings (with deterministic shuffle from the tournament name).
+                      — rule-based placement from group standings.
                     </span>
                   </label>
                 </fieldset>
