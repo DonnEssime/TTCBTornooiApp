@@ -33,7 +33,6 @@
     handicapValueBounds,
     isExactClosedFormBracketGrid,
     isHandicapActive,
-    supportsExtendedClosedFormBracketSeeding,
     matchPlayersResolvedForBracketPhaseList,
     normalizeHandicapConfig,
     randomPlayerHandicapValue,
@@ -143,9 +142,6 @@
     resolveClosedFormBracketSeedingKind(tournament, bracketSeedingParticipantIds, undefined),
   );
   const canPickClosedFormSeeding = $derived(closedFormSeedingKind !== null);
-  const canPickExtendClosedFormSeeding = $derived(
-    supportsExtendedClosedFormBracketSeeding(tournament, bracketSeedingParticipantIds, undefined),
-  );
   const globalGroupPlayerCount = $derived(eligibleGlobalGroupPlayerIds(tournament).length);
   const suggestedGlobalGroupTargetCount = $derived(
     closedFormGroupCountForPlayerCount(globalGroupPlayerCount),
@@ -2441,7 +2437,7 @@
           mode === 'closed_form' || mode === 'crop_closed_form'
             ? 'closed-form seeding'
             : mode === 'extend_closed_form'
-              ? 'extended closed-form seeding'
+              ? 'extended closed-form seeding (legacy)'
               : 'heuristic seeding';
         return `Generated bracket (${label}, byes filled).`;
       }
@@ -3211,13 +3207,6 @@
                       {:else if closedFormSeedingKind === 'exact'}
                         Exact G×4 grid (every group has four players).
                       {/if}
-                    </span>
-                  </label>
-                  <label class="radio-line">
-                    <input type="radio" bind:group={bracketSeedingChoice} value="extend_closed_form" disabled={!canPickExtendClosedFormSeeding} />
-                    <span>
-                      <strong>Extend to next closed form</strong>
-                      — pad to the smallest supported virtual grid, then apply the same closed layout (BYE slots).
                     </span>
                   </label>
                   <label class="radio-line">

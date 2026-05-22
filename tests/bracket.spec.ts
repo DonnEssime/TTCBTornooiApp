@@ -6,7 +6,6 @@ import {
   defaultBracketSeedingMode,
   defaultBracketSeedingModeForTournament,
   defaultBracketSeedingModeFromMeta,
-  supportsExtendedClosedFormBracketSeeding,
   forfeitPlayer,
   forfeitTeam,
   generateBracket,
@@ -690,7 +689,7 @@ describe('Group-balanced bracket seeding', () => {
     const bracket = generateBracket([...t.seedings], t, {
       fillByes: false,
       shuffleKey: 'ignored-when-balanced',
-      bracketSeedingMode: 'extend_closed_form',
+      bracketSeedingMode: 'closed_form',
     });
     const r1 = bracket.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
     const pair = (i: number) => new Set([r1[i]!.seedA, r1[i]!.seedB]);
@@ -705,7 +704,7 @@ describe('Group-balanced bracket seeding', () => {
     expect(pair(7)).toEqual(new Set(['p2', 'p15']));
   });
 
-  it('extend_closed_form when 11 players in 4 uneven groups (max size 3)', () => {
+  it('virtual closed layout when 11 players in 4 uneven groups (max size 3)', () => {
     const t = createTournament();
     for (let i = 1; i <= 11; i++) {
       const id = `p${i}`;
@@ -727,8 +726,7 @@ describe('Group-balanced bracket seeding', () => {
     t.seedings = Array.from({ length: 11 }, (_, i) => `p${i + 1}`);
 
     expect(resolveClosedFormBracketSeedingKind(t, t.seedings, undefined)).toBeNull();
-    expect(supportsExtendedClosedFormBracketSeeding(t, t.seedings, undefined)).toBe(true);
-    expect(defaultBracketSeedingModeForTournament(t, t.seedings, undefined)).toBe('extend_closed_form');
+    expect(defaultBracketSeedingModeForTournament(t, t.seedings, undefined)).toBe('heuristic');
 
     const ordered = orderParticipantsForGroupBalancedBracket(t, t.seedings, undefined, 'virtual');
     expect(ordered).not.toBeNull();
@@ -765,7 +763,7 @@ describe('Group-balanced bracket seeding', () => {
     const bracket = generateBracket([...t.seedings], t, {
       fillByes: false,
       shuffleKey: 'ignored-when-balanced',
-      bracketSeedingMode: 'extend_closed_form',
+      bracketSeedingMode: 'closed_form',
     });
     const r1 = bracket.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
     const pair = (i: number) => new Set([r1[i]!.seedA, r1[i]!.seedB]);
@@ -1050,7 +1048,7 @@ describe('Group-balanced bracket seeding', () => {
     const bracket = generateBracket([...t.seedings], t, {
       fillByes: false,
       shuffleKey: 'ignored-when-balanced',
-      bracketSeedingMode: 'extend_closed_form',
+      bracketSeedingMode: 'closed_form',
     });
     const r1 = bracket.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
     const pair = (i: number) => new Set([r1[i]!.seedA, r1[i]!.seedB]);
@@ -1115,7 +1113,7 @@ describe('Group-balanced bracket seeding', () => {
     const bracket = generateBracket([...t.seedings], t, {
       fillByes: false,
       shuffleKey: 'ignored-when-balanced',
-      bracketSeedingMode: 'extend_closed_form',
+      bracketSeedingMode: 'closed_form',
     });
     const r1 = bracket.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
     const pair = (i: number) => new Set([r1[i]!.seedA, r1[i]!.seedB]);
@@ -1461,9 +1459,9 @@ describe('defaultBracketSeedingMode', () => {
     expect(defaultBracketSeedingMode(16, 4)).toBe('closed_form');
   });
 
-  it('prefers extend_closed_form when only padding places within existing groups', () => {
-    expect(defaultBracketSeedingMode(2, 3)).toBe('extend_closed_form');
-    expect(defaultBracketSeedingMode(4, 3)).toBe('extend_closed_form');
+  it('prefers heuristic when grid is not exact G×4', () => {
+    expect(defaultBracketSeedingMode(2, 3)).toBe('heuristic');
+    expect(defaultBracketSeedingMode(4, 3)).toBe('heuristic');
   });
 
   it('prefers heuristic when virtual layout would add dummy groups', () => {

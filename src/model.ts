@@ -997,37 +997,17 @@ export function bracketGroupLayoutScope(
   return scope;
 }
 
-/** Virtual closed layout without adding dummy groups (only pads places within existing groups). */
-export function supportsExtendedClosedFormBracketSeeding(
-  tournament: Tournament,
-  participantIds: readonly PlayerId[],
-  classId: string | undefined,
-): boolean {
-  const scope = bracketGroupLayoutScope(tournament, participantIds, classId);
-  if (!scope) return false;
-  const grid = balancedBracketVirtualGridTarget(scope.G, scope.maxGroupSize);
-  return Boolean(grid && grid.G_tgt === scope.G);
-}
-
 /** True when **G×S** exactly matches a built-in closed layout (2×4, 4×4, 8×4, or 16×4). */
 export function isExactClosedFormBracketGrid(G: number, S: number): boolean {
   const grid = balancedBracketVirtualGridTarget(G, S);
   return Boolean(grid && grid.G_tgt === G && grid.S_tgt === S);
 }
 
-/** True when a virtual padded closed layout exists for this **G×S** (see {@link balancedBracketVirtualGridTarget}). */
-export function supportsExtendedClosedFormBracketGrid(G: number, S: number): boolean {
-  return balancedBracketVirtualGridTarget(G, S) !== null;
-}
-
 /**
- * Default UI seeding mode for an equal-sized **G×S** group grid: exact closed layout, virtual padding within
- * the same group count only, or heuristic when virtual padding would add dummy groups.
+ * Default UI seeding mode for an equal-sized **G×S** group grid: exact closed layout or heuristic otherwise.
  */
 export function defaultBracketSeedingMode(G: number, S: number): BracketSeedingMode {
   if (isExactClosedFormBracketGrid(G, S)) return 'closed_form';
-  const grid = balancedBracketVirtualGridTarget(G, S);
-  if (grid && grid.G_tgt === G) return 'extend_closed_form';
   return 'heuristic';
 }
 
@@ -1044,9 +1024,6 @@ export function defaultBracketSeedingModeForTournament(
 ): BracketSeedingMode {
   const closedKind = resolveClosedFormBracketSeedingKind(tournament, participantIds, classId);
   if (closedKind) return 'crop_closed_form';
-  if (supportsExtendedClosedFormBracketSeeding(tournament, participantIds, classId)) {
-    return 'extend_closed_form';
-  }
   const meta = equalSizedGroupBracketMeta(tournament, classId);
   return defaultBracketSeedingModeFromMeta(meta);
 }
@@ -1978,7 +1955,7 @@ export function cullSeedingsByGroupPlacement(
   return seedings.filter((pid) => remaining.has(pid));
 }
 
-export type BracketSeedingMode = 'closed_form' | 'extend_closed_form' | 'crop_closed_form' | 'heuristic';
+export type BracketSeedingMode = 'closed_form' | 'crop_closed_form' | 'heuristic';
 
 /** True when `G` is a built-in closed-form group count (2, 4, 8, or 16). */
 export function isClosedFormGroupCount(G: number): boolean {
@@ -2097,7 +2074,8 @@ export type GenerateBracketOptions = {
    * When a {@link Tournament} is passed into {@link generateBracket}, controls how participants are ordered
    * before single-elimination seeding. Ignored when there is no tournament or no usable group data.
    */
-  bracketSeedingMode?: BracketSeedingMode;
+  /** @deprecated `extend_closed_form` — removed from UI; still replayed from old command logs. */
+  bracketSeedingMode?: BracketSeedingMode | 'extend_closed_form';
 };
 
 export function generateBracket(
@@ -2173,10 +2151,18 @@ export function generateBracket(
     (opts.tieBreakSalt !== undefined ? String(opts.tieBreakSalt).trim() : '') || String(Date.now());
 
   if (tournament) {
-    const mode = opts.bracketSeedingMode ?? 'heuristic';
+    const modeRaw = opts.bracketSeedingMode ?? 'heuristic';
     const beKey = opts.shuffleKey !== undefined ? String(opts.shuffleKey).trim() || 'Tournament' : 'Tournament';
 
-    if (mode === 'closed_form') {
+    if (modeRaw === 'extend_closed_form') {
+      const ordered = orderParticipantsForGroupBalancedBracket(tournament, participants, opts.classId, 'virtual');
+      if (!ordered) {
+        throw new Error(
+          'Legacy extended closed-form bracket seeding requires equal-sized groups that fit a supported virtual layout (S ≤ 4, G ≤ 16, G·S ≤ 64).',
+        );
+      }
+      participants = ordered;
+    } else if (modeRaw === 'closed_form') {
       if (!resolveClosedFormBracketSeedingKind(tournament, participants, opts.classId)) {
         throw new Error(
           'Closed-form bracket seeding requires G groups (G ∈ {2,4,8,16}) with at least four players each, decided standings, and a supported G×4 layout.',
@@ -2193,7 +2179,7 @@ export function generateBracket(
         throw new Error('Closed-form bracket seeding could not build the G×4 layout for the top four per group.');
       }
       participants = ordered;
-    } else if (mode === 'crop_closed_form') {
+    } else if (modeRaw === 'crop_closed_form') {
       if (!resolveClosedFormBracketSeedingKind(tournament, participants, opts.classId)) {
         throw new Error(
           'Crop closed-form bracket seeding requires G groups (G ∈ {2,4,8,16}) with at least four players each, decided standings, and a supported G×4 layout.',
@@ -2206,14 +2192,6 @@ export function generateBracket(
       }
       participants = ordered;
       cropClosedFormLeafOrder = Boolean(split && split.culled.length > 0);
-    } else if (mode === 'extend_closed_form') {
-      const ordered = orderParticipantsForGroupBalancedBracket(tournament, participants, opts.classId, 'virtual');
-      if (!ordered) {
-        throw new Error(
-          'Extended closed-form bracket seeding requires equal-sized groups that fit a supported virtual layout (S ≤ 4, G ≤ 16, G·S ≤ 64).',
-        );
-      }
-      participants = ordered;
     } else {
       const best = bestEffortOrderParticipantsForGroupBracket(
         tournament,

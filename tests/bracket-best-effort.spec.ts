@@ -26,7 +26,7 @@ function expectedR1MatchCountAfterSeeding(
   participantIds: string[],
   shuffleKey: string,
   classId: string | undefined,
-  mode: BracketSeedingMode = 'extend_closed_form',
+  mode: BracketSeedingMode | 'extend_closed_form' = 'heuristic',
   tieBreakSalt = 'test-salt',
 ): number {
   let participants = [...participantIds];
@@ -37,7 +37,7 @@ function expectedR1MatchCountAfterSeeding(
     participants = o;
   } else if (mode === 'extend_closed_form') {
     const o = orderParticipantsForGroupBalancedBracket(t, participants, classId, 'virtual');
-    if (!o) throw new Error('expectedR1MatchCountAfterSeeding: extend_closed_form not applicable');
+    if (!o) throw new Error('expectedR1MatchCountAfterSeeding: legacy extend_closed_form not applicable');
     participants = o;
   } else {
     const best = bestEffortOrderParticipantsForGroupBracket(t, participants, classId, tieBreakSalt);
@@ -363,7 +363,7 @@ describe('bestEffortOrderParticipantsForGroupBracket', () => {
       const bm = generateBracket([...all], t, {
         fillByes: true,
         shuffleKey: key,
-        bracketSeedingMode: 'extend_closed_form',
+        bracketSeedingMode: 'heuristic',
       });
       expect(bm.length).toBe(expectedR1MatchCountAfterSeeding(t, all, key, undefined));
     }

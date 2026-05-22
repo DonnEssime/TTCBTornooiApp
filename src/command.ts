@@ -187,7 +187,7 @@ export interface GenerateBracketCommand extends CommandBase {
     cullByGroupPlacement?: boolean;
     classId?: string;
     /** When omitted, defaults to heuristic ordering in {@link generateBracket}. */
-    bracketSeedingMode?: BracketSeedingMode;
+    bracketSeedingMode?: BracketSeedingMode | 'extend_closed_form';
   };
 }
 
