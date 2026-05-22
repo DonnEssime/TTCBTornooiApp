@@ -210,6 +210,17 @@ describe('bipartition bracket leaf order', () => {
     expect(Math.abs(left.length - right.length)).toBeLessThanOrEqual(1);
   });
 
+  it('bipartitions 3 players as best alone vs the other two', () => {
+    const entries: PartitionEntry[] = [
+      { pid: 'p3', groupIndex: 0, place: 3 },
+      { pid: 'p1', groupIndex: 0, place: 1 },
+      { pid: 'p2', groupIndex: 0, place: 2 },
+    ];
+    const [left, right] = bipartitionBracketPlayers(entries);
+    expect(left.map((e) => e.pid)).toEqual(['p1']);
+    expect(right.map((e) => e.pid).sort()).toEqual(['p2', 'p3']);
+  });
+
   it('adds BYE only at terminal one-player partitions (3 → 4 leaves, one BYE)', () => {
     const entries: PartitionEntry[] = [
       { pid: 'p1', groupIndex: 0, place: 1 },
@@ -233,6 +244,20 @@ describe('bipartition bracket leaf order', () => {
     expect(left.map((e) => e.pid).sort()).toEqual(['a1', 'b2']);
     expect(right.map((e) => e.pid).sort()).toEqual(['a2', 'b1']);
     expect(buildBracketLeafOrderByBipartition(entries)).toEqual(['a1', 'b2', 'b1', 'a2']);
+  });
+
+  it('4-player bipartition with tied ranks prefers both pairs cross-group', () => {
+    const entries = [
+      { pid: 'x2', groupIndex: 0, place: 1 },
+      { pid: 'y1', groupIndex: 1, place: 1 },
+      { pid: 'x1', groupIndex: 0, place: 2 },
+      { pid: 'y2', groupIndex: 1, place: 2 },
+    ];
+    const [left, right] = bipartitionBracketPlayers(entries);
+    expect(left.map((e) => e.pid).sort()).toEqual(['x2', 'y2']);
+    expect(right.map((e) => e.pid).sort()).toEqual(['x1', 'y1']);
+    expect(left[0]!.groupIndex).not.toBe(left[1]!.groupIndex);
+    expect(right[0]!.groupIndex).not.toBe(right[1]!.groupIndex);
   });
 
   it('only gives round-1 byes to top in-group ranks, tiered (fails until bye placement is rank-aware)', () => {

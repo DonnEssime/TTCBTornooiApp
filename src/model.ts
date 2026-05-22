@@ -1052,15 +1052,20 @@ export function orderParticipantsForGroupBalancedBracket(
 
 /** Tunable bipartition penalties for {@link bestEffortOrderParticipantsForGroupBracket}. */
 export type BracketBipartitionPenaltyConfig = {
-  /** Per existing set member from the same group as the player being placed. */
+  /** Per existing set member from the same group as the candidate. */
   sameGroupPenalty: number;
-  /** Base term added for every existing set member before the rank-distance addend. */
-  crossRankBasePenalty: number;
+  /**
+   * Non-empty set rank term: multiplier × (max in-group rank − |candidate rank − average set rank|).
+   */
+  rankSpreadMultiplier: number;
+  /** Per existing set member with the same in-group rank as the candidate (non-empty sets only). */
+  sameRankPenalty: number;
 };
 
 export const DEFAULT_BRACKET_BIPARTITION_PENALTIES: BracketBipartitionPenaltyConfig = {
   sameGroupPenalty: 10,
-  crossRankBasePenalty: 1,
+  rankSpreadMultiplier: 2.5,
+  sameRankPenalty: 0.5,
 };
 
 type BracketPartitionEntry = {
@@ -1070,42 +1075,109 @@ type BracketPartitionEntry = {
   place: number;
 };
 
-function crossRankPlacementPenalty(
-  placeA: number,
-  placeB: number,
-  base: number,
-): number {
-  const diff = Math.abs(placeA - placeB);
-  return base + 1 / Math.max(1, diff);
+function maxGroupRankByGroupIndex(entries: readonly BracketPartitionEntry[]): Map<number, number> {
+  const out = new Map<number, number>();
+  for (const e of entries) {
+    const prev = out.get(e.groupIndex);
+    if (prev === undefined || e.place > prev) out.set(e.groupIndex, e.place);
+  }
+  return out;
 }
 
-function scoreBracketPartitionAssign(
-  entry: BracketPartitionEntry,
+/** Penalty a bipartition set assigns to placing {@link entry} alongside its current members. */
+function bracketSetPenaltyForPlayer(
   set: readonly BracketPartitionEntry[],
+  entry: BracketPartitionEntry,
+  maxPlaceByGroup: ReadonlyMap<number, number>,
   cfg: BracketBipartitionPenaltyConfig,
 ): number {
-  let score = 0;
+  let penalty = 0;
   for (const other of set) {
     if (other.groupIndex === entry.groupIndex) {
-      score += cfg.sameGroupPenalty;
+      penalty += cfg.sameGroupPenalty;
     }
-    score += crossRankPlacementPenalty(entry.place, other.place, cfg.crossRankBasePenalty);
   }
-  return score;
+  const maxGroupRank = maxPlaceByGroup.get(entry.groupIndex) ?? entry.place;
+  if (set.length === 0) {
+    penalty += entry.place;
+  } else {
+    for (const other of set) {
+      if (other.place === entry.place) {
+        penalty += cfg.sameRankPenalty;
+      }
+    }
+    const avgRank = set.reduce((sum, other) => sum + other.place, 0) / set.length;
+    penalty += cfg.rankSpreadMultiplier * (maxGroupRank - Math.abs(entry.place - avgRank));
+  }
+  return penalty;
+}
+
+function sortBracketPartitionEntries(
+  entries: readonly BracketPartitionEntry[],
+): BracketPartitionEntry[] {
+  return [...entries].sort(
+    (a, b) => a.place - b.place || a.groupIndex - b.groupIndex || a.pid.localeCompare(b.pid),
+  );
+}
+
+function crossGroupPairCountInBracketSets(
+  setA: readonly BracketPartitionEntry[],
+  setB: readonly BracketPartitionEntry[],
+): number {
+  let n = 0;
+  if (setA.length === 2 && setA[0]!.groupIndex !== setA[1]!.groupIndex) n++;
+  if (setB.length === 2 && setB[0]!.groupIndex !== setB[1]!.groupIndex) n++;
+  return n;
+}
+
+/** 4 → best+worst | middle pair; when ranks tie, prefer splits where both pairs are cross-group. */
+function bipartitionFourBracketPlayers(
+  sorted: readonly BracketPartitionEntry[],
+): [BracketPartitionEntry[], BracketPartitionEntry[]] {
+  const minPlace = sorted[0]!.place;
+  const maxPlace = sorted[3]!.place;
+  const highs = sorted.filter((e) => e.place === minPlace);
+  const lows = sorted.filter((e) => e.place === maxPlace);
+
+  let best: [BracketPartitionEntry[], BracketPartitionEntry[]] | undefined;
+  let bestCross = -1;
+
+  for (const h of highs) {
+    for (const l of [...lows].reverse()) {
+      if (h.pid === l.pid) continue;
+      const setA = [h, l];
+      const setB = sorted.filter((e) => e.pid !== h.pid && e.pid !== l.pid);
+      if (setB.length !== 2) continue;
+      const cross = crossGroupPairCountInBracketSets(setA, setB);
+      if (cross > bestCross) {
+        bestCross = cross;
+        best = [setA, setB];
+      }
+    }
+  }
+
+  return best ?? [[sorted[0]!, sorted[3]!], [sorted[1]!, sorted[2]!]];
 }
 
 /**
  * Greedy bipartition by alternating draft picks: A chooses the lowest-penalty unassigned player for
  * itself, then B, then A, … Subset sizes differ by at most one (`ceil(n/2)` vs `floor(n/2)`).
  * Tie-break among equal pick costs: earlier in rank / group / pid sort order.
+ *
+ * Fixed splits for small inputs (by in-group rank, best first): 3 → 1|2 (best alone); 4 → best+worst|middle pair.
  */
 export function bipartitionBracketPlayers(
   entries: readonly BracketPartitionEntry[],
   cfg: BracketBipartitionPenaltyConfig = DEFAULT_BRACKET_BIPARTITION_PENALTIES,
 ): [BracketPartitionEntry[], BracketPartitionEntry[]] {
-  const sorted = [...entries].sort(
-    (a, b) => a.place - b.place || a.groupIndex - b.groupIndex || a.pid.localeCompare(b.pid),
-  );
+  const sorted = sortBracketPartitionEntries(entries);
+  if (sorted.length === 3) {
+    return [[sorted[0]!], [sorted[1]!, sorted[2]!]];
+  }
+  if (sorted.length === 4) {
+    return bipartitionFourBracketPlayers(sorted);
+  }
+  const maxPlaceByGroup = maxGroupRankByGroupIndex(entries);
   const setA: BracketPartitionEntry[] = [];
   const setB: BracketPartitionEntry[] = [];
   const unassigned = new Set<BracketPartitionEntry>(sorted);
@@ -1117,8 +1189,8 @@ export function bipartitionBracketPlayers(
     let bestScore = Infinity;
     for (const entry of sorted) {
       if (!unassigned.has(entry)) continue;
-      const score = scoreBracketPartitionAssign(entry, target, cfg);
-      if (score <= bestScore) {
+      const score = bracketSetPenaltyForPlayer(target, entry, maxPlaceByGroup, cfg);
+      if (score < bestScore) {
         bestScore = score;
         best = entry;
       }
