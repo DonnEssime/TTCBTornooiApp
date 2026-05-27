@@ -56,6 +56,7 @@
     buildDefaultTableIds,
     matchAssignedTableId,
     matchIdOnTable,
+    matchesOnTablesInAssignmentOrder,
     planFillEmptyTablesFromReady,
   } from 'ttc-tornooiapp';
   import BracketStreamView from './BracketStreamView.svelte';
@@ -1480,18 +1481,7 @@
 
   /** Matches shown on Overview tables (in-progress live table assignments). */
   function overviewMatchesOnTables(t: Tournament): Match[] {
-    const seen = new Set<string>();
-    const out: Match[] = [];
-    for (const tableId of t.tables) {
-      const mid = matchIdOnTable(t, tableId);
-      if (!mid || seen.has(mid)) continue;
-      const m = t.matches[mid];
-      if (m && m.status === 'in-progress') {
-        seen.add(mid);
-        out.push(m);
-      }
-    }
-    return out.sort((a, b) => a.id.localeCompare(b.id));
+    return matchesOnTablesInAssignmentOrder(t);
   }
 
   function enterScoreDepsForMatch(c: TournamentController, t: Tournament, match: Match): string[] {

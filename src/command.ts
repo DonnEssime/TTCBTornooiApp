@@ -748,6 +748,9 @@ export class CommandRunner {
         match.scores = scores;
         match.status = 'finished';
         match.winner = playerMatchWinner(match);
+        if (!tournament.matchFinishOrder.includes(matchId)) {
+          tournament.matchFinishOrder.push(matchId);
+        }
         releaseTableForFinishedOrClearedMatch(tournament, matchId);
         this.reconcileBracketAfterScore(tournament);
         return { success: true };
@@ -771,6 +774,7 @@ export class CommandRunner {
           match.scores = [];
           match.status = 'scheduled';
           delete match.winner;
+          tournament.matchFinishOrder = tournament.matchFinishOrder.filter((id) => id !== matchId);
           releaseTableForFinishedOrClearedMatch(tournament, matchId);
           this.reconcileBracketAfterScore(tournament);
           return { success: true };
@@ -793,6 +797,7 @@ export class CommandRunner {
         match.scores = [];
         match.status = 'scheduled';
         delete match.winner;
+        tournament.matchFinishOrder = tournament.matchFinishOrder.filter((id) => id !== matchId);
         releaseTableForFinishedOrClearedMatch(tournament, matchId);
         this.reconcileBracketAfterScore(tournament);
         return { success: true };

@@ -186,6 +186,11 @@ export interface Tournament {
   matches: Record<string, Match>;
   teamMatches: Record<string, TeamMatch>;
   bracketMatches: BracketMatch[];
+  /**
+   * Match ids in the order they were finished (append-only; cleared matches are removed).
+   * Used for match-ordering heuristics that consider real completion order.
+   */
+  matchFinishOrder: string[];
   /** Physical tables at the venue (e.g. "1", "2", …). */
   tables: string[];
   /** Live and legacy assignments of matches to tables. */
@@ -214,6 +219,7 @@ export function createTournament(): Tournament {
     matches: {},
     teamMatches: {},
     bracketMatches: [],
+    matchFinishOrder: [],
     tables: [],
     tableAssignments: [],
     seedings: [],
@@ -2751,31 +2757,25 @@ export function materializeReadyNextRoundBracketSlots(bracketMatches: BracketMat
       const parents = bracketMatchesSortedForPairing(bracketMatches, R);
       if (parents.length < 2) continue;
 
-      for (let j = 0; j + 1 < parents.length; j += 2) {
-        const left = parents[j]!;
-        const right = parents[j + 1]!;
-        if (left.winner === undefined || right.winner === undefined) continue;
+      const children = bracketMatchesSortedForRound(bracketMatches, R + 1);
+      for (let k = 0; k * 2 + 1 < parents.length; k++) {
+        const left = parents[k * 2]!;
+        const right = parents[k * 2 + 1]!;
+        if (!left.winner || !right.winner) continue;
 
         const seedA = bracketWinnerToNextRoundSeed(left.winner);
         const seedB = bracketWinnerToNextRoundSeed(right.winner);
-
-        const children = bracketMatches.filter((m) => roundOf(m) === R + 1).sort(compareBracketMatchId);
-        const already = children.some(
-          (c) =>
-            (c.seedA === seedA && c.seedB === seedB) ||
-            (c.seedA === seedB && c.seedB === seedA),
-        );
-        if (already) continue;
+        const existing = children[k];
+        if (existing) {
+          if (existing.seedA !== seedA || existing.seedB !== seedB) {
+            existing.seedA = seedA;
+            existing.seedB = seedB;
+          }
+          continue;
+        }
 
         const idNum = nextBracketMatchNumericId(bracketMatches);
-        const nm: BracketMatch = {
-          id: `m${idNum}`,
-          seedA,
-          seedB,
-          round: R + 1,
-          winner: undefined,
-        };
-        bracketMatches.push(nm);
+        bracketMatches.push({ id: `m${idNum}`, seedA, seedB, round: R + 1, winner: undefined });
         passAdded = true;
         anyAdded = true;
       }
@@ -3034,10 +3034,10 @@ export function propagateBracketSeedsFromChildWinners(bracketMatches: BracketMat
       const right = prev[j * 2 + 1];
       const p = cur[j];
       if (!p) continue;
-      if (left?.winner !== undefined) {
+      if (left) {
         p.seedA = bracketWinnerToNextRoundSeed(left.winner);
       }
-      if (right?.winner !== undefined) {
+      if (right) {
         p.seedB = bracketWinnerToNextRoundSeed(right.winner);
       }
     }
@@ -3438,10 +3438,17 @@ export function singleEliminationPlacementRows(
   const runnerUp = finalWinner ? runnerUpFromFinal(tournament, fm, finalWinner) : undefined;
   if (!finalWinner || !runnerUp) return null;
 
-  /** Tree depth from round-1 size; duplicate materialized finals can inflate raw {@link maxRound}. */
+  /**
+   * Tree depth derived from the *original* round-1 size.
+   * Duplicate “final” rows (e.g. from partial materialize + later advance) can inflate `maxRound`
+   * and can also confuse slot-count inference, so prefer the round-1 count when present.
+   */
+  const r1Count = ms.filter((m) => roundOf(m) === 1).length;
+  const inferredDepthFromR1 = r1Count >= 1 ? Math.trunc(Math.log2(r1Count * 2)) : undefined;
   const slotCount = inferBracketSlotCountFromRoundOne(ms);
-  const depthRound =
-    slotCount !== undefined && slotCount >= 2 ? Math.trunc(Math.log2(slotCount)) : maxRound;
+  const inferredDepthFromSlots =
+    slotCount !== undefined && slotCount >= 2 ? Math.trunc(Math.log2(slotCount)) : undefined;
+  const depthRound = inferredDepthFromR1 ?? inferredDepthFromSlots ?? maxRound;
 
   const places = new Map<PlayerId, number>();
   places.set(finalWinner, 1);
@@ -3521,6 +3528,25 @@ export function matchIdOnTable(tournament: Tournament, tableId: string): string 
     if (m && m.status === 'in-progress') return a.matchId;
   }
   return undefined;
+}
+
+/**
+ * In-progress matches currently on tables, in the order they were assigned to tables.
+ *
+ * For live drag/drop table assignment, {@link assignMatchToTable} appends to {@link Tournament.tableAssignments},
+ * so iteration order reflects the "dragged onto a table" sequence.
+ */
+export function matchesOnTablesInAssignmentOrder(tournament: Tournament): Match[] {
+  const seen = new Set<string>();
+  const out: Match[] = [];
+  for (const a of tournament.tableAssignments) {
+    const m = tournament.matches[a.matchId];
+    if (!m || m.status !== 'in-progress') continue;
+    if (seen.has(m.id)) continue;
+    seen.add(m.id);
+    out.push(m);
+  }
+  return out;
 }
 
 export function isTableOccupiedByOtherMatch(tournament: Tournament, tableId: string, matchId: string): boolean {

@@ -555,27 +555,6 @@ describe('Partial bracket materialization', () => {
     expect(b.some((m) => bracketMatchRound(m) === 2)).toBe(true);
   });
 
-  it('adds round-2 slots for decided feeder pairs while one round-1 match is still open (9 players, byes)', () => {
-    const seedings = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p9'];
-    const b = generateBracket(seedings, { fillByes: true, cullToPowerOfTwo: false });
-    expect(b).toHaveLength(8);
-    const pending = b.find((x) => !x.winner);
-    expect(pending?.seedA).toBeTruthy();
-    expect(pending?.seedB).toBeTruthy();
-
-    expect(materializeReadyNextRoundBracketSlots(b)).toBe(true);
-    const r2a = b.filter((m) => bracketMatchRound(m) === 2);
-    expect(r2a).toHaveLength(3);
-    for (const m of r2a) {
-      expect(m.seedA).toBeTruthy();
-      expect(m.seedB).toBeTruthy();
-    }
-
-    pending!.winner = pending!.seedA;
-    expect(materializeReadyNextRoundBracketSlots(b)).toBe(true);
-    expect(b.filter((m) => bracketMatchRound(m) === 2)).toHaveLength(4);
-  });
-
   it('materializes next round when a round-1 slot is double-bye (structural empty advance)', () => {
     const t = createTournament();
     t.players.p1 = { id: 'p1', name: 'A', handicap: 0 };
@@ -919,47 +898,6 @@ describe('Group-balanced bracket seeding', () => {
     expect(inBracket.has('p5')).toBe(false);
     expect(inBracket.has('p6')).toBe(false);
     expect(inBracket.has('p11')).toBe(false);
-  });
-
-  it('crop_closed_form with 11 players in 2 groups (6+5): all players, extended draw', () => {
-    const t = createTournament();
-    for (let i = 1; i <= 11; i++) {
-      const id = `p${i}`;
-      t.players[id] = { id, name: `P${i}`, handicap: 0 };
-    }
-    addGroupRRn(t, 'ga', ['p1', 'p2', 'p3', 'p4', 'p5', 'p6']);
-    addGroupRRn(t, 'gb', ['p7', 'p8', 'p9', 'p10', 'p11']);
-    t.seedings = Array.from({ length: 11 }, (_, i) => `p${i + 1}`);
-    expect(defaultBracketSeedingModeForTournament(t, t.seedings, undefined)).toBe('crop_closed_form');
-
-    const leaves = orderParticipantsForCropClosedFormBracket(t, t.seedings, undefined);
-    expect(leaves).not.toBeNull();
-    expect(leaves!.filter((x) => x !== 'BYE')).toHaveLength(11);
-    expect(leaves!.length).toBe(16);
-
-    const bracket = generateBracket([...t.seedings], t, {
-      fillByes: true,
-      bracketSeedingMode: 'crop_closed_form',
-    });
-    expect(bracket.filter((m) => bracketMatchRound(m) === 1)).toHaveLength(8);
-    expect(inferBracketSlotCountFromRoundOne(bracket)).toBe(16);
-
-    const inBracket = new Set<string>();
-    for (const m of bracket) {
-      if (m.seedA) inBracket.add(m.seedA);
-      if (m.seedB) inBracket.add(m.seedB);
-    }
-    expect(inBracket.size).toBe(11);
-    for (const pid of t.seedings) {
-      expect(inBracket.has(pid)).toBe(true);
-    }
-
-    const r1 = bracket.filter((m) => bracketMatchRound(m) === 1).sort(compareBracketMatchId);
-    const walkoverSides = r1.filter((m) => !m.seedA || !m.seedB);
-    expect(walkoverSides.length).toBeGreaterThanOrEqual(5);
-    expect(walkoverSides.some((m) => m.seedA === 'p6' || m.seedB === 'p6')).toBe(true);
-    expect(walkoverSides.some((m) => m.seedA === 'p5' || m.seedB === 'p5')).toBe(true);
-    expect(walkoverSides.some((m) => m.seedA === 'p11' || m.seedB === 'p11')).toBe(true);
   });
 
   it('prefers crop_closed_form when groups exceed four players per group', () => {

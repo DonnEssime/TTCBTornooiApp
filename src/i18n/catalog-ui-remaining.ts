@@ -190,6 +190,23 @@ export const uiRemainingCatalog = {
     'Ga naar {{settings}} om een tornooi aan te maken of JSONL te importeren.',
   ),
   'ui.empty.importedTournament': t('Imported tournament', 'Geïmporteerd tornooi'),
+  'ui.ov.orderingLabel': t('Ordering', 'Volgorde'),
+  'ui.ov.ordering.groupCompletionStaggered': t(
+    'Group completion (staggered)',
+    'Groepsvoortgang (gespreid)',
+  ),
+  'ui.ov.ordering.minWavesAvoidBackToBack': t(
+    'Minimize waves (avoid back-to-back)',
+    'Minimaliseer rondes (vermijd opeenvolgend)',
+  ),
+  'ui.ov.scheduleWavesEstimate': t(
+    'About {{waves}} match waves left ({{count}} matches on {{tables}} tables)',
+    'Ongeveer {{waves}} matchrondes te gaan ({{count}} matches op {{tables}} tafels)',
+  ),
+  'ui.ov.scheduleWavesNoTables': t(
+    'Add tables to estimate match-time units for the ready queue.',
+    'Voeg tafels toe om wedstrijd-eenheden voor de klaarstaande wedstrijden te schatten.',
+  ),
   'ui.ov.debugSimulateTables': t(
     '[DEBUG] Simulate table matches',
     '[DEBUG] Tafelwedstrijden simuleren',

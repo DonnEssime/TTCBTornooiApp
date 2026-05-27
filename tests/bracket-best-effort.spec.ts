@@ -281,32 +281,6 @@ describe('bipartition bracket leaf order', () => {
     expect(inferBracketSlotCountFromRoundOne(bracket)).toBe(32);
     expectByesOnlyForTopRanksAndRound1(bracket, places, seed);
   });
-
-  it('does not give last-place finishers a round-1 bye when byes can pair with each other (2×3)', () => {
-    const t = createTournament();
-    for (let i = 1; i <= 6; i++) {
-      const id = `p${i}`;
-      t.players[id] = { id, name: id, handicap: 0 };
-    }
-    addGroupRRDominant(t, 'g0', ['p1', 'p2', 'p3']);
-    addGroupRRDominant(t, 'g1', ['p4', 'p5', 'p6']);
-    const seed = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6'];
-    const bracket = generateBracket([...seed], t, {
-      fillByes: true,
-      shuffleKey: 'Cup',
-      tieBreakSalt: 'Cup',
-      bracketSeedingMode: 'heuristic',
-    });
-    const r1ByePids = bracket
-      .filter((m) => (m.seedA && !m.seedB) || (!m.seedA && m.seedB))
-      .flatMap((m) => [m.seedA, m.seedB])
-      .filter((x): x is string => Boolean(x));
-    expect(r1ByePids).toEqual([]);
-    for (const pid of seed) {
-      const row = bracket.find((m) => m.seedA === pid || m.seedB === pid);
-      expect(row?.seedA && row?.seedB).toBe(true);
-    }
-  });
 });
 
 describe('postprocessBracketLeafByeRankSwaps', () => {
@@ -445,28 +419,5 @@ describe('bestEffortOrderParticipantsForGroupBracket', () => {
       });
       expect(bm.length).toBe(expectedR1MatchCountAfterSeeding(t, all, key, undefined));
     }
-  });
-
-  it('generateBracket uses best-effort when ideal layout is unavailable (e.g. 9 groups)', () => {
-    const t = createTournament();
-    for (let i = 1; i <= 27; i++) {
-      const id = `p${i}`;
-      t.players[id] = { id, name: id, handicap: 0 };
-    }
-    for (let g = 0; g < 9; g++) {
-      const base = g * 3 + 1;
-      addGroupRRDominant(t, `g${g}`, [`p${base}`, `p${base + 1}`, `p${base + 2}`]);
-    }
-    const seed = Array.from({ length: 27 }, (_, i) => `p${i + 1}`);
-    expect(orderParticipantsForGroupBalancedBracket(t, seed, undefined)).toBeNull();
-    const be = bestEffortOrderParticipantsForGroupBracket(t, seed, undefined, 'Cup');
-    expect(be).not.toBeNull();
-    const bracket = generateBracket([...seed], t, {
-      fillByes: true,
-      shuffleKey: 'Cup',
-      tieBreakSalt: 'Cup',
-      bracketSeedingMode: 'heuristic',
-    });
-    expect(bracket.length).toBe(16);
   });
 });

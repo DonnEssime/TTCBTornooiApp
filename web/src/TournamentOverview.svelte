@@ -8,10 +8,15 @@
     bracketRoundAggregatesIncludingFutureRounds,
     bracketSlotAwaitingPlay,
     compareBracketMatchId,
+    groupPhaseCounts,
+    groupCompletionStaggeredOrder,
     inProgressMatchIdsForPlayer,
     matchAssignedTableId,
     matchIdOnTable,
     matchPlayersResolvedForBracketPhaseList,
+    estimateScheduleWaves,
+    matchesOnTablesInAssignmentOrder,
+    minWavesAvoidBackToBackOrder,
   } from 'ttc-tornooiapp';
   import PlayerName from './PlayerName.svelte';
   import Msg from './i18n/Msg.svelte';
@@ -59,6 +64,30 @@
   let draggingSource = $state<DndSource | null>(null);
   let dragOverTableId = $state<string | null>(null);
   let dragOverReady = $state(false);
+  type ReadyOrderingChoice = 'groupCompletionStaggered' | 'minWavesAvoidBackToBack';
+  const READY_ORDERING_KEY = 'ttc.readyOrderingAlgorithm';
+
+  function loadReadyOrderingChoice(): ReadyOrderingChoice {
+    if (typeof localStorage === 'undefined') return 'groupCompletionStaggered';
+    const stored = localStorage.getItem(READY_ORDERING_KEY);
+    return stored === 'minWavesAvoidBackToBack' || stored === 'groupCompletionStaggered'
+      ? (stored as ReadyOrderingChoice)
+      : 'groupCompletionStaggered';
+  }
+
+  let readyOrderingChoice = $state<ReadyOrderingChoice>(loadReadyOrderingChoice());
+
+  function setReadyOrderingChoice(next: ReadyOrderingChoice): void {
+    readyOrderingChoice = next;
+    lastReadyIds = [];
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(READY_ORDERING_KEY, next);
+    }
+  }
+
+  function sameIdOrder(a: readonly string[], b: readonly string[]): boolean {
+    return a.length === b.length && a.every((id, i) => id === b[i]);
+  }
 
   function resetDragState(): void {
     draggingMatchId = null;
@@ -223,20 +252,6 @@
     });
   }
 
-  function groupMatchFinished(m: Match): boolean {
-    return m.status === 'finished' && Boolean(m.winner);
-  }
-
-  function groupPhaseCounts(matches: Match[]): { total: number; done: number } {
-    let total = 0;
-    let done = 0;
-    for (const m of matches) {
-      total++;
-      if (groupMatchFinished(m)) done++;
-    }
-    return { total, done };
-  }
-
   function pct(done: number, total: number): number {
     if (total <= 0) return 0;
     return Math.round((100 * done) / total);
@@ -253,50 +268,10 @@
     });
   }
 
-  /** Stable key for (competition class × group) when staggering ready group matches. */
-  function groupReadyStaggerKey(m: Match): string {
-    return `${m.classId ?? ''}\t${m.groupId ?? ''}`;
-  }
-
-  /**
-   * Order ready group matches so groups stay in step: repeatedly pick a match from the group whose
-   * **simulated** completion ratio is lowest, assuming each previously chosen match is already done
-   * (increment simulated `done` for that group only).
-   */
-  function simulatedStaggeredGroupReadyOrder(t: Tournament, matches: Match[]): Match[] {
-    if (matches.length <= 1) return [...matches];
-    const rem = [...matches];
-    const totals = new Map<string, { total: number; simDone: number }>();
-    for (const m of matches) {
-      const k = groupReadyStaggerKey(m);
-      if (!totals.has(k)) {
-        const classScope = m.classId ?? undefined;
-        const gm = groupMatchesFiltered(t, classScope).filter((x) => x.groupId === m.groupId);
-        const { done, total } = groupPhaseCounts(gm);
-        totals.set(k, { total, simDone: done });
-      }
-    }
-    const out: Match[] = [];
-    while (rem.length > 0) {
-      let bestIdx = 0;
-      let bestRatio = Infinity;
-      let bestId = '\uffff';
-      for (let i = 0; i < rem.length; i++) {
-        const m = rem[i]!;
-        const rec = totals.get(groupReadyStaggerKey(m))!;
-        const ratio = rec.total <= 0 ? 0 : rec.simDone / rec.total;
-        const id = m.id;
-        if (ratio < bestRatio || (ratio === bestRatio && id.localeCompare(bestId) < 0)) {
-          bestRatio = ratio;
-          bestId = id;
-          bestIdx = i;
-        }
-      }
-      const picked = rem.splice(bestIdx, 1)[0]!;
-      out.push(picked);
-      totals.get(groupReadyStaggerKey(picked))!.simDone += 1;
-    }
-    return out;
+  function groupProgressForMatch(t: Tournament, m: Match): { total: number; done: number } {
+    const classScope = m.classId ?? undefined;
+    const gm = groupMatchesFiltered(t, classScope).filter((x) => x.groupId === m.groupId);
+    return groupPhaseCounts(gm);
   }
 
   function groupDefForMatch(t: Tournament, m: Match): GroupDefinition | undefined {
@@ -433,7 +408,11 @@
     for (const tr of tracks) {
       list.push(...readyGroupMatches(tournament, tr.classId));
     }
-    return simulatedStaggeredGroupReadyOrder(tournament, list);
+    switch (readyOrderingChoice) {
+      case 'groupCompletionStaggered':
+      default:
+        return groupCompletionStaggeredOrder(list, (m) => groupProgressForMatch(tournament, m));
+    }
   });
 
   function matchOnTable(tableId: string): Match | undefined {
@@ -467,18 +446,95 @@
     return list;
   });
 
-  function readyMatchIdsInDisplayOrder(): string[] {
+  type ReadyDisplayEntry =
+    | { kind: 'group'; match: Match }
+    | { kind: 'bracket'; bm: BracketMatch; meta: string; classId: string | undefined; matchId: string };
+
+  // Warm-start tie-break hint. Must NOT be $state — a reactive write would loop with $derived below.
+  let lastReadyIds: string[] = [];
+
+  const readyMatchIdsAllOrdered = $derived.by((): string[] => {
     const ids: string[] = [];
     for (const m of readyGroupsAll) ids.push(m.id);
     for (const item of readyBracketsAll) {
       const mid = readyBracketPlayableMatchId(tournament, item.bm, item.classId);
       if (mid) ids.push(mid);
     }
-    return ids;
-  }
+
+    if (readyOrderingChoice !== 'minWavesAvoidBackToBack') {
+      return ids;
+    }
+
+    const readyMatches: Match[] = [];
+    for (const id of ids) {
+      const m = tournament.matches[id];
+      if (m) readyMatches.push(m);
+    }
+
+    const pastFinished: Match[] = [];
+    for (const mid of tournament.matchFinishOrder ?? []) {
+      const m = tournament.matches[mid];
+      if (m) pastFinished.push(m);
+    }
+
+    const inProgress = matchesOnTablesInAssignmentOrder(tournament);
+
+    const ordered = minWavesAvoidBackToBackOrder(readyMatches, {
+      tableCount: tournament.tables.length,
+      pastFinishedInOrder: pastFinished,
+      inProgressInAssignmentOrder: inProgress,
+      preferredReadyOrderIds: lastReadyIds,
+    });
+    return ordered.map((m) => m.id);
+  });
+
+  // Remember the last computed order for the next tournament-state change (non-reactive write).
+  $effect(() => {
+    const ids = readyMatchIdsAllOrdered;
+    if (ids.length === 0 || sameIdOrder(ids, lastReadyIds)) return;
+    lastReadyIds = ids;
+  });
+
+  /** Ready queue in display order (single list mirrors optimizer / wave estimate). */
+  const readyAllDisplay = $derived.by((): ReadyDisplayEntry[] => {
+    const groupById = new Map(readyGroupsAll.map((m) => [m.id, m] as const));
+    const bracketByMatchId = new Map<string, { bm: BracketMatch; meta: string; classId: string | undefined }>();
+    for (const item of readyBracketsAll) {
+      const mid = readyBracketPlayableMatchId(tournament, item.bm, item.classId);
+      if (mid) bracketByMatchId.set(mid, item);
+    }
+
+    const out: ReadyDisplayEntry[] = [];
+    for (const id of readyMatchIdsAllOrdered) {
+      const group = groupById.get(id);
+      if (group) {
+        out.push({ kind: 'group', match: group });
+        continue;
+      }
+      const bracket = bracketByMatchId.get(id);
+      if (bracket) {
+        out.push({ kind: 'bracket', ...bracket, matchId: id });
+      }
+    }
+    return out;
+  });
+
+  const readyScheduleSlots = $derived.by(() => {
+    const slots: Array<{ playerA: string; playerB: string }> = [];
+    for (const mid of readyMatchIdsAllOrdered) {
+      const m = tournament.matches[mid];
+      if (!m) continue;
+      slots.push({ playerA: m.playerA, playerB: m.playerB });
+    }
+    return slots;
+  });
+
+  const readyScheduleWaveEstimate = $derived.by(() =>
+    estimateScheduleWaves(readyScheduleSlots, tournament.tables.length),
+  );
 
   function debugFillEmptyTables(): void {
-    onDebugFillReadyTables?.(readyMatchIdsInDisplayOrder());
+    onDebugFillReadyTables?.(readyMatchIdsAllOrdered);
   }
 </script>
 
@@ -563,19 +619,48 @@
     >
       <div class="ov-ready-head">
         <h3 class="ov-h"><Msg key="ui.ready_to_play" /></h3>
+        <label class="ov-ordering-row">
+          <span class="muted small"><Msg key="ui.ov.orderingLabel" /></span>
+          <select
+            class="ov-ordering-select"
+            value={readyOrderingChoice}
+            onchange={(e) => setReadyOrderingChoice((e.currentTarget as HTMLSelectElement).value as ReadyOrderingChoice)}
+          >
+            <option value="groupCompletionStaggered"><Msg key="ui.ov.ordering.groupCompletionStaggered" /></option>
+            <option value="minWavesAvoidBackToBack"><Msg key="ui.ov.ordering.minWavesAvoidBackToBack" /></option>
+          </select>
+        </label>
         {#if showDebugUi}
           <button type="button" class="ov-debug-btn" onclick={debugFillEmptyTables}>
             <Msg key="ui.ov.debugFillTables" />
           </button>
         {/if}
       </div>
-      {#if readyGroupsAll.length === 0 && readyBracketsAll.length === 0}
+      {#if readyAllDisplay.length > 0}
+        {#if tournament.tables.length > 0 && readyScheduleSlots.length > 0}
+          <p class="muted small ov-waves-estimate">
+            <Msg
+              key="ui.ov.scheduleWavesEstimate"
+              params={{
+                waves: String(readyScheduleWaveEstimate),
+                count: String(readyScheduleSlots.length),
+                tables: String(tournament.tables.length),
+              }}
+            />
+          </p>
+        {:else if readyScheduleSlots.length > 0}
+          <p class="muted small ov-waves-estimate">
+            <Msg key="ui.ov.scheduleWavesNoTables" />
+          </p>
+        {/if}
+      {/if}
+      {#if readyAllDisplay.length === 0}
         <p class="muted small"><Msg key="ui.ov.nothingToHighlight" tag="p" class="muted small" /></p>
       {:else}
-        {#if readyGroupsAll.length > 0}
-          <h4 class="ov-h4"><Msg key="ui.group" /></h4>
-          <ul class="ov-ready-list">
-            {#each readyGroupsAll as m (m.id)}
+        <ul class="ov-ready-list">
+          {#each readyAllDisplay as entry (entry.kind === 'group' ? entry.match.id : entry.bm.id)}
+            {#if entry.kind === 'group'}
+              {@const m = entry.match}
               {@const readyConstraint = readyMatchTableConstraint(tournament, m.id, m.playerA, m.playerB)}
               <li
                 class="ov-ready-item"
@@ -589,55 +674,39 @@
                   <span class="ov-ready-pair"
                     ><PlayerName {tournament} playerId={m.playerA} tag="strong" />
                     <Msg key="ui.ov.vs" tag="span" />
-                    <PlayerName
-                      {tournament}
-                      playerId={m.playerB}
-                      tag="strong"
-                    /></span
+                    <PlayerName {tournament} playerId={m.playerB} tag="strong" /></span
                   >
                   <span class="muted small ov-ready-meta">{readyGroupMatchMeta(tournament, m)}</span>
                 </button>
               </li>
-            {/each}
-          </ul>
-        {/if}
-        {#if readyBracketsAll.length > 0}
-          <h4 class="ov-h4"><Msg key="ui.knockout" /></h4>
-          <ul class="ov-ready-list">
-            {#each readyBracketsAll as item (item.bm.id)}
-              {@const bracketMid = readyBracketPlayableMatchId(tournament, item.bm, item.classId)}
-              {@const bracketMatch = bracketMid ? tournament.matches[bracketMid] : undefined}
+            {:else}
+              {@const bracketMid = entry.matchId}
+              {@const bracketMatch = tournament.matches[bracketMid]}
               {@const readyConstraint =
-                bracketMatch && bracketMid
+                bracketMatch
                   ? readyMatchTableConstraint(tournament, bracketMid, bracketMatch.playerA, bracketMatch.playerB)
                   : { hasBusyPlayer: false, swapTargetTableId: null, incumbentMatchId: null }}
               <li
                 class="ov-ready-item"
-                class:ov-ready-not-draggable={!bracketMid}
+                class:ov-ready-not-draggable={!bracketMatch}
                 class:ov-ready-busy={readyConstraint.hasBusyPlayer}
-                draggable={Boolean(bracketMid)}
-                class:ov-dragging={bracketMid !== null && draggingMatchId === bracketMid}
-                ondragstart={(e) => {
-                  if (bracketMid) handleDragStart(e, bracketMid, 'ready');
-                }}
+                draggable={Boolean(bracketMatch)}
+                class:ov-dragging={draggingMatchId === bracketMid}
+                ondragstart={(e) => handleDragStart(e, bracketMid, 'ready')}
                 ondragend={handleDragEnd}
               >
-                <button type="button" class="ov-ready-btn" onclick={() => onOpenBracketSlot(item.bm)}>
+                <button type="button" class="ov-ready-btn" onclick={() => onOpenBracketSlot(entry.bm)}>
                   <span class="ov-ready-pair"
-                    ><PlayerName {tournament} playerId={item.bm.seedA!} tag="strong" />
+                    ><PlayerName {tournament} playerId={entry.bm.seedA!} tag="strong" />
                     <Msg key="ui.ov.vs" tag="span" />
-                    <PlayerName
-                      {tournament}
-                      playerId={item.bm.seedB!}
-                      tag="strong"
-                    /></span
+                    <PlayerName {tournament} playerId={entry.bm.seedB!} tag="strong" /></span
                   >
-                  <span class="muted small ov-ready-meta">{item.meta}</span>
+                  <span class="muted small ov-ready-meta">{entry.meta}</span>
                 </button>
               </li>
-            {/each}
-          </ul>
-        {/if}
+            {/if}
+          {/each}
+        </ul>
       {/if}
     </section>
   </div>
@@ -881,6 +950,27 @@
 
   .ov-ready-head .ov-h {
     margin-bottom: 0;
+  }
+
+  .ov-ordering-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-shrink: 0;
+  }
+
+  .ov-ordering-select {
+    font: inherit;
+    font-size: 0.78rem;
+    padding: 0.22rem 0.4rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    background: #fff;
+    color: #0f172a;
+  }
+
+  .ov-waves-estimate {
+    margin: 0 0 0.65rem;
   }
 
   .ov-debug-btn {
