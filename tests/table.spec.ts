@@ -7,6 +7,7 @@ import {
   createTournament,
   matchAssignedTableId,
   matchIdOnTable,
+  planFillEmptyTablesFromReady,
   setTournamentTables,
 } from '../src/model';
 
@@ -198,6 +199,46 @@ describe('Tournament tables', () => {
     c.undo('clr');
     expect(c.getTournament().matches['m']?.status).toBe('in-progress');
     expect(matchAssignedTableId(c.getTournament(), 'm')).toBe('2');
+  });
+
+  it('planFillEmptyTablesFromReady assigns up-next non-overlapping matches to free tables', () => {
+    const t = createTournament();
+    for (const id of ['a', 'b', 'c', 'd']) {
+      t.players[id] = { id, name: id.toUpperCase(), handicap: 0 };
+    }
+    t.matches['m1'] = { id: 'm1', playerA: 'a', playerB: 'b', scores: [], status: 'scheduled', groupId: 'g1' };
+    t.matches['m2'] = { id: 'm2', playerA: 'a', playerB: 'c', scores: [], status: 'scheduled', groupId: 'g1' };
+    t.matches['m3'] = { id: 'm3', playerA: 'c', playerB: 'd', scores: [], status: 'scheduled', groupId: 'g1' };
+    setTournamentTables(t, ['1', '2']);
+
+    expect(planFillEmptyTablesFromReady(t, ['m1', 'm2', 'm3'])).toEqual([
+      { matchId: 'm1', tableId: '1' },
+      { matchId: 'm3', tableId: '2' },
+    ]);
+  });
+
+  it('planFillEmptyTablesFromReady skips matches for players already on a table', () => {
+    const t = createTournament();
+    for (const id of ['a', 'b', 'c', 'd']) {
+      t.players[id] = { id, name: id.toUpperCase(), handicap: 0 };
+    }
+    t.matches['m1'] = { id: 'm1', playerA: 'a', playerB: 'b', scores: [], status: 'scheduled', groupId: 'g1' };
+    t.matches['m2'] = { id: 'm2', playerA: 'c', playerB: 'd', scores: [], status: 'scheduled', groupId: 'g1' };
+    setTournamentTables(t, ['1', '2']);
+    assignMatchToTable(t, 'm1', '1');
+
+    expect(planFillEmptyTablesFromReady(t, ['m1', 'm2'])).toEqual([{ matchId: 'm2', tableId: '2' }]);
+  });
+
+  it('planFillEmptyTablesFromReady returns empty when no tables are free', () => {
+    const t = createTournament();
+    t.players['a'] = { id: 'a', name: 'A', handicap: 0 };
+    t.players['b'] = { id: 'b', name: 'B', handicap: 0 };
+    t.matches['m1'] = { id: 'm1', playerA: 'a', playerB: 'b', scores: [], status: 'scheduled' };
+    setTournamentTables(t, ['1']);
+    assignMatchToTable(t, 'm1', '1');
+
+    expect(planFillEmptyTablesFromReady(t, ['m1'])).toEqual([]);
   });
 
   it('reducing table count releases assignments on removed tables', () => {

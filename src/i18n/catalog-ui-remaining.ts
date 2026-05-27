@@ -176,6 +176,22 @@ export const uiRemainingCatalog = {
     'Ga naar {{settings}} om een tornooi aan te maken of JSONL te importeren.',
   ),
   'ui.empty.importedTournament': t('Imported tournament', 'Geïmporteerd tornooi'),
+  'ui.ov.debugSimulateTables': t(
+    '[DEBUG] Simulate table matches',
+    '[DEBUG] Tafelwedstrijden simuleren',
+  ),
+  'ui.ov.debugFillTables': t(
+    '[DEBUG] Fill empty tables',
+    '[DEBUG] Lege tafels vullen',
+  ),
+  'ui.ov.debugFillTablesNoFreeTables': t(
+    'No free tables to assign matches to.',
+    'Geen vrije tafels om wedstrijden aan toe te wijzen.',
+  ),
+  'ui.ov.debugFillTablesNoMatches': t(
+    'No ready matches can be assigned to free tables (players may already be playing).',
+    'Geen klaarstaande wedstrijden kunnen aan vrije tafels worden toegewezen (spelers spelen mogelijk al).',
+  ),
   'ui.ov.dndHint': t(
     'Drag matches from Ready to play onto a table; drag back to unassign.',
     'Sleep wedstrijden van "Klaar om te spelen" naar een tafel; sleep terug om toewijzingen ongedaan te maken.',

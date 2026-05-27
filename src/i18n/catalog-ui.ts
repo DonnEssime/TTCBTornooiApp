@@ -149,6 +149,10 @@ export const uiCatalog = {
     'No group matches awaiting scores to simulate.',
     'Geen poule-wedstrijden met openstaande scores om te simuleren.',
   ),
+  'ui.no_matches_on_tables_to_simulate': t(
+    'No matches are currently playing on tables.',
+    'Er spelen momenteel geen wedstrijden aan tafels.',
+  ),
   'ui.no_group_matches_yet_create_groups_on_the_group_': t(
     'No group matches yet (create groups on the Group phase tab).',
     'Nog geen poule-wedstrijden (maak groepen aan op het tabblad Groepsfase).',

@@ -56,6 +56,7 @@
     buildDefaultTableIds,
     matchAssignedTableId,
     matchIdOnTable,
+    planFillEmptyTablesFromReady,
   } from 'ttc-tornooiapp';
   import BracketStreamView from './BracketStreamView.svelte';
   import { displayBracketColumns } from './bracketStream/displayColumns';
@@ -1439,6 +1440,115 @@
         }
       }
       showInfoKey('ui.toast.debugAddedPlayers', { n: String(n) });
+    });
+  }
+
+  /** Matches shown on Overview tables (in-progress live table assignments). */
+  function overviewMatchesOnTables(t: Tournament): Match[] {
+    const seen = new Set<string>();
+    const out: Match[] = [];
+    for (const tableId of t.tables) {
+      const mid = matchIdOnTable(t, tableId);
+      if (!mid || seen.has(mid)) continue;
+      const m = t.matches[mid];
+      if (m && m.status === 'in-progress') {
+        seen.add(mid);
+        out.push(m);
+      }
+    }
+    return out.sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  function enterScoreDepsForMatch(c: TournamentController, t: Tournament, match: Match): string[] {
+    const pairingPred = (x: BracketMatch) =>
+      Boolean(
+        x.seedA &&
+          x.seedB &&
+          ((x.seedA === match.playerA && x.seedB === match.playerB) ||
+            (x.seedA === match.playerB && x.seedB === match.playerA)),
+      );
+    let bm: BracketMatch | undefined;
+    if (match.id.startsWith('match-')) {
+      bm = bracketMatchBySlotId(t, match.id.slice('match-'.length));
+    }
+    if (!bm) bm = t.bracketMatches.find(pairingPred);
+    if (!bm) {
+      for (const sl of Object.values(t.classTournaments)) {
+        bm = sl.bracketMatches.find(pairingPred);
+        if (bm) break;
+      }
+    }
+    const createCmdId = bm ? c.findLatestActiveCreateMatchCommandId(match.id) : undefined;
+    return createCmdId ? [createCmdId] : [];
+  }
+
+  function debugSimulateOverviewTableMatches(): void {
+    if (!DEBUG_UI) return;
+    clearStatus();
+    const s = getActiveSession();
+    if (!s) return;
+    const c = s.controller;
+    const list = overviewMatchesOnTables(c.getTournament());
+    if (list.length === 0) {
+      showWarnKey('ui.no_matches_on_tables_to_simulate');
+      pull();
+      return;
+    }
+    const rng = Math.random;
+    let done = 0;
+    runUiBatch(() => {
+      for (const m of list) {
+        const t = c.getTournament();
+        const scores = debugRandomLegalBo5Scores(rng);
+        if (!isMatchScoreLegal(scores)) {
+          showErrorKey('ui.internal_generated_illegal_scores');
+          return;
+        }
+        const deps = enterScoreDepsForMatch(c, t, m);
+        const cmdId = `cmd-dbg-table-${m.id}-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
+        const r = c.enterScore(m.id, scores, deps, cmdId);
+        if (!r.success) {
+          showCommandError(r, 'ui.fallback.stoppedScoring', { id: m.id, done: String(done) });
+          return;
+        }
+        done++;
+      }
+      showInfoKey('ui.toast.debugSimulatedTables', { done: String(done) });
+    });
+  }
+
+  function debugFillOverviewEmptyTables(orderedMatchIds: string[]): void {
+    if (!DEBUG_UI) return;
+    clearStatus();
+    const s = getActiveSession();
+    if (!s) return;
+    const c = s.controller;
+    const plan = planFillEmptyTablesFromReady(c.getTournament(), orderedMatchIds);
+    if (plan.length === 0) {
+      const t = c.getTournament();
+      const hasFreeTable = t.tables.some((tableId) => matchIdOnTable(t, tableId) === undefined);
+      showWarnKey(
+        hasFreeTable ? 'ui.ov.debugFillTablesNoMatches' : 'ui.ov.debugFillTablesNoFreeTables',
+      );
+      pull();
+      return;
+    }
+    let done = 0;
+    runUiBatch(() => {
+      for (const { matchId, tableId } of plan) {
+        const r = s.controller.assignMatchToTable(
+          matchId,
+          tableId,
+          [],
+          `cmd-dbg-fill-${matchId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`,
+        );
+        if (!r.success) {
+          showCommandError(r, 'ui.fallback.assignTable', { id: matchId, done: String(done) });
+          return;
+        }
+        done++;
+      }
+      showInfoKey('ui.toast.debugFilledTables', { done: String(done) });
     });
   }
 
@@ -3146,6 +3256,7 @@
                 useClassTabs={useClassTabs}
                 groupDisplayLabel={groupDisplayLabel}
                 tableCount={overviewTableCount}
+                showDebugUi={DEBUG_UI}
                 onIncrementTables={incrementOverviewTableCount}
                 onDecrementTables={decrementOverviewTableCount}
                 onOpenGroupMatch={openScoreModal}
@@ -3153,6 +3264,8 @@
                 onOpenTableMatch={openTableMatch}
                 onAssignMatchToTable={overviewAssignMatchToTable}
                 onClearMatchFromTable={overviewClearMatchFromTable}
+                onDebugSimulateTables={debugSimulateOverviewTableMatches}
+                onDebugFillReadyTables={debugFillOverviewEmptyTables}
               />
             </section>
           {:else if showPlayersPanel}

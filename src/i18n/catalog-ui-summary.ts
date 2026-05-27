@@ -86,6 +86,14 @@ export const uiSummaryCatalog = {
     'Debug: simulated {{done}} group match(es).',
     'Debug: {{done}} groepswedstrijd(en) gesimuleerd.',
   ),
+  'ui.toast.debugSimulatedTables': t(
+    'Debug: simulated {{done}} table match(es).',
+    'Debug: {{done}} tafelwedstrijd(en) gesimuleerd.',
+  ),
+  'ui.toast.debugFilledTables': t(
+    'Debug: assigned {{done}} match(es) to empty tables.',
+    'Debug: {{done}} wedstrijd(en) aan lege tafels toegewezen.',
+  ),
   'ui.toast.titleSet': t('Title set to: {{suggested}}', 'Titel ingesteld op: {{suggested}}'),
   'ui.toast.internalUiError': t(
     'Internal UI error while updating: {{reason}}',

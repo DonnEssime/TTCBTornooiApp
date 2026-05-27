@@ -30,6 +30,9 @@
     tableCount,
     onIncrementTables,
     onDecrementTables,
+    showDebugUi = false,
+    onDebugSimulateTables,
+    onDebugFillReadyTables,
   }: {
     tournament: Tournament;
     useClassTabs: boolean;
@@ -37,6 +40,9 @@
     tableCount: number;
     onIncrementTables: () => void;
     onDecrementTables: () => void;
+    showDebugUi?: boolean;
+    onDebugSimulateTables?: () => void;
+    onDebugFillReadyTables?: (orderedMatchIds: string[]) => void;
     onOpenGroupMatch: (m: Match) => void;
     onOpenBracketSlot: (bm: BracketMatch) => void;
     onOpenTableMatch: (m: Match) => void;
@@ -460,12 +466,33 @@
     });
     return list;
   });
+
+  function readyMatchIdsInDisplayOrder(): string[] {
+    const ids: string[] = [];
+    for (const m of readyGroupsAll) ids.push(m.id);
+    for (const item of readyBracketsAll) {
+      const mid = readyBracketPlayableMatchId(tournament, item.bm, item.classId);
+      if (mid) ids.push(mid);
+    }
+    return ids;
+  }
+
+  function debugFillEmptyTables(): void {
+    onDebugFillReadyTables?.(readyMatchIdsInDisplayOrder());
+  }
 </script>
 
 <div class="ov">
   <div class="ov-main">
     <section class="ov-card ov-tables-card">
-      <h3 class="ov-h"><Msg key="ui.tables" /></h3>
+      <div class="ov-tables-head">
+        <h3 class="ov-h"><Msg key="ui.tables" /></h3>
+        {#if showDebugUi}
+          <button type="button" class="ov-debug-btn" onclick={() => onDebugSimulateTables?.()}>
+            <Msg key="ui.ov.debugSimulateTables" />
+          </button>
+        {/if}
+      </div>
       {#if tournament.tables.length > 0}
         <p class="muted small ov-dnd-hint"><Msg key="ui.ov.dndHint" tag="p" class="muted small ov-dnd-hint" /></p>
       {/if}
@@ -534,7 +561,14 @@
       ondragleave={handleReadyDragLeave}
       ondrop={handleReadyDrop}
     >
-      <h3 class="ov-h"><Msg key="ui.ready_to_play" /></h3>
+      <div class="ov-ready-head">
+        <h3 class="ov-h"><Msg key="ui.ready_to_play" /></h3>
+        {#if showDebugUi}
+          <button type="button" class="ov-debug-btn" onclick={debugFillEmptyTables}>
+            <Msg key="ui.ov.debugFillTables" />
+          </button>
+        {/if}
+      </div>
       {#if readyGroupsAll.length === 0 && readyBracketsAll.length === 0}
         <p class="muted small"><Msg key="ui.ov.nothingToHighlight" tag="p" class="muted small" /></p>
       {:else}
@@ -825,8 +859,45 @@
     margin-bottom: 0.75rem;
   }
 
-  .ov-tables-card .ov-h {
+  .ov-tables-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
     margin-bottom: 0.65rem;
+  }
+
+  .ov-tables-head .ov-h {
+    margin-bottom: 0;
+  }
+
+  .ov-ready-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .ov-ready-head .ov-h {
+    margin-bottom: 0;
+  }
+
+  .ov-debug-btn {
+    flex-shrink: 0;
+    font-size: 0.78rem;
+    padding: 0.28rem 0.55rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    background: #f8fafc;
+    color: #475569;
+    cursor: pointer;
+    font: inherit;
+  }
+
+  .ov-debug-btn:hover:not(:disabled) {
+    background: #f1f5f9;
+    border-color: #cbd5e1;
   }
 
   .ov-dnd-hint {

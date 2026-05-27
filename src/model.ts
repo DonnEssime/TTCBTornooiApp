@@ -3597,6 +3597,47 @@ export function clearMatchTableAssignment(tournament: Tournament, matchId: strin
   releaseLiveTableForMatch(tournament, matchId);
 }
 
+/**
+ * Plan assigning ready matches (in display order) to currently free tables.
+ * Skips matches whose players are already in progress or were picked earlier in this plan.
+ */
+export function planFillEmptyTablesFromReady(
+  tournament: Tournament,
+  orderedMatchIds: string[],
+): Array<{ matchId: string; tableId: string }> {
+  const freeTables = tournament.tables.filter((tableId) => matchIdOnTable(tournament, tableId) === undefined);
+  if (freeTables.length === 0 || orderedMatchIds.length === 0) return [];
+
+  const busyPlayers = new Set<PlayerId>();
+  for (const m of Object.values(tournament.matches)) {
+    if (m.status !== 'in-progress') continue;
+    busyPlayers.add(m.playerA);
+    busyPlayers.add(m.playerB);
+  }
+
+  const onTable = new Set(tournament.tableAssignments.map((a) => a.matchId));
+  const scheduledPlayers = new Set(busyPlayers);
+  const out: Array<{ matchId: string; tableId: string }> = [];
+  let tableIdx = 0;
+
+  for (const matchId of orderedMatchIds) {
+    if (tableIdx >= freeTables.length) break;
+    if (onTable.has(matchId)) continue;
+    const match = tournament.matches[matchId];
+    if (!match) continue;
+    if (scheduledPlayers.has(match.playerA) || scheduledPlayers.has(match.playerB)) continue;
+
+    const tableId = freeTables[tableIdx]!;
+    out.push({ matchId, tableId });
+    tableIdx++;
+    scheduledPlayers.add(match.playerA);
+    scheduledPlayers.add(match.playerB);
+    onTable.add(matchId);
+  }
+
+  return out;
+}
+
 /** Called when a match is fully scored or cleared — frees the table for other matches. */
 export function releaseTableForFinishedOrClearedMatch(tournament: Tournament, matchId: string): void {
   releaseLiveTableForMatch(tournament, matchId);
