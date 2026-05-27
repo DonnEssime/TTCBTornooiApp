@@ -8,6 +8,8 @@
     bracketRoundAggregatesIncludingFutureRounds,
     bracketSlotAwaitingPlay,
     compareBracketMatchId,
+    inProgressMatchIdsForPlayer,
+    matchAssignedTableId,
     matchIdOnTable,
     matchPlayersResolvedForBracketPhaseList,
   } from 'ttc-tornooiapp';
@@ -59,6 +61,56 @@
     dragOverReady = false;
   }
 
+  type ReadyTableConstraint = {
+    hasBusyPlayer: boolean;
+    swapTargetTableId: string | null;
+    incumbentMatchId: string | null;
+  };
+
+  /** When a ready match involves a player already on a table, only that table can accept a drop (swap). */
+  function readyMatchTableConstraint(
+    t: Tournament,
+    matchId: string,
+    playerA: string,
+    playerB: string,
+  ): ReadyTableConstraint {
+    const busyTables = new Map<string, string>();
+    let hasBusyPlayer = false;
+    for (const playerId of [playerA, playerB]) {
+      const otherIds = inProgressMatchIdsForPlayer(t, playerId).filter((id) => id !== matchId);
+      if (otherIds.length === 0) continue;
+      hasBusyPlayer = true;
+      const otherMatchId = otherIds[0]!;
+      const tableId = matchAssignedTableId(t, otherMatchId);
+      if (tableId) busyTables.set(tableId, otherMatchId);
+    }
+    if (!hasBusyPlayer) {
+      return { hasBusyPlayer: false, swapTargetTableId: null, incumbentMatchId: null };
+    }
+    if (busyTables.size === 1) {
+      const [swapTargetTableId, incumbentMatchId] = [...busyTables.entries()][0]!;
+      return { hasBusyPlayer: true, swapTargetTableId, incumbentMatchId };
+    }
+    return { hasBusyPlayer: true, swapTargetTableId: null, incumbentMatchId: null };
+  }
+
+  function readyConstraintForMatchId(matchId: string): ReadyTableConstraint | null {
+    const m = tournament.matches[matchId];
+    if (!m) return null;
+    return readyMatchTableConstraint(tournament, matchId, m.playerA, m.playerB);
+  }
+
+  const draggingReadyConstraint = $derived.by((): ReadyTableConstraint | null => {
+    if (!draggingMatchId || draggingSource !== 'ready') return null;
+    return readyConstraintForMatchId(draggingMatchId);
+  });
+
+  function tableAcceptsReadyDrag(tableId: string): boolean {
+    const c = draggingReadyConstraint;
+    if (!c?.hasBusyPlayer) return true;
+    return c.swapTargetTableId === tableId;
+  }
+
   function handleDragStart(e: DragEvent, matchId: string, source: DndSource): void {
     const dt = e.dataTransfer;
     if (!dt) return;
@@ -75,6 +127,7 @@
 
   function handleTableDragOver(e: DragEvent, tableId: string): void {
     if (!draggingMatchId) return;
+    if (!tableAcceptsReadyDrag(tableId)) return;
     e.preventDefault();
     const dt = e.dataTransfer;
     if (dt) dt.dropEffect = 'move';
@@ -91,6 +144,10 @@
   }
 
   function handleTableDrop(e: DragEvent, tableId: string): void {
+    if (!tableAcceptsReadyDrag(tableId)) {
+      resetDragState();
+      return;
+    }
     e.preventDefault();
     const matchId = e.dataTransfer?.getData(DND_MATCH) || draggingMatchId;
     resetDragState();
@@ -418,10 +475,17 @@
         <div class="ov-table-grid" role="list" aria-label={msgText('ui.tournament_tables')}>
           {#each tournament.tables as tableId (tableId)}
             {@const tm = matchOnTable(tableId)}
+            {@const constrainedReadyDrag = draggingReadyConstraint?.hasBusyPlayer === true}
+            {@const swapTargetTableId = draggingReadyConstraint?.swapTargetTableId ?? null}
+            {@const tableDimmed =
+              constrainedReadyDrag && (swapTargetTableId === null || swapTargetTableId !== tableId)}
+            {@const tableSwapTarget = constrainedReadyDrag && swapTargetTableId === tableId}
             <div
               class="ov-table-tile"
               class:ov-table-busy={Boolean(tm)}
-              class:ov-drop-highlight={dragOverTableId === tableId}
+              class:ov-table-dimmed={tableDimmed}
+              class:ov-table-swap-target={tableSwapTarget}
+              class:ov-drop-highlight={dragOverTableId === tableId && tableAcceptsReadyDrag(tableId)}
               role="listitem"
               ondragover={(e) => handleTableDragOver(e, tableId)}
               ondragleave={(e) => handleTableDragLeave(tableId, e)}
@@ -433,6 +497,7 @@
                   class="ov-table-match-drag ov-table-match-btn"
                   draggable="true"
                   class:ov-dragging={draggingMatchId === tm.id}
+                  class:ov-swap-incumbent={draggingReadyConstraint?.incumbentMatchId === tm.id}
                   role="button"
                   tabindex="0"
                   aria-label={msgText('ui.ov.matchOnTableAria', { table: tableId })}
@@ -477,9 +542,11 @@
           <h4 class="ov-h4"><Msg key="ui.group" /></h4>
           <ul class="ov-ready-list">
             {#each readyGroupsAll as m (m.id)}
+              {@const readyConstraint = readyMatchTableConstraint(tournament, m.id, m.playerA, m.playerB)}
               <li
                 class="ov-ready-item"
                 draggable="true"
+                class:ov-ready-busy={readyConstraint.hasBusyPlayer}
                 class:ov-dragging={draggingMatchId === m.id}
                 ondragstart={(e) => handleDragStart(e, m.id, 'ready')}
                 ondragend={handleDragEnd}
@@ -505,9 +572,15 @@
           <ul class="ov-ready-list">
             {#each readyBracketsAll as item (item.bm.id)}
               {@const bracketMid = readyBracketPlayableMatchId(tournament, item.bm, item.classId)}
+              {@const bracketMatch = bracketMid ? tournament.matches[bracketMid] : undefined}
+              {@const readyConstraint =
+                bracketMatch && bracketMid
+                  ? readyMatchTableConstraint(tournament, bracketMid, bracketMatch.playerA, bracketMatch.playerB)
+                  : { hasBusyPlayer: false, swapTargetTableId: null, incumbentMatchId: null }}
               <li
                 class="ov-ready-item"
                 class:ov-ready-not-draggable={!bracketMid}
+                class:ov-ready-busy={readyConstraint.hasBusyPlayer}
                 draggable={Boolean(bracketMid)}
                 class:ov-dragging={bracketMid !== null && draggingMatchId === bracketMid}
                 ondragstart={(e) => {
@@ -788,6 +861,23 @@
     box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.35);
   }
 
+  .ov-table-tile.ov-table-dimmed {
+    opacity: 0.38;
+    filter: grayscale(0.35);
+    pointer-events: none;
+  }
+
+  .ov-table-tile.ov-table-swap-target {
+    border-color: #0d9488;
+    box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.4);
+  }
+
+  .ov-table-match-drag.ov-swap-incumbent {
+    background: rgba(255, 255, 255, 0.9);
+    box-shadow: inset 0 0 0 2px rgba(13, 148, 136, 0.55);
+    border-radius: 6px;
+  }
+
   .ov-card-main.ov-ready-drop-highlight {
     box-shadow: inset 0 0 0 2px rgba(13, 148, 136, 0.45);
     border-color: #0d9488;
@@ -846,6 +936,17 @@
 
   .ov-ready-item.ov-ready-not-draggable {
     cursor: default;
+  }
+
+  .ov-ready-item.ov-ready-busy:not(.ov-dragging) .ov-ready-btn {
+    opacity: 0.55;
+    background: #f1f5f9;
+    border-color: #e2e8f0;
+  }
+
+  .ov-ready-item.ov-ready-busy:not(.ov-dragging) .ov-ready-btn:hover {
+    border-color: #cbd5e1;
+    background: #eef2f6;
   }
 
   .ov-ready-item.ov-dragging,
