@@ -89,6 +89,42 @@ describe('buildSingleTournamentPlayerMatchHistory', () => {
     ]);
   });
 
+  it('orders group lines by matchFinishOrder (actual play order)', () => {
+    const t = createTournament();
+    seedPlayers(t, ['a', 'b', 'c', 'd']);
+    t.groups['4'] = { id: '4', playerIds: ['a', 'b', 'c', 'd'] };
+    t.matches['m-ab'] = {
+      id: 'm-ab',
+      playerA: 'a',
+      playerB: 'b',
+      scores: [{ playerA: 11, playerB: 9 }],
+      status: 'finished',
+      winner: 'a',
+      groupId: '4',
+    };
+    t.matches['m-ac'] = {
+      id: 'm-ac',
+      playerA: 'a',
+      playerB: 'c',
+      scores: [{ playerA: 11, playerB: 7 }],
+      status: 'finished',
+      winner: 'a',
+      groupId: '4',
+    };
+    t.matches['m-ad'] = {
+      id: 'm-ad',
+      playerA: 'a',
+      playerB: 'd',
+      scores: [],
+      status: 'scheduled',
+      groupId: '4',
+    };
+    t.matchFinishOrder = ['m-ac', 'm-ab'];
+
+    const h = buildHistory(t, 'a');
+    expect(h.groupSection?.lines.map((line) => line.opponentId)).toEqual(['c', 'b', 'd']);
+  });
+
   it('includes bracket rounds with decided games', () => {
     const t = createTournament();
     seedPlayers(t, ['p1', 'p2', 'p3', 'p4']);

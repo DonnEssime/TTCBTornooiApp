@@ -7,7 +7,9 @@ import {
   bracketPlayerMatchId,
   findGroupForPlayer,
   gameWinner,
+  matchesOnTablesInAssignmentOrder,
 } from './model';
+import { isGroupMatchFinished } from './match-ordering';
 
 /** Games won in a match from the focal player's perspective (decided games only). */
 export type PlayerMatchLineScore = { playerGames: number; opponentGames: number };
@@ -74,6 +76,53 @@ function findGroupMatchBetweenPlayers(
   return undefined;
 }
 
+/** Sort key for group matches: finished order, then in-progress, then partial, then unplayed. */
+type GroupMatchPlayOrderKey = readonly [tier: number, subRank: number, tieBreak: string];
+
+function groupMatchPlayOrderKey(
+  tournament: Tournament,
+  match: Match | undefined,
+  opponentId: PlayerId,
+): GroupMatchPlayOrderKey {
+  if (!match) return [4, 0, opponentId];
+
+  const finishOrder = tournament.matchFinishOrder ?? [];
+  const finishIdx = finishOrder.indexOf(match.id);
+  if (finishIdx >= 0) return [0, finishIdx, ''];
+
+  if (isGroupMatchFinished(match) || match.status === 'finished' || match.status === 'forfeit') {
+    return [1, 0, match.id];
+  }
+
+  const inProgressIdx = matchesOnTablesInAssignmentOrder(tournament).findIndex((m) => m.id === match.id);
+  if (inProgressIdx >= 0) return [2, inProgressIdx, ''];
+
+  if (match.scores.length > 0) return [3, 0, match.id];
+
+  return [4, 0, opponentId];
+}
+
+function compareGroupMatchPlayOrderKeys(a: GroupMatchPlayOrderKey, b: GroupMatchPlayOrderKey): number {
+  if (a[0] !== b[0]) return a[0] - b[0];
+  if (a[1] !== b[1]) return a[1] - b[1];
+  return a[2].localeCompare(b[2]);
+}
+
+function compareGroupHistoryLinesByPlayOrder(
+  tournament: Tournament,
+  groupId: string,
+  playerId: PlayerId,
+  a: PlayerMatchHistoryLine,
+  b: PlayerMatchHistoryLine,
+): number {
+  const matchA = findGroupMatchBetweenPlayers(tournament, groupId, playerId, a.opponentId);
+  const matchB = findGroupMatchBetweenPlayers(tournament, groupId, playerId, b.opponentId);
+  return compareGroupMatchPlayOrderKeys(
+    groupMatchPlayOrderKey(tournament, matchA, a.opponentId),
+    groupMatchPlayOrderKey(tournament, matchB, b.opponentId),
+  );
+}
+
 function bracketLinesForPlayer(
   tournament: Tournament,
   bracketMatches: BracketMatch[],
@@ -118,6 +167,7 @@ export function buildSingleTournamentPlayerMatchHistory(
         score: match ? matchDecidedGamesWon(match, playerId) : null,
       });
     }
+    lines.sort((a, b) => compareGroupHistoryLinesByPlayOrder(tournament, group.id, playerId, a, b));
     groupSection = { kind: 'group', group, lines };
   }
 

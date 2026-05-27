@@ -1,11 +1,12 @@
 <script lang="ts">
-  import type { Tournament } from 'ttc-tornooiapp';
+  import type { BracketMatch, Match, Tournament } from 'ttc-tornooiapp';
   import {
     bracketKnockoutRoundLabel,
     buildSingleTournamentPlayerMatchHistory,
     displayLabelForGroup,
     type PlayerMatchHistoryLine,
   } from 'ttc-tornooiapp';
+  import { bracketSlotOutcome, type BracketSlotOutcome } from './bracketStream/slotOutcome';
   import Msg from './i18n/Msg.svelte';
   import { getLocale } from './i18n/locale.svelte';
   import { msgText } from './i18n/msg';
@@ -34,6 +35,47 @@
   function scoreText(line: PlayerMatchHistoryLine): string | null {
     if (!line.score) return null;
     return `${line.score.playerGames}-${line.score.opponentGames}`;
+  }
+
+  function findGroupMatch(groupId: string, opponentId: string): Match | undefined {
+    for (const m of Object.values(tournament.matches)) {
+      if (m.groupId !== groupId || m.classId) continue;
+      const ok =
+        (m.playerA === playerId && m.playerB === opponentId) ||
+        (m.playerA === opponentId && m.playerB === playerId);
+      if (ok) return m;
+    }
+    return undefined;
+  }
+
+  function findBracketMatch(round: number, opponentId: string): BracketMatch | undefined {
+    return tournament.bracketMatches.find(
+      (bm) =>
+        bm.round === round &&
+        ((bm.seedA === playerId && bm.seedB === opponentId) ||
+          (bm.seedA === opponentId && bm.seedB === playerId)),
+    );
+  }
+
+  function groupMatchOutcome(
+    opponentId: string,
+    groupId: string,
+    pid: string,
+  ): BracketSlotOutcome | null {
+    const match = findGroupMatch(groupId, opponentId);
+    if (!match?.winner) return null;
+    return match.winner === pid ? 'winner' : 'loser';
+  }
+
+  function bracketMatchOutcome(
+    round: number,
+    opponentId: string,
+    pid: string,
+  ): BracketSlotOutcome | null {
+    const bm = findBracketMatch(round, opponentId);
+    if (!bm) return null;
+    const side = bm.seedA === pid ? 'a' : 'b';
+    return bracketSlotOutcome(bm, side);
   }
 
   const groupOptions = $derived.by(() => {
@@ -90,14 +132,28 @@
       {#if history.groupSection}
         <ul class="player-history-lines">
           {#each history.groupSection.lines as line (line.opponentId)}
+            {@const focalOutcome = groupMatchOutcome(line.opponentId, history.groupSection.group.id, playerId)}
+            {@const opponentOutcome = groupMatchOutcome(line.opponentId, history.groupSection.group.id, line.opponentId)}
             <li class="player-history-line">
-              <span class="player-history-focal">{playerName}</span>
+              <span
+                class="player-history-focal"
+                class:player-history-slot--winner={focalOutcome === 'winner'}
+                class:player-history-slot--loser={focalOutcome === 'loser'}
+              >{playerName}</span>
               {#if scoreText(line)}
-                <span class="player-history-score">{scoreText(line)}</span>
+                <span
+                  class="player-history-score"
+                  class:player-history-slot--winner={focalOutcome === 'winner'}
+                  class:player-history-slot--loser={focalOutcome === 'loser'}
+                >{scoreText(line)}</span>
               {:else}
                 <span class="player-history-score player-history-score--pending" aria-hidden="true">—</span>
               {/if}
-              <span class="player-history-opponent">{opponentName(line.opponentId)}</span>
+              <span
+                class="player-history-opponent"
+                class:player-history-slot--winner={opponentOutcome === 'winner'}
+                class:player-history-slot--loser={opponentOutcome === 'loser'}
+              >{opponentName(line.opponentId)}</span>
             </li>
           {/each}
         </ul>
@@ -117,14 +173,28 @@
         </h4>
         <ul class="player-history-lines">
           {#each section.lines as line (`${section.round}-${line.opponentId}`)}
+            {@const focalOutcome = bracketMatchOutcome(section.round, line.opponentId, playerId)}
+            {@const opponentOutcome = bracketMatchOutcome(section.round, line.opponentId, line.opponentId)}
             <li class="player-history-line">
-              <span class="player-history-focal">{playerName}</span>
+              <span
+                class="player-history-focal"
+                class:player-history-slot--winner={focalOutcome === 'winner'}
+                class:player-history-slot--loser={focalOutcome === 'loser'}
+              >{playerName}</span>
               {#if scoreText(line)}
-                <span class="player-history-score">{scoreText(line)}</span>
+                <span
+                  class="player-history-score"
+                  class:player-history-slot--winner={focalOutcome === 'winner'}
+                  class:player-history-slot--loser={focalOutcome === 'loser'}
+                >{scoreText(line)}</span>
               {:else}
                 <span class="player-history-score player-history-score--pending" aria-hidden="true">—</span>
               {/if}
-              <span class="player-history-opponent">{opponentName(line.opponentId)}</span>
+              <span
+                class="player-history-opponent"
+                class:player-history-slot--winner={opponentOutcome === 'winner'}
+                class:player-history-slot--loser={opponentOutcome === 'loser'}
+              >{opponentName(line.opponentId)}</span>
             </li>
           {/each}
         </ul>
@@ -243,10 +313,24 @@
     line-height: 1.35;
   }
 
-  .player-history-focal {
+  .player-history-focal,
+  .player-history-opponent {
     font-weight: 600;
-    text-align: left;
     word-break: break-word;
+  }
+
+  .player-history-focal {
+    text-align: left;
+  }
+
+  .player-history-slot--winner {
+    font-weight: 700;
+    color: #0f172a;
+  }
+
+  .player-history-slot--loser {
+    color: #94a3b8;
+    font-weight: 500;
   }
 
   .player-history-score {
@@ -263,6 +347,5 @@
 
   .player-history-opponent {
     text-align: right;
-    word-break: break-word;
   }
 </style>
