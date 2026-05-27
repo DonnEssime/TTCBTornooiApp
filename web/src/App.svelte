@@ -728,6 +728,31 @@
     playerHistoryModalPid = null;
   }
 
+  function setActivePlayerGroupFromModal(nextGroupId: string | null): void {
+    const pid = playerHistoryModalPid;
+    if (!pid) return;
+    const s = getActiveSession();
+    if (!s) return;
+    if (tournament.bracketMatches.length > 0) {
+      showErrorKey('ui.group.knockoutActiveLock');
+      return;
+    }
+    if (Object.keys(tournament.groups).length === 0) {
+      showErrorKey('ui.group.addPlayersFirst');
+      return;
+    }
+    runUiBatch(() => {
+      const deps = s.lastSetGroupsCommandId ? [s.lastSetGroupsCommandId] : [];
+      const r = s.controller.setPlayerGroup(pid, nextGroupId, deps);
+      showCommandError(r, 'command.replayFailed');
+      if (r.success) {
+        showInfoKey('ui.toast.playerGroupChanged', {
+          name: playerLabel(pid),
+        });
+      }
+    });
+  }
+
   function completedLegalGameScores(rows: ScoreRow[]): GameScore[] {
     const out: GameScore[] = [];
     for (const row of rows) {
@@ -4201,6 +4226,7 @@
       {tournament}
       playerId={playerHistoryModalPid}
       playerName={playerLabel(playerHistoryModalPid)}
+      onSetGroupId={setActivePlayerGroupFromModal}
       onClose={closePlayerHistoryModal}
     />
   {/if}

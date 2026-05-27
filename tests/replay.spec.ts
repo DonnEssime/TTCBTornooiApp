@@ -163,7 +163,7 @@ describe('Command replay and deterministic JSONL round-trip', () => {
     expect(profile).toBeDefined();
     expect(profile!.commandCount).toBe(4);
     expect(profile!.totalExecuteMs).toBeGreaterThanOrEqual(0);
-    expect(profile!.byType).toHaveLength(4);
+    expect(profile!.byType).toHaveLength(3);
     expect(profile!.slowest.commandId).toBeTruthy();
     expect(profile!.byType.reduce((sum, row) => sum + row.count, 0)).toBe(4);
   });

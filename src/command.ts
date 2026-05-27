@@ -68,6 +68,7 @@ export type CommandType =
   | 'SetTournamentClasses'
   | 'SetPlayerClassFlags'
   | 'SetGroups'
+  | 'SetPlayerGroup'
   | 'SetClassGroups'
   | 'GenerateGroupRoundRobin'
   | 'GenerateBracket'
@@ -168,6 +169,11 @@ export interface SetGroupsCommand extends CommandBase {
   payload: SetGroupsPayload;
 }
 
+export interface SetPlayerGroupCommand extends CommandBase {
+  type: 'SetPlayerGroup';
+  payload: { playerId: string; groupId?: string | null };
+}
+
 export type SetClassGroupsPayload =
   | { groups: Array<{ id: string; label?: string; playerIds: string[] }> }
   | { targetGroupSize: number; playerIds: string[] }
@@ -265,6 +271,7 @@ export type Command =
   | SetTournamentClassesCommand
   | SetPlayerClassFlagsCommand
   | SetGroupsCommand
+  | SetPlayerGroupCommand
   | SetClassGroupsCommand
   | GenerateGroupRoundRobinCommand
   | GenerateBracketCommand
@@ -314,6 +321,42 @@ function addGroupRoundRobinMatches(
       };
     }
   }
+}
+
+function groupMatchIdForPair(groupId: string, playerA: string, playerB: string, classId?: string): string {
+  const sortedPair = [playerA, playerB].sort((x, y) => x.localeCompare(y));
+  return classId
+    ? `gm-${classId}-${groupId}-${sortedPair[0]}-${sortedPair[1]}`
+    : `gm-${groupId}-${sortedPair[0]}-${sortedPair[1]}`;
+}
+
+function deletePlayerScheduledGroupMatches(tournament: Tournament, playerId: string): void {
+  const matchIdsToRemove: string[] = [];
+  for (const mid of Object.keys(tournament.matches)) {
+    const m = tournament.matches[mid];
+    if (!m) continue;
+    if (!m.groupId) continue;
+    if (m.playerA !== playerId && m.playerB !== playerId) continue;
+    if (m.scores.length > 0) continue;
+    if (m.status !== 'scheduled') continue;
+    matchIdsToRemove.push(mid);
+  }
+  if (matchIdsToRemove.length === 0) return;
+  const set = new Set(matchIdsToRemove);
+  for (const mid of matchIdsToRemove) {
+    delete tournament.matches[mid];
+  }
+  tournament.tableAssignments = tournament.tableAssignments.filter((a) => !set.has(a.matchId));
+}
+
+function playerHasAnyRecordedGroupMatch(tournament: Tournament, playerId: string): boolean {
+  for (const m of Object.values(tournament.matches)) {
+    if (!m?.groupId) continue;
+    if (m.playerA !== playerId && m.playerB !== playerId) continue;
+    if (m.scores.length > 0) return true;
+    if (m.status !== 'scheduled') return true;
+  }
+  return false;
 }
 
 function dependsReach(cmd: Command, ancestorId: string, byId: Map<string, Command>): boolean {
@@ -1024,6 +1067,73 @@ export class CommandRunner {
         }
         tournament.groups = rec;
         addGroupRoundRobinMatches(tournament, rec, undefined);
+        return { success: true };
+      }
+      case 'SetPlayerGroup': {
+        if (tournamentUsesClassTabs(tournament)) {
+          return commandFail('command.playerGroupMoveNotSupportedMultiClass');
+        }
+        if (Object.keys(tournament.teamMatches).length > 0) {
+          return commandFail('command.groupsNotAvailableWithTeamMatch');
+        }
+        const { playerId: pidRaw, groupId: gidRaw } = command.payload;
+        const pid = String(pidRaw ?? '').trim();
+        if (!pid || !tournament.players[pid]) {
+          return commandFail('command.playerNotFound');
+        }
+        const targetGroupId = gidRaw === undefined || gidRaw === null ? null : String(gidRaw).trim();
+        if (targetGroupId !== null) {
+          if (!targetGroupId) {
+            return commandFail('command.groupIdRequired');
+          }
+          if (!tournament.groups[targetGroupId]) {
+            return commandFail('command.groupNotFound', { groupId: targetGroupId });
+          }
+        }
+
+        const currentGroup = Object.values(tournament.groups).find((g) => g.playerIds.includes(pid));
+        const currentGroupId = currentGroup?.id ?? null;
+        if (currentGroupId === targetGroupId) {
+          return { success: true };
+        }
+
+        if (currentGroupId !== null && targetGroupId === null) {
+          if (playerHasAnyRecordedGroupMatch(tournament, pid)) {
+            return commandFail('command.cannotLeaveGroupAlreadyPlayed');
+          }
+        }
+
+        // Remove any scheduled group matches for this player across all groups (safe because leaving
+        // is blocked once any recorded group play exists).
+        deletePlayerScheduledGroupMatches(tournament, pid);
+
+        // Remove player from previous group (if any).
+        if (currentGroupId !== null) {
+          tournament.groups[currentGroupId]!.playerIds = tournament.groups[currentGroupId]!.playerIds.filter(
+            (x) => x !== pid,
+          );
+        }
+
+        // Add player to new group (if any) and materialize missing round-robin matches vs its members.
+        if (targetGroupId !== null) {
+          const g = tournament.groups[targetGroupId]!;
+          if (!g.playerIds.includes(pid)) {
+            g.playerIds = [...g.playerIds, pid];
+          }
+          for (const other of g.playerIds) {
+            if (other === pid) continue;
+            const mid = groupMatchIdForPair(g.id, pid, other, undefined);
+            if (tournament.matches[mid]) continue;
+            tournament.matches[mid] = {
+              id: mid,
+              playerA: pid,
+              playerB: other,
+              scores: [],
+              status: 'scheduled',
+              groupId: g.id,
+            };
+          }
+        }
         return { success: true };
       }
       case 'SetClassGroups': {

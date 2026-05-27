@@ -18,6 +18,7 @@ import {
   SetTournamentClassesCommand,
   SetPlayerClassFlagsCommand,
   SetGroupsCommand,
+  type SetPlayerGroupCommand,
   SetClassGroupsCommand,
   GenerateGroupRoundRobinCommand,
   type AssignTablesCommand,
@@ -282,6 +283,20 @@ export class TournamentController {
     };
     const result = this.runner.execute(command);
     this.view?.renderMessage(`SetGroups: ${JSON.stringify(result)}`);
+    this.view?.renderTournament(this.getTournament());
+    return result;
+  }
+
+  setPlayerGroup(playerId: string, groupId: string | null, dependsOn: string[] = [], commandId?: string): CommandResult {
+    const command: SetPlayerGroupCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'SetPlayerGroup',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: { playerId, groupId },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`SetPlayerGroup: ${JSON.stringify(result)}`);
     this.view?.renderTournament(this.getTournament());
     return result;
   }

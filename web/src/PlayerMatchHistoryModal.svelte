@@ -14,11 +14,13 @@
     tournament,
     playerId,
     playerName,
+    onSetGroupId,
     onClose,
   }: {
     tournament: Tournament;
     playerId: string;
     playerName: string;
+    onSetGroupId: (groupId: string | null) => void;
     onClose: () => void;
   } = $props();
 
@@ -32,6 +34,19 @@
   function scoreText(line: PlayerMatchHistoryLine): string | null {
     if (!line.score) return null;
     return `${line.score.playerGames}-${line.score.opponentGames}`;
+  }
+
+  const groupOptions = $derived.by(() => {
+    const entries = Object.values(tournament.groups ?? {}).slice();
+    entries.sort((a, b) => a.id.localeCompare(b.id));
+    return entries;
+  });
+
+  const selectedGroupId = $derived(history.groupSection?.group.id ?? '');
+
+  function onGroupSelectChange(e: Event): void {
+    const v = (e.currentTarget as HTMLSelectElement | null)?.value ?? '';
+    onSetGroupId(v ? v : null);
   }
 </script>
 
@@ -54,51 +69,67 @@
       <button type="button" class="btn subtle small-inline" onclick={onClose}><Msg key="ui.close" /></button>
     </header>
 
+    <section class="player-history-section">
+      <div class="player-history-heading-row">
+        <h4 class="player-history-heading">
+          <Msg key="ui.players.groupSubtitle" />
+        </h4>
+        <select
+          class="player-history-group-select"
+          aria-label={msgText('ui.players.groupSubtitle')}
+          value={selectedGroupId}
+          onchange={onGroupSelectChange}
+        >
+          <option value=""><Msg key="ui.players.noGroupOption" /></option>
+          {#each groupOptions as g (g.id)}
+            <option value={g.id}>{displayLabelForGroup(g, locale)}</option>
+          {/each}
+        </select>
+      </div>
+
+      {#if history.groupSection}
+        <ul class="player-history-lines">
+          {#each history.groupSection.lines as line (line.opponentId)}
+            <li class="player-history-line">
+              <span class="player-history-focal">{playerName}</span>
+              {#if scoreText(line)}
+                <span class="player-history-score">{scoreText(line)}</span>
+              {:else}
+                <span class="player-history-score player-history-score--pending" aria-hidden="true">—</span>
+              {/if}
+              <span class="player-history-opponent">{opponentName(line.opponentId)}</span>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="muted player-history-empty"><Msg key="ui.players.notInGroupYet" /></p>
+      {/if}
+    </section>
+
     {#if history.showNoMatchesAvailable}
       <p class="muted player-history-empty"><Msg key="ui.players.noMatchesAvailable" /></p>
-    {:else}
-      {#if history.groupSection}
-        <section class="player-history-section">
-          <h4 class="player-history-heading">
-            {displayLabelForGroup(history.groupSection.group, locale)}
-          </h4>
-          <ul class="player-history-lines">
-            {#each history.groupSection.lines as line (line.opponentId)}
-              <li class="player-history-line">
-                <span class="player-history-focal">{playerName}</span>
-                {#if scoreText(line)}
-                  <span class="player-history-score">{scoreText(line)}</span>
-                {:else}
-                  <span class="player-history-score player-history-score--pending" aria-hidden="true">—</span>
-                {/if}
-                <span class="player-history-opponent">{opponentName(line.opponentId)}</span>
-              </li>
-            {/each}
-          </ul>
-        </section>
-      {/if}
-
-      {#each history.bracketSections as section (section.round)}
-        <section class="player-history-section">
-          <h4 class="player-history-heading">
-            {bracketKnockoutRoundLabel(locale, section.round, tournament.bracketMatches)}
-          </h4>
-          <ul class="player-history-lines">
-            {#each section.lines as line (`${section.round}-${line.opponentId}`)}
-              <li class="player-history-line">
-                <span class="player-history-focal">{playerName}</span>
-                {#if scoreText(line)}
-                  <span class="player-history-score">{scoreText(line)}</span>
-                {:else}
-                  <span class="player-history-score player-history-score--pending" aria-hidden="true">—</span>
-                {/if}
-                <span class="player-history-opponent">{opponentName(line.opponentId)}</span>
-              </li>
-            {/each}
-          </ul>
-        </section>
-      {/each}
     {/if}
+
+    {#each history.bracketSections as section (section.round)}
+      <section class="player-history-section">
+        <h4 class="player-history-heading">
+          {bracketKnockoutRoundLabel(locale, section.round, tournament.bracketMatches)}
+        </h4>
+        <ul class="player-history-lines">
+          {#each section.lines as line (`${section.round}-${line.opponentId}`)}
+            <li class="player-history-line">
+              <span class="player-history-focal">{playerName}</span>
+              {#if scoreText(line)}
+                <span class="player-history-score">{scoreText(line)}</span>
+              {:else}
+                <span class="player-history-score player-history-score--pending" aria-hidden="true">—</span>
+              {/if}
+              <span class="player-history-opponent">{opponentName(line.opponentId)}</span>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/each}
   </div>
 </div>
 
@@ -170,6 +201,28 @@
     font-weight: 650;
     color: #475569;
     letter-spacing: 0.01em;
+  }
+
+  .player-history-heading-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin: 0 0 0.5rem;
+  }
+
+  .player-history-heading-row .player-history-heading {
+    margin: 0;
+  }
+
+  .player-history-group-select {
+    min-width: 9.5rem;
+    padding: 0.35rem 0.5rem;
+    border-radius: 10px;
+    border: 1px solid #e2e8f0;
+    background: #fff;
+    color: #0f172a;
+    font-size: 0.9rem;
   }
 
   .player-history-lines {
