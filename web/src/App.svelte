@@ -61,6 +61,7 @@
   import BracketStreamView from './BracketStreamView.svelte';
   import { displayBracketColumns } from './bracketStream/displayColumns';
   import PlayerName from './PlayerName.svelte';
+  import PlayerMatchHistoryModal from './PlayerMatchHistoryModal.svelte';
   import TournamentOverview from './TournamentOverview.svelte';
   import {
     deleteTournament,
@@ -717,6 +718,15 @@
 
   let scoreModalMatchId = $state<string | null>(null);
   let scoreModalHint = $state<string | null>(null);
+  let playerHistoryModalPid = $state<string | null>(null);
+
+  function openPlayerHistoryModal(pid: string): void {
+    playerHistoryModalPid = pid;
+  }
+
+  function closePlayerHistoryModal(): void {
+    playerHistoryModalPid = null;
+  }
 
   function completedLegalGameScores(rows: ScoreRow[]): GameScore[] {
     const out: GameScore[] = [];
@@ -3320,7 +3330,18 @@
                 {#each activeSess.playerOrder as pid (pid)}
                   <li class="player-row">
                     <div class="player-main">
-                      <span class="name">{playerLabel(pid)}</span>
+                      {#if !useClassTabs}
+                        <button
+                          type="button"
+                          class="name player-name-btn"
+                          aria-label={msgText('ui.players.openMatchHistory', { name: playerLabel(pid) })}
+                          onclick={() => openPlayerHistoryModal(pid)}
+                        >
+                          {playerLabel(pid)}
+                        </button>
+                      {:else}
+                        <span class="name">{playerLabel(pid)}</span>
+                      {/if}
                       {#if handicapEnabled}
                         <span class="hc-wrap">
                           <label class="hc-label" for={`hc-${pid}`}><Msg key="ui.handicap" /></label>
@@ -4173,6 +4194,15 @@
         </div>
       </div>
     {/if}
+  {/if}
+
+  {#if playerHistoryModalPid && !useClassTabs}
+    <PlayerMatchHistoryModal
+      {tournament}
+      playerId={playerHistoryModalPid}
+      playerName={playerLabel(playerHistoryModalPid)}
+      onClose={closePlayerHistoryModal}
+    />
   {/if}
 </div>
 
@@ -5134,6 +5164,26 @@
   .player-main .name {
     flex: 1 1 8rem;
     min-width: 6rem;
+  }
+
+  .player-name-btn {
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+    font-weight: 600;
+    color: #0f4c81;
+    text-align: left;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: rgb(15 76 129 / 35%);
+    text-underline-offset: 0.15em;
+  }
+
+  .player-name-btn:hover {
+    color: #0a3d6b;
+    text-decoration-color: currentColor;
   }
 
   .player-classes {

@@ -1,0 +1,215 @@
+<script lang="ts">
+  import type { Tournament } from 'ttc-tornooiapp';
+  import {
+    bracketKnockoutRoundLabel,
+    buildSingleTournamentPlayerMatchHistory,
+    displayLabelForGroup,
+    type PlayerMatchHistoryLine,
+  } from 'ttc-tornooiapp';
+  import Msg from './i18n/Msg.svelte';
+  import { getLocale } from './i18n/locale.svelte';
+  import { msgText } from './i18n/msg';
+
+  let {
+    tournament,
+    playerId,
+    playerName,
+    onClose,
+  }: {
+    tournament: Tournament;
+    playerId: string;
+    playerName: string;
+    onClose: () => void;
+  } = $props();
+
+  const locale = $derived(getLocale());
+  const history = $derived(buildSingleTournamentPlayerMatchHistory(tournament, playerId));
+
+  function opponentName(opponentId: string): string {
+    return tournament.players[opponentId]?.name ?? opponentId;
+  }
+
+  function scoreText(line: PlayerMatchHistoryLine): string | null {
+    if (!line.score) return null;
+    return `${line.score.playerGames}-${line.score.opponentGames}`;
+  }
+</script>
+
+<div class="modal-root player-history-modal-root">
+  <button
+    type="button"
+    class="modal-scrim"
+    aria-label={msgText('ui.close')}
+    onclick={onClose}
+  ></button>
+  <div
+    class="modal-dialog player-history-dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="player-history-title"
+    tabindex="-1"
+  >
+    <header class="modal-head">
+      <h3 id="player-history-title" class="modal-title">{playerName}</h3>
+      <button type="button" class="btn subtle small-inline" onclick={onClose}><Msg key="ui.close" /></button>
+    </header>
+
+    {#if history.showNoMatchesAvailable}
+      <p class="muted player-history-empty"><Msg key="ui.players.noMatchesAvailable" /></p>
+    {:else}
+      {#if history.groupSection}
+        <section class="player-history-section">
+          <h4 class="player-history-heading">
+            {displayLabelForGroup(history.groupSection.group, locale)}
+          </h4>
+          <ul class="player-history-lines">
+            {#each history.groupSection.lines as line (line.opponentId)}
+              <li class="player-history-line">
+                <span class="player-history-focal">{playerName}</span>
+                {#if scoreText(line)}
+                  <span class="player-history-score">{scoreText(line)}</span>
+                {:else}
+                  <span class="player-history-score player-history-score--pending" aria-hidden="true">—</span>
+                {/if}
+                <span class="player-history-opponent">{opponentName(line.opponentId)}</span>
+              </li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
+
+      {#each history.bracketSections as section (section.round)}
+        <section class="player-history-section">
+          <h4 class="player-history-heading">
+            {bracketKnockoutRoundLabel(locale, section.round, tournament.bracketMatches)}
+          </h4>
+          <ul class="player-history-lines">
+            {#each section.lines as line (`${section.round}-${line.opponentId}`)}
+              <li class="player-history-line">
+                <span class="player-history-focal">{playerName}</span>
+                {#if scoreText(line)}
+                  <span class="player-history-score">{scoreText(line)}</span>
+                {:else}
+                  <span class="player-history-score player-history-score--pending" aria-hidden="true">—</span>
+                {/if}
+                <span class="player-history-opponent">{opponentName(line.opponentId)}</span>
+              </li>
+            {/each}
+          </ul>
+        </section>
+      {/each}
+    {/if}
+  </div>
+</div>
+
+<style>
+  .player-history-modal-root {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 1.5rem 1rem 2rem;
+    overflow-y: auto;
+  }
+
+  .player-history-modal-root :global(.modal-scrim) {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: rgb(15 23 42 / 45%);
+    cursor: pointer;
+  }
+
+  .player-history-dialog {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 30rem;
+    margin-top: 2vh;
+    padding: 1rem 1.15rem 1.15rem;
+    border-radius: 14px;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 12px 40px rgb(15 23 42 / 18%);
+  }
+
+  .player-history-modal-root :global(.modal-head) {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.35rem;
+  }
+
+  .player-history-modal-root :global(.modal-title) {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+    line-height: 1.3;
+  }
+
+  .player-history-empty {
+    margin: 0.35rem 0 0;
+    font-size: 0.92rem;
+  }
+
+  .player-history-section + .player-history-section {
+    margin-top: 1rem;
+    padding-top: 0.85rem;
+    border-top: 1px solid #e2e8f0;
+  }
+
+  .player-history-heading {
+    margin: 0 0 0.5rem;
+    font-size: 0.88rem;
+    font-weight: 650;
+    color: #475569;
+    letter-spacing: 0.01em;
+  }
+
+  .player-history-lines {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .player-history-line {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: baseline;
+    gap: 0.5rem;
+    font-size: 0.9rem;
+    line-height: 1.35;
+  }
+
+  .player-history-focal {
+    font-weight: 600;
+    text-align: left;
+    word-break: break-word;
+  }
+
+  .player-history-score {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: #0f172a;
+    white-space: nowrap;
+  }
+
+  .player-history-score--pending {
+    color: #94a3b8;
+    font-weight: 500;
+  }
+
+  .player-history-opponent {
+    text-align: right;
+    word-break: break-word;
+  }
+</style>

@@ -1,4 +1,5 @@
 export * from './model';
+export * from './player-match-history';
 export * from './command';
 export * from './controller';
 export * from './view';

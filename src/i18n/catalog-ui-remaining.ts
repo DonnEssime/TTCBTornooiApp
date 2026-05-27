@@ -101,6 +101,8 @@ export const uiRemainingCatalog = {
   'ui.bracket.round.sixtyFourth': t('1/64th', '1/64e'),
   'ui.bracket.round.thirtySecond': t('1/32nd', '1/32e'),
   'ui.bracket.round.sixteenth': t('1/16th', '1/16e'),
+  'ui.players.noMatchesAvailable': t('No matches available', 'Geen wedstrijden beschikbaar'),
+  'ui.players.openMatchHistory': t('View match history for {{name}}', 'Wedstrijdoverzicht voor {{name}}'),
   'ui.bracket.round.eighth': t('1/8th', '1/8e'),
   'ui.bracket.round.quarter': t('1/4th', '1/4e'),
   'ui.bracket.round.half': t('1/2nd', '1/2e'),
