@@ -189,8 +189,8 @@ describe('Tournament tables', () => {
   it('ClearMatchTableAssignment is undoable', () => {
     const c = new TournamentController();
     c.setTournamentTables(['1', '2'], [], 'tabs');
-    c.createPlayer('a', 'Ann', 0, 'pa');
-    c.createPlayer('b', 'Bob', 0, 'pb');
+    c.createPlayer('a', 'Ann', 0, '', 'pa');
+    c.createPlayer('b', 'Bob', 0, '', 'pb');
     c.createMatch('m', 'a', 'b', ['pb'], 'cm');
     c.assignMatchToTable('m', '2', ['cm'], 'at');
     expect(c.getTournament().matches['m']?.status).toBe('in-progress');

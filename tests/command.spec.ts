@@ -23,6 +23,34 @@ function appendUndo(runner: CommandRunner, targetId: string, undoId: string): Re
 const iso = () => new Date().toISOString();
 
 describe('Player display name uniqueness', () => {
+  it('allows same name with different misc when misc config is active', () => {
+    const runner = new CommandRunner();
+    const ts = new Date().toISOString();
+    runner.execute({
+      id: 'mc1',
+      type: 'SetMiscConfig',
+      dependsOn: [],
+      payload: { config: { label: 'club' } },
+      timestamp: ts,
+    });
+    runner.execute({
+      id: 'c1',
+      type: 'CreatePlayer',
+      dependsOn: ['mc1'],
+      payload: { playerId: 'p1', name: 'Ann', handicap: 0, misc: 'Club A' },
+      timestamp: ts,
+    });
+    expect(
+      runner.execute({
+        id: 'c2',
+        type: 'CreatePlayer',
+        dependsOn: ['mc1'],
+        payload: { playerId: 'p2', name: 'Ann', handicap: 0, misc: 'Club B' },
+        timestamp: ts,
+      }),
+    ).toEqual({ success: true });
+  });
+
   it('rejects CreatePlayer when name matches existing (case and spacing insensitive)', () => {
     const runner = new CommandRunner();
     expect(
@@ -835,8 +863,8 @@ describe('EnterScore', () => {
 describe('ClearBracket', () => {
   it('removes bracket structure, knockout matches, locks, and bracket forfeits', () => {
     const c = new TournamentController();
-    expect(c.createPlayer('p1', 'A', 0, 'cmd-p1')).toEqual({ success: true });
-    expect(c.createPlayer('p2', 'B', 0, 'cmd-p2')).toEqual({ success: true });
+    expect(c.createPlayer('p1', 'A', 0, '', 'cmd-p1')).toEqual({ success: true });
+    expect(c.createPlayer('p2', 'B', 0, '', 'cmd-p2')).toEqual({ success: true });
     expect(c.setSeedings(['p1', 'p2'], ['cmd-p1', 'cmd-p2'], 'cmd-seed')).toEqual({ success: true });
     expect(c.generateBracket(true, false, ['cmd-seed'], 'cmd-gen')).toEqual({ success: true });
     expect(c.createMatch('match-m1', 'p1', 'p2', ['cmd-gen', 'cmd-p1', 'cmd-p2'], 'cmd-pair')).toEqual({
@@ -860,8 +888,8 @@ describe('ClearBracket', () => {
 
   it('fails when any knockout match has recorded play', () => {
     const c = new TournamentController();
-    expect(c.createPlayer('p1', 'A', 0, 'cmd-p1')).toEqual({ success: true });
-    expect(c.createPlayer('p2', 'B', 0, 'cmd-p2')).toEqual({ success: true });
+    expect(c.createPlayer('p1', 'A', 0, '', 'cmd-p1')).toEqual({ success: true });
+    expect(c.createPlayer('p2', 'B', 0, '', 'cmd-p2')).toEqual({ success: true });
     expect(c.setSeedings(['p1', 'p2'], ['cmd-p1', 'cmd-p2'], 'cmd-seed')).toEqual({ success: true });
     expect(c.generateBracket(true, false, ['cmd-seed'], 'cmd-gen')).toEqual({ success: true });
     expect(c.createMatch('match-m1', 'p1', 'p2', ['cmd-gen', 'cmd-p1', 'cmd-p2'], 'cmd-pair')).toEqual({
@@ -885,8 +913,8 @@ describe('ClearBracket', () => {
 describe('Bracket undoLast coalescing', () => {
   it('undoLast on a round-1 CreateMatch that depends on GenerateBracket undoes the whole bracket batch', () => {
     const c = new TournamentController();
-    expect(c.createPlayer('p1', 'A', 0, 'cmd-p1')).toEqual({ success: true });
-    expect(c.createPlayer('p2', 'B', 0, 'cmd-p2')).toEqual({ success: true });
+    expect(c.createPlayer('p1', 'A', 0, '', 'cmd-p1')).toEqual({ success: true });
+    expect(c.createPlayer('p2', 'B', 0, '', 'cmd-p2')).toEqual({ success: true });
     expect(c.setSeedings(['p1', 'p2'], ['cmd-p1', 'cmd-p2'], 'cmd-seed-br')).toEqual({ success: true });
     expect(c.generateBracket(true, false, ['cmd-seed-br'], 'cmd-gen-br')).toEqual({ success: true });
     expect(c.createMatch('match-m1', 'p1', 'p2', ['cmd-gen-br', 'cmd-p1', 'cmd-p2'], 'cmd-gen-br-pair-m1')).toEqual({

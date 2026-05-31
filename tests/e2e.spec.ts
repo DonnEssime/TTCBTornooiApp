@@ -7,10 +7,10 @@ describe('End-to-end tournament flow', () => {
     const controller = new TournamentController(undefined, { debug: true });
     controller.setView(new ConsoleTournamentView());
 
-    expect(controller.createPlayer('p1', 'Alice', 0, 'cmd-p1')).toEqual({ success: true });
-    expect(controller.createPlayer('p2', 'Bob', 0, 'cmd-p2')).toEqual({ success: true });
-    expect(controller.createPlayer('p3', 'Charlie', 0, 'cmd-p3')).toEqual({ success: true });
-    expect(controller.createPlayer('p4', 'Dana', 0, 'cmd-p4')).toEqual({ success: true });
+    expect(controller.createPlayer('p1', 'Alice', 0, '', 'cmd-p1')).toEqual({ success: true });
+    expect(controller.createPlayer('p2', 'Bob', 0, '', 'cmd-p2')).toEqual({ success: true });
+    expect(controller.createPlayer('p3', 'Charlie', 0, '', 'cmd-p3')).toEqual({ success: true });
+    expect(controller.createPlayer('p4', 'Dana', 0, '', 'cmd-p4')).toEqual({ success: true });
 
     expect(controller.setSeedings(['p1', 'p2', 'p3', 'p4'], [], 'cmd-seed')).toEqual({ success: true });
     expect(controller.generateBracket(true, false, ['cmd-seed'], 'cmd-gen')).toEqual({ success: true });
@@ -62,8 +62,8 @@ describe('End-to-end tournament flow', () => {
     const controller = new TournamentController();
     controller.setView(new ConsoleTournamentView());
 
-    expect(controller.createPlayer('p1', 'Alice', 0, 'c-p1')).toEqual({ success: true });
-    expect(controller.createPlayer('p2', 'Bob', 0, 'c-p2')).toEqual({ success: true });
+    expect(controller.createPlayer('p1', 'Alice', 0, '', 'c-p1')).toEqual({ success: true });
+    expect(controller.createPlayer('p2', 'Bob', 0, '', 'c-p2')).toEqual({ success: true });
     expect(controller.createTeam('t1', 'Team Alpha', ['p1'], [], 'c-t1')).toEqual({ success: true });
     expect(controller.createTeam('t2', 'Team Beta', ['p2'], [], 'c-t2')).toEqual({ success: true });
 

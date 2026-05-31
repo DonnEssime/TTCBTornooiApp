@@ -33,7 +33,12 @@ import {
   syncBracketMatchPlayerRows,
   teamMatchWinner,
   tournamentUsesClassTabs,
-  isPlayerDisplayNameTaken,
+  isPlayerDisplayIdentityTaken,
+  isMiscActive,
+  normalizeMiscConfig,
+  normalizedPlayerMiscValue,
+  DEFAULT_MISC_CONFIG,
+  type MiscConfig,
   bracketScopeForPlayerMatch,
   bracketMatchRound,
   canMutateExistingGroupPhaseMatchScores,
@@ -65,6 +70,7 @@ export type CommandType =
   | 'SetRoundLock'
   | 'SetSeedings'
   | 'SetHandicapConfig'
+  | 'SetMiscConfig'
   | 'SetTournamentClasses'
   | 'SetPlayerClassFlags'
   | 'SetGroups'
@@ -91,7 +97,7 @@ export interface CommandBase {
 
 export interface CreatePlayerCommand extends CommandBase {
   type: 'CreatePlayer';
-  payload: { playerId: string; name: string; handicap: number };
+  payload: { playerId: string; name: string; handicap: number; misc?: string };
 }
 
 export interface CreateTeamCommand extends CommandBase {
@@ -147,6 +153,11 @@ export interface SetSeedingsCommand extends CommandBase {
 export interface SetHandicapConfigCommand extends CommandBase {
   type: 'SetHandicapConfig';
   payload: { config: HandicapConfig | null };
+}
+
+export interface SetMiscConfigCommand extends CommandBase {
+  type: 'SetMiscConfig';
+  payload: { config: MiscConfig | null };
 }
 
 export interface SetTournamentClassesCommand extends CommandBase {
@@ -247,7 +258,7 @@ export interface AdvanceBracketRoundCommand extends CommandBase {
 
 export interface RenamePlayerCommand extends CommandBase {
   type: 'RenamePlayer';
-  payload: { playerId: string; name: string; handicap?: number };
+  payload: { playerId: string; name: string; handicap?: number; misc?: string };
 }
 
 export interface UndoCommand extends CommandBase {
@@ -268,6 +279,7 @@ export type Command =
   | SetRoundLockCommand
   | SetSeedingsCommand
   | SetHandicapConfigCommand
+  | SetMiscConfigCommand
   | SetTournamentClassesCommand
   | SetPlayerClassFlagsCommand
   | SetGroupsCommand
@@ -619,11 +631,21 @@ export class CommandRunner {
     switch (command.type) {
       case 'CreatePlayer': {
         const { playerId, name, handicap } = command.payload;
+        const miscRaw = command.payload.misc ?? '';
         if (tournament.players[playerId]) {
           return commandFail('command.playerAlreadyExists');
         }
-        if (isPlayerDisplayNameTaken(tournament, name)) {
-          return commandFail('command.playerNameAlreadyExists');
+        const miscLabel = tournament.miscConfig?.label ?? DEFAULT_MISC_CONFIG.label;
+        if (isMiscActive(tournament)) {
+          if (!normalizedPlayerMiscValue(miscRaw)) {
+            return commandFail('command.playerMiscRequired', { label: miscLabel });
+          }
+        }
+        if (isPlayerDisplayIdentityTaken(tournament, name, miscRaw)) {
+          return commandFail(
+            isMiscActive(tournament) ? 'command.playerNameMiscAlreadyExists' : 'command.playerNameAlreadyExists',
+            isMiscActive(tournament) ? { label: miscLabel } : undefined,
+          );
         }
         const hcErr = tournament.handicapConfig
           ? validatePlayerHandicapForTournament(tournament, handicap)
@@ -634,7 +656,8 @@ export class CommandRunner {
         const hc = tournament.handicapConfig
           ? clampPlayerHandicapValue(tournament.handicapConfig, handicap)
           : Math.max(0, Math.floor(handicap));
-        tournament.players[playerId] = { id: playerId, name, handicap: hc };
+        const misc = isMiscActive(tournament) ? miscRaw.trim().replace(/\s+/g, ' ') : '';
+        tournament.players[playerId] = { id: playerId, name, handicap: hc, misc };
         tournament.playerClassFlags[playerId] = {};
         for (const c of tournament.classDefinitions) {
           tournament.playerClassFlags[playerId][c.id] = false;
@@ -880,6 +903,18 @@ export class CommandRunner {
           tournament.handicapConfig = normalized;
         } else {
           delete tournament.handicapConfig;
+        }
+        return { success: true };
+      }
+      case 'SetMiscConfig': {
+        const normalized = normalizeMiscConfig(command.payload.config ?? undefined);
+        if (command.payload.config != null && !normalized) {
+          return commandFail('command.invalidMiscConfiguration');
+        }
+        if (normalized) {
+          tournament.miscConfig = normalized;
+        } else {
+          delete tournament.miscConfig;
         }
         return { success: true };
       }
@@ -1393,15 +1428,26 @@ export class CommandRunner {
         return { success: true };
       }
       case 'RenamePlayer': {
-        const { playerId, name, handicap } = command.payload;
+        const { playerId, name, handicap, misc } = command.payload;
         const p = tournament.players[playerId];
         if (!p) {
           return commandFail('command.playerNotFound');
         }
-        if (isPlayerDisplayNameTaken(tournament, name, playerId)) {
-          return commandFail('command.playerNameAlreadyExists');
+        const nextMisc = misc !== undefined ? misc : (p.misc ?? '');
+        const miscLabel = tournament.miscConfig?.label ?? DEFAULT_MISC_CONFIG.label;
+        if (isMiscActive(tournament) && misc !== undefined && !normalizedPlayerMiscValue(misc)) {
+          return commandFail('command.playerMiscRequired', { label: miscLabel });
+        }
+        if (isPlayerDisplayIdentityTaken(tournament, name, nextMisc, playerId)) {
+          return commandFail(
+            isMiscActive(tournament) ? 'command.playerNameMiscAlreadyExists' : 'command.playerNameAlreadyExists',
+            isMiscActive(tournament) ? { label: miscLabel } : undefined,
+          );
         }
         p.name = name;
+        if (misc !== undefined) {
+          p.misc = isMiscActive(tournament) ? misc.trim().replace(/\s+/g, ' ') : '';
+        }
         if (handicap !== undefined) {
           const hcErr = tournament.handicapConfig
             ? validatePlayerHandicapForTournament(tournament, handicap)

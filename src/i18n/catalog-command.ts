@@ -25,6 +25,18 @@ export const commandCatalog = {
     'A player with this name already exists',
     'Er bestaat al een speler met deze naam',
   ),
+  'command.playerNameMiscAlreadyExists': t(
+    'A player with this name and {{label}} already exists',
+    'Er bestaat al een speler met deze naam en {{label}}',
+  ),
+  'command.playerMiscRequired': t(
+    '{{label}} is required for each player',
+    '{{label}} is verplicht voor elke speler',
+  ),
+  'command.invalidMiscConfiguration': t(
+    'Invalid misc field configuration',
+    'Ongeldige configuratie voor extra veld',
+  ),
   'command.teamAlreadyExists': t('Team already exists', 'Ploeg bestaat al'),
   'command.playerNotFoundWithId': t('Player not found: {{playerId}}', 'Speler niet gevonden: {{playerId}}'),
   'command.playerMatchesNotAllowedInTeamFixture': t(

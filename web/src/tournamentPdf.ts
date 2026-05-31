@@ -11,6 +11,7 @@ import type {
 import { txt } from 'ttc-tornooiapp';
 import {
   formatBracketSlotPlayerLabel,
+  formatPlayerDisplayLabel,
   gameWinner,
   groupNumberedTitle,
   propagateBracketSeedsFromChildWinners,
@@ -40,7 +41,7 @@ function sortGroups(groups: Record<string, GroupDefinition>): GroupDefinition[] 
 }
 
 function playerName(t: Tournament, pid: string): string {
-  return t.players[pid]?.name ?? pid;
+  return formatPlayerDisplayLabel(t, pid);
 }
 
 function groupStandingsWl(

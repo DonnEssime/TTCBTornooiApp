@@ -9,6 +9,8 @@ const FOOTER_SUMMARY_KEYS: string[] = [
   'ui.summary.updatedPlayer',
   'ui.summary.setSeeding',
   'ui.summary.disabledHandicap',
+  'ui.summary.disabledMisc',
+  'ui.summary.miscConfig',
   'ui.summary.handicapConfig',
   'ui.summary.enteredScores',
   'ui.summary.enteredMatchScores',
@@ -68,6 +70,7 @@ const COMMAND_TYPES: CommandType[] = [
   'SetRoundLock',
   'SetSeedings',
   'SetHandicapConfig',
+  'SetMiscConfig',
   'SetTournamentClasses',
   'SetPlayerClassFlags',
   'SetGroups',
@@ -94,6 +97,6 @@ describe('command summary i18n', () => {
   });
 
   it('lists a summary mapping for each command type', () => {
-    expect(COMMAND_TYPES.length).toBe(27);
+    expect(COMMAND_TYPES.length).toBe(28);
   });
 });

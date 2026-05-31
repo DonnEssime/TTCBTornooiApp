@@ -11,6 +11,8 @@ export const uiSummaryCatalog = {
   'ui.summary.updatedPlayer': t('Updated player "{{name}}".', 'Speler "{{name}}" bijgewerkt.'),
   'ui.summary.setSeeding': t('Set seeding order ({{count}} players).', 'Klassement ingesteld ({{count}} spelers).'),
   'ui.summary.disabledHandicap': t('Disabled handicap tracking.', 'Handicapregistratie uitgeschakeld.'),
+  'ui.summary.disabledMisc': t('Disabled per-player misc tracking.', 'Extra veld per speler uitgeschakeld.'),
+  'ui.summary.miscConfig': t('Per-player field: {{label}}.', 'Veld per speler: {{label}}.'),
   'ui.summary.handicapConfig': t(
     'Handicap: numerical {{min}}–{{max}}, {{crit}}, max adjustment {{adj}}.',
     'Handicap: numeriek {{min}}–{{max}}, {{crit}}, max. aanpassing {{adj}}.',
@@ -189,6 +191,7 @@ export const uiSummaryCatalog = {
   'ui.fallback.removeBracket': t('Could not remove bracket', 'Afvallingstabel kon niet worden verwijderd'),
   'ui.fallback.elimination': t('Elimination failed', 'Eliminatie mislukt'),
   'ui.fallback.updateHandicap': t('Could not update handicap', 'Handicap kon niet worden bijgewerkt'),
+  'ui.fallback.applyMiscSettings': t('Could not apply per-player field settings', 'Instellingen voor extra veld konden niet worden toegepast'),
   'ui.fallback.setRoundLock': e('SetRoundLock failed'),
   'ui.fallback.stoppedScoring': t(
     'Stopped while scoring {{id}} ({{done}} done).',

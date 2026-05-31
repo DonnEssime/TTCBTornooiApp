@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Tournament } from 'ttc-tornooiapp';
-  import { formatBracketSlotPlayerLabel, isHandicapActive } from 'ttc-tornooiapp';
+  import { formatBracketSlotPlayerLabel, isHandicapActive, isMiscActive } from 'ttc-tornooiapp';
   import { getLocale } from './i18n/locale.svelte';
 
   let {
@@ -32,20 +32,26 @@
   const handicap = $derived(
     isHandicapActive(tournament) ? (tournament.players[playerId]?.handicap ?? null) : null,
   );
+  const misc = $derived.by(() => {
+    if (!isMiscActive(tournament)) return null;
+    const trimmed = tournament.players[playerId]?.misc?.trim() ?? '';
+    return trimmed.length > 0 ? trimmed : null;
+  });
 </script>
 
 {#if tag === 'strong'}
   <strong>
-    {name}{#if handicap !== null}{' '}<span class="player-handicap">({handicap})</span>{/if}
+    {name}{#if handicap !== null}{' '}<span class="player-handicap">({handicap})</span>{/if}{#if misc !== null}{' '}<span class="player-misc">({misc})</span>{/if}
   </strong>
 {:else}
   <span>
-    {name}{#if handicap !== null}{' '}<span class="player-handicap">({handicap})</span>{/if}
+    {name}{#if handicap !== null}{' '}<span class="player-handicap">({handicap})</span>{/if}{#if misc !== null}{' '}<span class="player-misc">({misc})</span>{/if}
   </span>
 {/if}
 
 <style>
-  .player-handicap {
+  .player-handicap,
+  .player-misc {
     margin-left: 0.2em;
     font-style: italic;
     font-weight: 400;

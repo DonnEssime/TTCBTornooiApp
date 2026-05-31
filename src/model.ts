@@ -9,6 +9,8 @@ export interface Player {
   id: PlayerId;
   name: string;
   handicap: number; // per tournament fixed
+  /** Per-player value for the tournament misc field (e.g. club); used when {@link Tournament.miscConfig} is set. */
+  misc?: string;
 }
 
 export interface Team {
@@ -117,6 +119,26 @@ export const DEFAULT_NUMERICAL_HANDICAP_CONFIG: HandicapConfig = {
   maxStartAdjustment: 7,
 };
 
+/** Per-tournament label for an extra per-player text field (v1: free-text "club" style). */
+export interface MiscConfig {
+  /** UI label for the field (default: club). */
+  label: string;
+}
+
+export const DEFAULT_MISC_CONFIG: MiscConfig = {
+  label: 'club',
+};
+
+export function isMiscActive(tournament: Tournament): boolean {
+  return Boolean(tournament.miscConfig);
+}
+
+export function normalizeMiscConfig(raw: Partial<MiscConfig> | null | undefined): MiscConfig | undefined {
+  if (!raw) return undefined;
+  const label = String(raw.label ?? DEFAULT_MISC_CONFIG.label).trim() || DEFAULT_MISC_CONFIG.label;
+  return { label };
+}
+
 export function isHandicapActive(tournament: Tournament): boolean {
   return Boolean(tournament.handicapConfig);
 }
@@ -210,6 +232,8 @@ export interface Tournament {
   classTournaments: Record<string, ClassTournamentSlice>;
   /** When set, player handicaps are tracked and validated for this tournament. */
   handicapConfig?: HandicapConfig;
+  /** When set, each player carries a misc value (e.g. club) and identity is (name, misc). */
+  miscConfig?: MiscConfig;
 }
 
 export function createTournament(): Tournament {
@@ -239,18 +263,77 @@ export function normalizedPlayerDisplayName(name: string): string {
   return name.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+/** Normalize misc value for duplicate checks (trim, collapse spaces, case-fold). */
+export function normalizedPlayerMiscValue(misc: string): string {
+  return misc.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
 /**
- * True when another player already uses this display name (case-insensitive; leading/trailing/duplicate spaces ignored).
- * Optional `exceptPlayerId` skips that player (e.g. rename-in-place). Player ids remain the canonical identity.
+ * True when another player already uses this display identity.
+ * Without {@link Tournament.miscConfig}: name only (case-insensitive).
+ * With misc config: (name, misc) pair must be unique.
+ * Optional `exceptPlayerId` skips that player (e.g. rename-in-place).
  */
-export function isPlayerDisplayNameTaken(tournament: Tournament, name: string, exceptPlayerId?: PlayerId): boolean {
-  const key = normalizedPlayerDisplayName(name);
-  if (!key) return false;
+export function isPlayerDisplayIdentityTaken(
+  tournament: Tournament,
+  name: string,
+  misc: string,
+  exceptPlayerId?: PlayerId,
+): boolean {
+  const nameKey = normalizedPlayerDisplayName(name);
+  if (!nameKey) return false;
+  const miscKey = isMiscActive(tournament) ? normalizedPlayerMiscValue(misc) : '';
+  if (isMiscActive(tournament) && !miscKey) return false;
   for (const [id, p] of Object.entries(tournament.players)) {
     if (exceptPlayerId !== undefined && id === exceptPlayerId) continue;
-    if (normalizedPlayerDisplayName(p.name) === key) return true;
+    if (normalizedPlayerDisplayName(p.name) !== nameKey) continue;
+    if (isMiscActive(tournament)) {
+      if (normalizedPlayerMiscValue(p.misc ?? '') === miscKey) return true;
+    } else {
+      return true;
+    }
   }
   return false;
+}
+
+/**
+ * True when another player already uses this display name (name-only tournaments).
+ * When misc config is active, always returns false — use {@link isPlayerDisplayIdentityTaken} instead.
+ */
+export function isPlayerDisplayNameTaken(tournament: Tournament, name: string, exceptPlayerId?: PlayerId): boolean {
+  if (isMiscActive(tournament)) return false;
+  return isPlayerDisplayIdentityTaken(tournament, name, '', exceptPlayerId);
+}
+
+/** Plain-text player label with optional handicap and misc suffixes in separate parentheses. */
+export function formatPlayerDisplayLabel(tournament: Tournament, playerId: PlayerId): string {
+  const p = tournament.players[playerId];
+  if (!p) return playerId;
+  let out = p.name;
+  if (isHandicapActive(tournament)) {
+    out += ` (${p.handicap})`;
+  }
+  if (isMiscActive(tournament)) {
+    const trimmed = (p.misc ?? '').trim();
+    if (trimmed) out += ` (${trimmed})`;
+  }
+  return out;
+}
+
+const DEBUG_PLAYER_MISC_VALUES = [
+  'TT Borgerhout',
+  'Eendracht Aalst',
+  'Spinners',
+  'Lobbes',
+  'Hageland',
+  'Waasland',
+  'Kempen',
+  'Noordrand',
+] as const;
+
+export function randomDebugPlayerMiscValue(rng: () => number = Math.random): string {
+  const i = Math.floor(rng() * DEBUG_PLAYER_MISC_VALUES.length);
+  return DEBUG_PLAYER_MISC_VALUES[Math.min(DEBUG_PLAYER_MISC_VALUES.length - 1, Math.max(0, i))]!;
 }
 
 export function emptyClassTournamentSlice(): ClassTournamentSlice {

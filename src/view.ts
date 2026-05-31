@@ -105,7 +105,11 @@ export class HtmlStringTournamentView implements TournamentView {
 
   private renderTournamentToHtml(tournament: Tournament): string {
     const playersHtml = Object.values(tournament.players)
-      .map((p) => `<li>${this.escapeHtml(p.id)}: ${this.escapeHtml(p.name)} (handicap ${p.handicap})</li>`)
+      .map((p) => {
+        const misc = p.misc?.trim();
+        const miscPart = misc ? `, ${this.escapeHtml(misc)}` : '';
+        return `<li>${this.escapeHtml(p.id)}: ${this.escapeHtml(p.name)} (handicap ${p.handicap}${miscPart})</li>`;
+      })
       .join('');
     const teamsHtml = Object.values(tournament.teams)
       .map((t) => `<li>${this.escapeHtml(t.id)}: ${this.escapeHtml(t.name)} (${t.memberIds.map((id) => this.escapeHtml(id)).join(', ')})</li>`)
@@ -173,7 +177,11 @@ export class DomTournamentView implements TournamentView {
 
   private renderTournamentToHtml(tournament: Tournament): string {
     const playersHtml = Object.values(tournament.players)
-      .map((p) => `<li>${this.escapeHtml(p.id)}: ${this.escapeHtml(p.name)} (handicap ${p.handicap})</li>`)
+      .map((p) => {
+        const misc = p.misc?.trim();
+        const miscPart = misc ? `, ${this.escapeHtml(misc)}` : '';
+        return `<li>${this.escapeHtml(p.id)}: ${this.escapeHtml(p.name)} (handicap ${p.handicap}${miscPart})</li>`;
+      })
       .join('');
     const teamsHtml = Object.values(tournament.teams)
       .map((t) => `<li>${this.escapeHtml(t.id)}: ${this.escapeHtml(t.name)} (${t.memberIds.map((id) => this.escapeHtml(id)).join(', ')})</li>`)

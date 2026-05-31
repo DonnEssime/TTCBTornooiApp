@@ -34,9 +34,15 @@
     handicapValueBounds,
     isExactClosedFormBracketGrid,
     isHandicapActive,
+    isMiscActive,
+    isPlayerDisplayIdentityTaken,
     matchPlayersResolvedForBracketPhaseList,
     normalizeHandicapConfig,
+    normalizeMiscConfig,
+    formatPlayerDisplayLabel,
+    DEFAULT_MISC_CONFIG,
     randomPlayerHandicapValue,
+    randomDebugPlayerMiscValue,
     singleEliminationPlacementRows,
     gameWinner,
     generateBracket,
@@ -150,6 +156,8 @@
 
   let tournament = $state<Tournament>(createTournament());
   const handicapEnabled = $derived(isHandicapActive(tournament));
+  const miscEnabled = $derived(isMiscActive(tournament));
+  const miscFieldLabel = $derived(tournament.miscConfig?.label ?? msgText('ui.misc.defaultLabel'));
   const handicapBounds = $derived(
     tournament.handicapConfig ? handicapValueBounds(tournament.handicapConfig) : { min: 0, max: 0 },
   );
@@ -386,6 +394,7 @@
 
   let newName = $state('');
   let newHc = $state(0);
+  let newMisc = $state('');
 
   /** New tournament wizard (Settings). */
   let draftTournamentName = $state('Tournament');
@@ -396,6 +405,8 @@
     DEFAULT_NUMERICAL_HANDICAP_CONFIG.startingCriteria,
   );
   let draftHandicapMaxStart = $state(DEFAULT_NUMERICAL_HANDICAP_CONFIG.maxStartAdjustment);
+  let draftMiscEnabled = $state(false);
+  let draftMiscLabel = $state(DEFAULT_MISC_CONFIG.label);
   let draftTournamentFormat = $state<TournamentFormat>('group-bracket');
   let draftClassesEnabled = $state(false);
   let draftClassEditorRows = $state<Array<{ id: string; name: string }>>([
@@ -695,6 +706,11 @@
         maxStartAdjustment: draftHandicapMaxStart,
       }) ?? null
     );
+  }
+
+  function draftMiscConfigFromWizard() {
+    if (!draftMiscEnabled) return null;
+    return normalizeMiscConfig({ label: draftMiscLabel.trim() || DEFAULT_MISC_CONFIG.label }) ?? null;
   }
 
   function randomHandicapForTournament(rng: () => number = Math.random): number {
@@ -1430,8 +1446,10 @@
       showWarnKey('ui.debug_fill_is_disabled_while_a_team_vs_team_matc');
       return;
     }
-    const basePool = debugAllAdjNounNames().filter((nm) => !isPlayerDisplayNameTaken(t0, nm));
-    if (basePool.length < n) {
+    const basePool = isMiscActive(t0)
+      ? debugAllAdjNounNames()
+      : debugAllAdjNounNames().filter((nm) => !isPlayerDisplayNameTaken(t0, nm));
+    if (!isMiscActive(t0) && basePool.length < n) {
       showWarn(
         `Only ${basePool.length} unused debug name(s) are available; reduce the count or rename/remove players.`,
       );
@@ -1447,7 +1465,24 @@
         const id = newId();
         const cmdId = `cmd-${id}`;
         const hc = randomHandicapForTournament(rng);
-        const r = c.createPlayer(id, pool[i]!, hc, cmdId);
+        const playerName = pool[i % pool.length]!;
+        let misc = '';
+        if (isMiscActive(t0)) {
+          for (let attempt = 0; attempt < 48; attempt++) {
+            const candidate = randomDebugPlayerMiscValue(rng);
+            if (!isPlayerDisplayIdentityTaken(c.getTournament(), playerName, candidate)) {
+              misc = candidate;
+              break;
+            }
+          }
+          if (!misc.trim()) {
+            showCommandError({ success: false, reason: 'command.playerNameMiscAlreadyExists' }, 'ui.fallback.stoppedAfterPlayers', {
+              n: String(addedIds.length),
+            });
+            return;
+          }
+        }
+        const r = c.createPlayer(id, playerName, hc, misc, cmdId);
         if (!r.success) {
           showCommandError(r, 'ui.fallback.stoppedAfterPlayers', { n: String(addedIds.length) });
           return;
@@ -2082,6 +2117,15 @@
         return;
       }
     }
+    const miscConfig = draftMiscConfigFromWizard();
+    if (miscConfig) {
+      const cmdId = `cmd-misc-init-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
+      const rMisc = controller.setMiscConfig(miscConfig, [], cmdId);
+      if (!rMisc.success) {
+        showCommandError(rMisc, 'ui.fallback.applyMiscSettings');
+        return;
+      }
+    }
     const namedClasses = draftClassesEnabled
       ? draftClassEditorRows
           .map((r) => ({
@@ -2139,6 +2183,8 @@
     draftHandicapMax = DEFAULT_NUMERICAL_HANDICAP_CONFIG.maxValue;
     draftHandicapStartingCriteria = DEFAULT_NUMERICAL_HANDICAP_CONFIG.startingCriteria;
     draftHandicapMaxStart = DEFAULT_NUMERICAL_HANDICAP_CONFIG.maxStartAdjustment;
+    draftMiscEnabled = false;
+    draftMiscLabel = DEFAULT_MISC_CONFIG.label;
     draftClassesEnabled = false;
     draftClassEditorRows = [{ id: newCompetitionClassId(), name: '' }];
     draftTournamentFormat = 'group-bracket';
@@ -2273,7 +2319,12 @@
     const c = s0.controller;
     const cfg = s0.controller.getTournament().handicapConfig;
     const hc = cfg ? clampPlayerHandicapValue(cfg, Number(newHc) || 0) : 0;
-    const r = c.createPlayer(id, name, hc, cmdId);
+    const misc = miscEnabled ? newMisc.trim() : '';
+    if (miscEnabled && !misc) {
+      showWarnKey('command.playerMiscRequired', { label: miscFieldLabel });
+      return;
+    }
+    const r = c.createPlayer(id, name, hc, misc, cmdId);
     if (!r.success) {
       showCommandError(r, 'ui.fallback.addPlayer');
       return;
@@ -2302,6 +2353,7 @@
     }
     newName = '';
     newHc = 0;
+    newMisc = '';
     showInfoKey('ui.toast.addedPlayer', { name, id });
     pull();
   }
@@ -2473,7 +2525,7 @@
     const next = clampPlayerHandicapValue(cfg, Number.isFinite(raw) ? raw : 0);
     if (next === p.handicap) return;
     const cmdId = `cmd-hc-${playerId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
-    const r = c.renamePlayer(playerId, p.name, next, [`cmd-${playerId}`], cmdId);
+    const r = c.renamePlayer(playerId, p.name, next, undefined, [`cmd-${playerId}`], cmdId);
     if (!r.success) {
       showCommandError(r, 'ui.fallback.updateHandicap');
     } else {
@@ -2484,7 +2536,7 @@
 
   function playerLabel(id: string | undefined): string {
     if (!id) return '—';
-    return tournament.players[id]?.name ?? id;
+    return formatPlayerDisplayLabel(tournament, id);
   }
 
   function bracketRows(matches: BracketMatch[]): BracketMatch[] {
@@ -2697,6 +2749,11 @@
           crit,
           adj: String(cfg.maxStartAdjustment),
         });
+      }
+      case 'SetMiscConfig': {
+        const cfg = cmd.payload.config;
+        if (!cfg) return msg('ui.summary.disabledMisc');
+        return msg('ui.summary.miscConfig', { label: cfg.label });
       }
       case 'EnterScore': {
         const m = t.matches[cmd.payload.matchId];
@@ -3071,6 +3128,22 @@
               </fieldset>
             {/if}
 
+            <div class="checkbox-line checkbox-line-misc">
+              <label class="checkbox-misc-toggle">
+                <input type="checkbox" bind:checked={draftMiscEnabled} />
+                <Msg key="ui.include_misc_for_players_before" />
+              </label>
+              <input
+                type="text"
+                class="misc-label-inline"
+                bind:value={draftMiscLabel}
+                maxlength="40"
+                placeholder={msgText('ui.misc.defaultLabel')}
+                autocomplete="off"
+              />
+              <span><Msg key="ui.include_misc_for_players_after" /></span>
+            </div>
+
             <label class="checkbox-line">
               <input type="checkbox" bind:checked={draftClassesEnabled} />
               <span><Msg key="ui.use_competition_classes" /></span>
@@ -3305,6 +3378,20 @@
                 }}
               >
                 <input class="grow" placeholder={msgText('ui.name')} bind:value={newName} autocomplete="off" />
+                {#if miscEnabled}
+                  <label class="hc-add-wrap" for="new-player-misc">
+                    <span class="hc-label">{miscFieldLabel}</span>
+                    <input
+                      id="new-player-misc"
+                      class="hc grow"
+                      type="text"
+                      bind:value={newMisc}
+                      maxlength="80"
+                      autocomplete="off"
+                      placeholder={miscFieldLabel}
+                    />
+                  </label>
+                {/if}
                 {#if handicapEnabled}
                   <label class="hc-add-wrap" for="new-player-hc">
                     <span class="hc-label"><Msg key="ui.handicap" /></span>
@@ -4686,6 +4773,32 @@
     gap: 0.5rem;
     font-size: 0.92rem;
     cursor: pointer;
+  }
+
+  .checkbox-line-misc {
+    flex-wrap: wrap;
+  }
+
+  .checkbox-misc-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+  }
+
+  .misc-label-inline {
+    width: 6.5rem;
+    padding: 0.15rem 0.4rem;
+    font-size: inherit;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    background: #fff;
+    cursor: text;
+  }
+
+  .misc-label-inline:focus {
+    outline: 2px solid #93c5fd;
+    outline-offset: 1px;
   }
 
   .draft-classes {

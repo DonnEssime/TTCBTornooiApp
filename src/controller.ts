@@ -15,6 +15,7 @@ import {
   SetRoundLockCommand,
   SetSeedingsCommand,
   SetHandicapConfigCommand,
+  SetMiscConfigCommand,
   SetTournamentClassesCommand,
   SetPlayerClassFlagsCommand,
   SetGroupsCommand,
@@ -31,7 +32,7 @@ import {
   type RenamePlayerCommand,
   type UndoCommand,
 } from './command';
-import { Tournament, type BracketSeedingMode, type HandicapConfig } from './model';
+import { Tournament, type BracketSeedingMode, type HandicapConfig, type MiscConfig } from './model';
 import {
   parseCommandLogLines,
   replayCommandsFromJsonLines,
@@ -93,13 +94,19 @@ export class TournamentController {
     return `cmd-${Math.random().toString(36).substring(2, 10)}`;
   }
 
-  createPlayer(playerId: string, name: string, handicap = 0, commandId?: string): CommandResult {
+  createPlayer(
+    playerId: string,
+    name: string,
+    handicap = 0,
+    misc = '',
+    commandId?: string,
+  ): CommandResult {
     const command: CreatePlayerCommand = {
       id: commandId ?? this.newCommandId(),
       type: 'CreatePlayer',
       timestamp: this.makeTimestamp(),
       dependsOn: [],
-      payload: { playerId, name, handicap },
+      payload: { playerId, name, handicap, misc },
     };
     const result = this.runner.execute(command);
     this.view?.renderMessage(`CreatePlayer: ${JSON.stringify(result)}`);
@@ -225,6 +232,20 @@ export class TournamentController {
     };
     const result = this.runner.execute(command);
     this.view?.renderMessage(`SetHandicapConfig: ${JSON.stringify(result)}`);
+    this.view?.renderTournament(this.getTournament());
+    return result;
+  }
+
+  setMiscConfig(config: MiscConfig | null, dependsOn: string[] = [], commandId?: string): CommandResult {
+    const command: SetMiscConfigCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'SetMiscConfig',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: { config },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`SetMiscConfig: ${JSON.stringify(result)}`);
     this.view?.renderTournament(this.getTournament());
     return result;
   }
@@ -569,13 +590,23 @@ export class TournamentController {
     return result;
   }
 
-  renamePlayer(playerId: string, name: string, handicap?: number, dependsOn: string[] = [], commandId?: string): CommandResult {
+  renamePlayer(
+    playerId: string,
+    name: string,
+    handicap?: number,
+    misc?: string,
+    dependsOn: string[] = [],
+    commandId?: string,
+  ): CommandResult {
+    const payload: RenamePlayerCommand['payload'] = { playerId, name };
+    if (handicap !== undefined) payload.handicap = handicap;
+    if (misc !== undefined) payload.misc = misc;
     const command: RenamePlayerCommand = {
       id: commandId ?? this.newCommandId(),
       type: 'RenamePlayer',
       timestamp: this.makeTimestamp(),
       dependsOn,
-      payload: handicap !== undefined ? { playerId, name, handicap } : { playerId, name },
+      payload,
     };
     const result = this.runner.execute(command);
     this.view?.renderMessage(`RenamePlayer: ${JSON.stringify(result)}`);
