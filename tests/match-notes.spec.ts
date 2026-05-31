@@ -3,6 +3,7 @@ import {
   collectMatchNoteSlipBatches,
   collectMatchNoteSlips,
   matchNotesPageCount,
+  matchNotesSegmentHasSlips,
   MATCH_NOTES_GAMES_PER_SLIP,
   MATCH_NOTES_SLIPS_PER_PAGE,
 } from '../src/match-notes';
@@ -103,5 +104,74 @@ describe('match-notes', () => {
     r1[0]!.winner = r1[0]!.seedA!;
     const afterWin = collectMatchNoteSlips(t, { kind: 'bracket-round', round: 1 }, 'en');
     expect(afterWin.length).toBe(1);
+  });
+
+  it('blocks bracket-round printing when any pending match lacks both known players', () => {
+    const t = createTournament();
+    t.players = {
+      p1: { id: 'p1', name: 'A', handicap: 0 },
+      p2: { id: 'p2', name: 'B', handicap: 0 },
+      p3: { id: 'p3', name: 'C', handicap: 0 },
+      p4: { id: 'p4', name: 'D', handicap: 0 },
+    };
+    t.groups = {
+      g1: { id: 'g1', label: 'Alpha', playerIds: ['p1', 'p2'] },
+      g2: { id: 'g2', label: 'Beta', playerIds: ['p3', 'p4'] },
+    };
+    t.matches = {
+      'gm-g1-p1-p2': {
+        id: 'gm-g1-p1-p2',
+        playerA: 'p1',
+        playerB: 'p2',
+        scores: [],
+        status: 'scheduled',
+        groupId: 'g1',
+      },
+      'gm-g2-p3-p4': {
+        id: 'gm-g2-p3-p4',
+        playerA: 'p3',
+        playerB: 'p4',
+        scores: [],
+        status: 'scheduled',
+        groupId: 'g2',
+      },
+    };
+    t.bracketMatches = generateBracket(['p1', 'p2', 'p3', 'p4'], { fillByes: false, cullToPowerOfTwo: false });
+    const segment = { kind: 'bracket-round' as const, round: 1 };
+    expect(matchNotesSegmentHasSlips(t, segment, 'en')).toBe(false);
+    expect(collectMatchNoteSlips(t, segment, 'en')).toEqual([]);
+
+    t.matches['gm-g1-p1-p2']!.status = 'finished';
+    t.matches['gm-g1-p1-p2']!.scores = [
+      { playerA: 11, playerB: 0 },
+      { playerA: 11, playerB: 0 },
+      { playerA: 11, playerB: 0 },
+    ];
+    t.matches['gm-g1-p1-p2']!.winner = 'p1';
+    expect(matchNotesSegmentHasSlips(t, segment, 'en')).toBe(false);
+
+    t.matches['gm-g2-p3-p4']!.status = 'finished';
+    t.matches['gm-g2-p3-p4']!.scores = [
+      { playerA: 11, playerB: 0 },
+      { playerA: 11, playerB: 0 },
+      { playerA: 11, playerB: 0 },
+    ];
+    t.matches['gm-g2-p3-p4']!.winner = 'p3';
+    expect(matchNotesSegmentHasSlips(t, segment, 'en')).toBe(true);
+    expect(collectMatchNoteSlips(t, segment, 'en').length).toBe(2);
+  });
+
+  it('blocks bracket-round printing when a pending match is still waiting for an opponent', () => {
+    const t = createTournament();
+    for (let i = 1; i <= 4; i++) {
+      const id = `p${i}`;
+      t.players[id] = { id, name: `P${i}`, handicap: 0 };
+    }
+    const bracket = generateBracket(['p1', 'p2', 'p3', 'p4'], { fillByes: false, cullToPowerOfTwo: false });
+    t.bracketMatches = bracket;
+    bracket[0]!.winner = bracket[0]!.seedA!;
+    const segment = { kind: 'bracket-round' as const, round: 2 };
+    expect(matchNotesSegmentHasSlips(t, segment, 'en')).toBe(false);
+    expect(collectMatchNoteSlips(t, segment, 'en')).toEqual([]);
   });
 });

@@ -14,6 +14,10 @@ export const modelCatalog = {
     'Handicap moet een geheel getal zijn van {{min}} tot {{max}}',
   ),
   'model.unknownClassId': t('Unknown class id.', 'Onbekend reeks-id.'),
+  'model.trackClassIdRequired': t(
+    'A competition class id is required for this action.',
+    'Een reeks-id is verplicht voor deze actie.',
+  ),
   'model.clearBracketPerClassTrack': t(
     'Clear the bracket from each class track when multiple competition classes are defined.',
     'Wis de afvallingstabel per reeks wanneer er meerdere wedstrijdreeksen zijn ingesteld.',

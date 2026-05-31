@@ -17,7 +17,7 @@ import {
   propagateBracketSeedsFromChildWinners,
   settleBracketWinnersIn,
   singleEliminationPlacementRows,
-  tournamentUsesClassTabs,
+  listCompetitionTracks,
 } from 'ttc-tornooiapp';
 import { drawBracketStreamOnPdf } from './bracketStream/pdfDraw';
 import { bracketStreamPdfLayout } from './bracketStream/pdfLayout';
@@ -137,14 +137,11 @@ type PdfTrack = {
 };
 
 function collectTracks(t: Tournament): PdfTrack[] {
-  if (!tournamentUsesClassTabs(t)) {
-    return [{ groups: t.groups, bracketMatches: t.bracketMatches }];
-  }
-  return t.classDefinitions.map((def) => ({
-    heading: def.name,
-    groups: t.classTournaments[def.id]?.groups ?? {},
-    bracketMatches: t.classTournaments[def.id]?.bracketMatches ?? [],
-    classId: def.id,
+  return listCompetitionTracks(t).map((tr) => ({
+    heading: tr.classId ? t.classDefinitions.find((d) => d.id === tr.classId)?.name : undefined,
+    groups: tr.groups,
+    bracketMatches: tr.bracketMatches,
+    classId: tr.classId,
   }));
 }
 

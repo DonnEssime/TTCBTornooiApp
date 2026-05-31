@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { BracketMatch, GroupDefinition, Match, MatchNotesSegment, Tournament } from 'ttc-tornooiapp';
+  import { listCompetitionTracks, trackGroupMatches, trackTitle } from 'ttc-tornooiapp';
   import {
     bracketKnockoutRoundParams,
     bracketMatchRound,
@@ -248,14 +249,6 @@
     });
   }
 
-  function groupMatchesFiltered(t: Tournament, classId: string | undefined): Match[] {
-    return Object.values(t.matches).filter((m) => {
-      if (!m.groupId) return false;
-      if (classId === undefined) return !m.classId;
-      return m.classId === classId;
-    });
-  }
-
   function pct(done: number, total: number): number {
     if (total <= 0) return 0;
     return Math.round((100 * done) / total);
@@ -286,7 +279,7 @@
 
   function groupProgressForMatch(t: Tournament, m: Match): { total: number; done: number } {
     const classScope = m.classId ?? undefined;
-    const gm = groupMatchesFiltered(t, classScope).filter((x) => x.groupId === m.groupId);
+    const gm = trackGroupMatches(t, classScope).filter((x) => x.groupId === m.groupId);
     return groupPhaseCounts(gm);
   }
 
@@ -310,7 +303,7 @@
   }
 
   function readyGroupMatches(t: Tournament, classId: string | undefined): Match[] {
-    return groupMatchesFiltered(t, classId)
+    return trackGroupMatches(t, classId)
       .filter((m) => m.status === 'scheduled' && m.scores.length === 0)
       .sort((a, b) => a.id.localeCompare(b.id));
   }
@@ -372,29 +365,14 @@
 
   const tracks = $derived.by((): TrackSlice[] => {
     void getLocale();
-    if (!useClassTabs) {
-      return [
-        {
-          key: 'main',
-          title: msgText('ui.ov.mainDraw'),
-          classId: undefined,
-          groups: tournament.groups,
-          bracketMatches: tournament.bracketMatches,
-        },
-      ];
-    }
-    const out: TrackSlice[] = [];
-    for (const def of tournament.classDefinitions) {
-      const sl = tournament.classTournaments[def.id];
-      out.push({
-        key: def.id,
-        title: def.name?.trim() || def.id,
-        classId: def.id,
-        groups: sl?.groups ?? {},
-        bracketMatches: sl?.bracketMatches ?? [],
-      });
-    }
-    return out;
+    const mainLabel = msgText('ui.ov.mainDraw');
+    return listCompetitionTracks(tournament).map((tr) => ({
+      key: tr.classId ?? 'main',
+      title: trackTitle(tournament, tr.classId, mainLabel),
+      classId: tr.classId,
+      groups: tr.groups,
+      bracketMatches: tr.bracketMatches,
+    }));
   });
 
   /** All group matches across classes when multi-tab */
@@ -403,7 +381,7 @@
   }
 
   const aggregateGroupPhase = $derived.by(() => {
-    if (!useClassTabs) return groupPhaseCounts(groupMatchesFiltered(tournament, undefined));
+    if (!useClassTabs) return groupPhaseCounts(trackGroupMatches(tournament, undefined));
     return groupPhaseCounts(allClassGroupMatches(tournament));
   });
 
@@ -806,7 +784,7 @@
         <div class="ov-sub">
           {#each tracks as tr (tr.key)}
             {#each sortGroupsForDisplay(tr.groups) as g (g.id)}
-              {@const gm = groupMatchesFiltered(tournament, tr.classId).filter((m) => m.groupId === g.id)}
+              {@const gm = trackGroupMatches(tournament, tr.classId).filter((m) => m.groupId === g.id)}
               {@const c = groupPhaseCounts(gm)}
               {#if c.total > 0}
                 {@const poolSegment = { kind: 'group-pool', classId: tr.classId, groupId: g.id } as const}

@@ -11,8 +11,7 @@ Central list of larger product items not yet fully delivered. Smaller fixes and 
 
 ### Multiple competition classes tournaments
 
-- **Partial today:** competition classes can be defined; players are assigned per class; per-class group tabs exist (`SetClassGroups`).
-- **Still missing:** full tournament flows with multiple classes — e.g. per-class bracket generation from class tabs (global bracket control is disabled when class tabs are active), and any cross-class scheduling/reporting that product needs.
+- **Done:** competition classes, per-class registration flags, group phase (`SetClassGroups`), knockout generation/clear/elimination per class track, overview/PDF scoped by track. Single-class tournaments use the same command and model paths with `classId` omitted.
 
 ### Team vs team
 

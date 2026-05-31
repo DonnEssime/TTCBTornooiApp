@@ -2867,12 +2867,13 @@ export function materializeReadyNextRoundBracketSlots(bracketMatches: BracketMat
   return anyAdded;
 }
 
-export function advanceBracketRound(tournament: Tournament): Tournament {
-  propagateBracketSeedsFromChildWinners(tournament.bracketMatches);
-  const currentRound = Math.max(0, ...tournament.bracketMatches.map((m) => bracketMatchRound(m)));
-  const currentMatches = bracketMatchesSortedForPairing(tournament.bracketMatches, currentRound);
+/** Append next-round bracket pairings when the current round is complete. Returns new rows only. */
+export function advanceBracketRoundIn(bracketMatches: BracketMatch[]): BracketMatch[] {
+  propagateBracketSeedsFromChildWinners(bracketMatches);
+  const currentRound = Math.max(0, ...bracketMatches.map((m) => bracketMatchRound(m)));
+  const currentMatches = bracketMatchesSortedForPairing(bracketMatches, currentRound);
   if (currentMatches.length <= 1) {
-    return tournament;
+    return [];
   }
 
   for (const match of currentMatches) {
@@ -2883,7 +2884,7 @@ export function advanceBracketRound(tournament: Tournament): Tournament {
 
   const nextRound = currentRound + 1;
   const nextMatches: BracketMatch[] = [];
-  const base = tournament.bracketMatches;
+  const base = bracketMatches;
 
   for (let i = 0; i < currentMatches.length; i += 2) {
     const left = currentMatches[i]!;
@@ -2899,7 +2900,14 @@ export function advanceBracketRound(tournament: Tournament): Tournament {
     nextMatches.push(nm);
   }
 
-  tournament.bracketMatches = [...tournament.bracketMatches, ...nextMatches];
+  return nextMatches;
+}
+
+export function advanceBracketRound(tournament: Tournament): Tournament {
+  const added = advanceBracketRoundIn(tournament.bracketMatches);
+  if (added.length > 0) {
+    tournament.bracketMatches = [...tournament.bracketMatches, ...added];
+  }
   return tournament;
 }
 
@@ -3151,9 +3159,18 @@ export function isBracketRoundCompleteIn(bracketMatches: BracketMatch[], round: 
 
 /** True if any player match mapped to this bracket round has scores entered or is finished. */
 export function bracketRoundHasFinishedPlayerMatch(tournament: Tournament, round: number): boolean {
+  return bracketRoundHasFinishedPlayerMatchIn(tournament, tournament.bracketMatches, round);
+}
+
+/** Scoped to a specific bracket draw (main or class track). */
+export function bracketRoundHasFinishedPlayerMatchIn(
+  tournament: Tournament,
+  bracketMatches: BracketMatch[],
+  round: number,
+): boolean {
   for (const m of Object.values(tournament.matches)) {
     if (m.groupId) continue;
-    const r = findBracketRoundForPlayerPairing(tournament, m.playerA, m.playerB);
+    const r = findBracketRoundForPlayerPairingIn(bracketMatches, m.playerA, m.playerB);
     if (
       r === round &&
       (m.status === 'finished' || m.status === 'eliminated' || m.status === 'forfeit' || m.scores.length > 0)

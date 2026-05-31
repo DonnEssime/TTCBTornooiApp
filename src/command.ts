@@ -1,10 +1,18 @@
 import {
+  addGroupRoundRobinMatches,
+  applyBracketToTrack,
+  getCompetitionTrack,
+  listCompetitionTracks,
+  mutateCompetitionTrack,
+  resolveTrackClassId,
+  setTrackGroups,
+  trackSeedingsForBracket,
+  tournamentUsesClassTabs,
+} from './competition-track';
+import {
   Tournament,
-  advanceBracketRound,
-  applyBracketToTournament,
-  bracketRoundHasFinishedPlayerMatch,
-  buildNumberedGroupsFromPlayerOrder,
-  buildNumberedGroupsFromPlayerOrderByGroupCount,
+  advanceBracketRoundIn,
+  bracketRoundHasFinishedPlayerMatchIn,
   canMutateBracketPlayerMatch,
   createTournament,
   ensureBracketPhasePlayerMatchesIn,
@@ -22,17 +30,14 @@ import {
   playerMatchWinner,
   propagateBracketSeedsFromChildWinners,
   recomputeClassTournamentSlices,
-  roundRobinPairs,
   assignMatchToTable,
   clearMatchTableAssignment,
   releaseTableForFinishedOrClearedMatch,
   scheduleRound,
   setTournamentTables,
   settleBracketWinnersIn,
-  shuffleDeterministic,
   syncBracketMatchPlayerRows,
   teamMatchWinner,
-  tournamentUsesClassTabs,
   isPlayerDisplayIdentityTaken,
   isMiscActive,
   normalizeMiscConfig,
@@ -142,7 +147,7 @@ export interface TeamForfeitCommand extends CommandBase {
 
 export interface SetRoundLockCommand extends CommandBase {
   type: 'SetRoundLock';
-  payload: { bracketRound: number; locked: boolean };
+  payload: { bracketRound: number; locked: boolean; classId?: string };
 }
 
 export interface SetSeedingsCommand extends CommandBase {
@@ -182,7 +187,7 @@ export interface SetGroupsCommand extends CommandBase {
 
 export interface SetPlayerGroupCommand extends CommandBase {
   type: 'SetPlayerGroup';
-  payload: { playerId: string; groupId?: string | null };
+  payload: { playerId: string; groupId?: string | null; classId?: string };
 }
 
 export type SetClassGroupsPayload =
@@ -253,7 +258,7 @@ export interface ClearMatchTableAssignmentCommand extends CommandBase {
 
 export interface AdvanceBracketRoundCommand extends CommandBase {
   type: 'AdvanceBracketRound';
-  payload: Record<string, never>;
+  payload: { classId?: string };
 }
 
 export interface RenamePlayerCommand extends CommandBase {
@@ -307,32 +312,6 @@ function sortLog(log: Command[]): Command[] {
       return i - j;
     })
     .map(([, c]) => c);
-}
-
-/** Create scheduled round-robin matches for each group (skips existing match ids). */
-function addGroupRoundRobinMatches(
-  tournament: Tournament,
-  groupsRecord: Record<string, GroupDefinition>,
-  classId?: string,
-): void {
-  for (const g of Object.values(groupsRecord)) {
-    for (const [a, b] of roundRobinPairs(g.playerIds)) {
-      const sortedPair = [a, b].sort((x, y) => x.localeCompare(y));
-      const mid = classId
-        ? `gm-${classId}-${g.id}-${sortedPair[0]}-${sortedPair[1]}`
-        : `gm-${g.id}-${sortedPair[0]}-${sortedPair[1]}`;
-      if (tournament.matches[mid]) continue;
-      tournament.matches[mid] = {
-        id: mid,
-        playerA: a,
-        playerB: b,
-        scores: [],
-        status: 'scheduled',
-        groupId: g.id,
-        ...(classId ? { classId } : {}),
-      };
-    }
-  }
 }
 
 function groupMatchIdForPair(groupId: string, playerA: string, playerB: string, classId?: string): string {
@@ -857,24 +836,35 @@ export class CommandRunner {
         return { success: true };
       }
       case 'SetRoundLock': {
-        const { bracketRound, locked } = command.payload;
+        const { bracketRound, locked, classId } = command.payload;
         if (!Number.isInteger(bracketRound) || bracketRound < 1) {
           return commandFail('command.invalidBracketRound');
         }
+        const trackResolved = resolveTrackClassId(tournament, classId);
+        if ('key' in trackResolved) {
+          return commandFail(trackResolved.key);
+        }
+        const track = getCompetitionTrack(tournament, trackResolved.classId);
         if (locked) {
-          if (!tournament.lockedBracketRounds.includes(bracketRound)) {
-            tournament.lockedBracketRounds.push(bracketRound);
-            tournament.lockedBracketRounds.sort((a, b) => a - b);
+          if (!track.lockedBracketRounds.includes(bracketRound)) {
+            mutateCompetitionTrack(tournament, trackResolved.classId, (tr) => {
+              if (!tr.lockedBracketRounds.includes(bracketRound)) {
+                tr.lockedBracketRounds.push(bracketRound);
+                tr.lockedBracketRounds.sort((a, b) => a - b);
+              }
+            });
           }
           return { success: true };
         }
-        if (!tournament.lockedBracketRounds.includes(bracketRound)) {
+        if (!track.lockedBracketRounds.includes(bracketRound)) {
           return { success: true };
         }
-        if (bracketRoundHasFinishedPlayerMatch(tournament, bracketRound)) {
+        if (bracketRoundHasFinishedPlayerMatchIn(tournament, track.bracketMatches, bracketRound)) {
           return commandFail('command.cannotUnlockBracketRoundHasScores');
         }
-        tournament.lockedBracketRounds = tournament.lockedBracketRounds.filter((r) => r !== bracketRound);
+        mutateCompetitionTrack(tournament, trackResolved.classId, (tr) => {
+          tr.lockedBracketRounds = tr.lockedBracketRounds.filter((r) => r !== bracketRound);
+        });
         return { success: true };
       }
       case 'SetSeedings': {
@@ -1007,131 +997,47 @@ export class CommandRunner {
         if (Object.keys(tournament.teamMatches).length > 0) {
           return commandFail('command.groupsNotAvailableWithTeamMatch');
         }
-        const payload = command.payload as SetGroupsPayload;
-        const hasGroups = 'groups' in payload && payload.groups !== undefined;
-        const hasSize = 'targetGroupSize' in payload;
-        const hasCount = 'targetGroupCount' in payload;
-        if ((hasGroups ? 1 : 0) + (hasSize ? 1 : 0) + (hasCount ? 1 : 0) > 1) {
-          return {
-            success: false,
-            reason: 'command.setGroupsPassOneOf',
-          };
+        const result = setTrackGroups(
+          tournament,
+          undefined,
+          command.payload as SetGroupsPayload,
+          command.id,
+          {
+            passOneOf: 'command.setGroupsPassOneOf',
+            requiresOneOf: 'command.setGroupsRequiresOneOf',
+          },
+        );
+        if (result !== true) {
+          return commandFail(result.key, result.params);
         }
-        let shuffleGroupMemberOrder = false;
-        let groups: Array<{ id: string; label?: string; playerIds: string[] }>;
-        if (hasSize || hasCount) {
-          shuffleGroupMemberOrder = true;
-          const rawList = (payload as { playerIds: unknown }).playerIds;
-          if (!Array.isArray(rawList)) {
-            return {
-              success: false,
-              reason: 'command.playerIdsMustBeArray',
-            };
-          }
-          const ordered: string[] = [];
-          const seenPid = new Set<string>();
-          for (const x of rawList) {
-            const pid = String(x ?? '').trim();
-            if (!pid || seenPid.has(pid)) continue;
-            if (!tournament.players[pid]) {
-              return commandFail('command.unknownPlayer', { pid });
-            }
-            seenPid.add(pid);
-            ordered.push(pid);
-          }
-          if (hasSize) {
-            const ts = Number((payload as { targetGroupSize: number }).targetGroupSize);
-            const tInt = Math.floor(ts);
-            if (!Number.isFinite(ts) || tInt < 1) {
-              return commandFail('command.targetGroupSizePositive');
-            }
-            const defs = buildNumberedGroupsFromPlayerOrder(ordered, tInt);
-            groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
-          } else {
-            const tc = Number((payload as { targetGroupCount: number }).targetGroupCount);
-            const gInt = Math.floor(tc);
-            if (!Number.isFinite(tc) || gInt < 1) {
-              return commandFail('command.targetGroupCountPositive');
-            }
-            const defs = buildNumberedGroupsFromPlayerOrderByGroupCount(ordered, gInt);
-            groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
-          }
-        } else if (hasGroups) {
-          const arr = (payload as { groups: unknown }).groups;
-          if (!Array.isArray(arr)) {
-            return commandFail('command.groupsMustBeArray');
-          }
-          groups = arr as Array<{ id: string; label?: string; playerIds: string[] }>;
-        } else {
-          return {
-            success: false,
-            reason: 'command.setGroupsRequiresOneOf',
-          };
-        }
-        for (const mid of Object.keys(tournament.matches)) {
-          const m = tournament.matches[mid];
-          if (m.groupId && !m.classId) {
-            delete tournament.matches[mid];
-          }
-        }
-        const rec: Record<string, GroupDefinition> = {};
-        const gidSeen = new Set<string>();
-        const pidSeen = new Set<string>();
-        for (const raw of groups) {
-          const id = String(raw.id ?? '').trim();
-          if (!id) {
-            return commandFail('command.eachGroupNeedsId');
-          }
-          if (gidSeen.has(id)) {
-            return commandFail('command.duplicateGroupId');
-          }
-          gidSeen.add(id);
-          const label = String(raw.label ?? '').trim();
-          const playerIds = Array.isArray(raw.playerIds) ? [...raw.playerIds] : [];
-          for (const pid of playerIds) {
-            if (!tournament.players[pid]) {
-              return commandFail('command.unknownPlayerInGroup', { id, pid });
-            }
-            if (pidSeen.has(pid)) {
-              return commandFail('command.playerInMultipleGroups', { pid });
-            }
-            pidSeen.add(pid);
-          }
-          rec[id] = {
-            id,
-            ...(label ? { label } : {}),
-            playerIds: shuffleGroupMemberOrder
-              ? shuffleDeterministic(playerIds, `${command.id}:group-order:${id}`)
-              : [...playerIds],
-          };
-        }
-        tournament.groups = rec;
-        addGroupRoundRobinMatches(tournament, rec, undefined);
         return { success: true };
       }
       case 'SetPlayerGroup': {
-        if (tournamentUsesClassTabs(tournament)) {
-          return commandFail('command.playerGroupMoveNotSupportedMultiClass');
-        }
         if (Object.keys(tournament.teamMatches).length > 0) {
           return commandFail('command.groupsNotAvailableWithTeamMatch');
         }
-        const { playerId: pidRaw, groupId: gidRaw } = command.payload;
+        const { playerId: pidRaw, groupId: gidRaw, classId } = command.payload;
+        const trackResolved = resolveTrackClassId(tournament, classId);
+        if ('key' in trackResolved) {
+          return commandFail(trackResolved.key);
+        }
+        const trackClassId = trackResolved.classId;
         const pid = String(pidRaw ?? '').trim();
         if (!pid || !tournament.players[pid]) {
           return commandFail('command.playerNotFound');
         }
         const targetGroupId = gidRaw === undefined || gidRaw === null ? null : String(gidRaw).trim();
+        const track = getCompetitionTrack(tournament, trackClassId);
         if (targetGroupId !== null) {
           if (!targetGroupId) {
             return commandFail('command.groupIdRequired');
           }
-          if (!tournament.groups[targetGroupId]) {
+          if (!track.groups[targetGroupId]) {
             return commandFail('command.groupNotFound', { groupId: targetGroupId });
           }
         }
 
-        const currentGroup = Object.values(tournament.groups).find((g) => g.playerIds.includes(pid));
+        const currentGroup = Object.values(track.groups).find((g) => g.playerIds.includes(pid));
         const currentGroupId = currentGroup?.id ?? null;
         if (currentGroupId === targetGroupId) {
           return { success: true };
@@ -1143,26 +1049,28 @@ export class CommandRunner {
           }
         }
 
-        // Remove any scheduled group matches for this player across all groups (safe because leaving
-        // is blocked once any recorded group play exists).
-        deletePlayerScheduledGroupMatches(tournament, pid);
-
-        // Remove player from previous group (if any).
-        if (currentGroupId !== null) {
-          tournament.groups[currentGroupId]!.playerIds = tournament.groups[currentGroupId]!.playerIds.filter(
-            (x) => x !== pid,
-          );
+        for (const mid of Object.keys(tournament.matches)) {
+          const m = tournament.matches[mid];
+          if (!m || !m.groupId) continue;
+          if (m.playerA !== pid && m.playerB !== pid) continue;
+          if (trackClassId ? m.classId !== trackClassId : Boolean(m.classId)) continue;
+          if (m.scores.length > 0 || m.status !== 'scheduled') continue;
+          delete tournament.matches[mid];
         }
 
-        // Add player to new group (if any) and materialize missing round-robin matches vs its members.
+        if (currentGroupId !== null) {
+          const g = track.groups[currentGroupId]!;
+          g.playerIds = g.playerIds.filter((x) => x !== pid);
+        }
+
         if (targetGroupId !== null) {
-          const g = tournament.groups[targetGroupId]!;
+          const g = track.groups[targetGroupId]!;
           if (!g.playerIds.includes(pid)) {
             g.playerIds = [...g.playerIds, pid];
           }
           for (const other of g.playerIds) {
             if (other === pid) continue;
-            const mid = groupMatchIdForPair(g.id, pid, other, undefined);
+            const mid = groupMatchIdForPair(g.id, pid, other, trackClassId);
             if (tournament.matches[mid]) continue;
             tournament.matches[mid] = {
               id: mid,
@@ -1171,6 +1079,7 @@ export class CommandRunner {
               scores: [],
               status: 'scheduled',
               groupId: g.id,
+              ...(trackClassId ? { classId: trackClassId } : {}),
             };
           }
         }
@@ -1188,110 +1097,14 @@ export class CommandRunner {
         if (!cid || !tournament.classDefinitions.some((c) => c.id === cid)) {
           return commandFail('command.unknownClassId');
         }
-        const slice = tournament.classTournaments[cid];
-        if (!slice) {
-          return commandFail('command.classSliceNotFound');
+        const { classId: _cid, ...groupPayload } = payload;
+        const result = setTrackGroups(tournament, cid, groupPayload, command.id, {
+          passOneOf: 'command.setClassGroupsPassOneOf',
+          requiresOneOf: 'command.setClassGroupsRequiresOneOf',
+        });
+        if (result !== true) {
+          return commandFail(result.key, result.params);
         }
-        const eligible = new Set(slice.seedings);
-        const hasGroups = 'groups' in payload && payload.groups !== undefined;
-        const hasSize = 'targetGroupSize' in payload;
-        const hasCount = 'targetGroupCount' in payload;
-        if ((hasGroups ? 1 : 0) + (hasSize ? 1 : 0) + (hasCount ? 1 : 0) > 1) {
-          return {
-            success: false,
-            reason: 'command.setClassGroupsPassOneOf',
-          };
-        }
-        let shuffleGroupMemberOrder = false;
-        let groups: Array<{ id: string; label?: string; playerIds: string[] }>;
-        if (hasSize || hasCount) {
-          shuffleGroupMemberOrder = true;
-          const rawList = (payload as { playerIds: unknown }).playerIds;
-          if (!Array.isArray(rawList)) {
-            return {
-              success: false,
-              reason: 'command.playerIdsMustBeArray',
-            };
-          }
-          const ordered: string[] = [];
-          const seenPid = new Set<string>();
-          for (const x of rawList) {
-            const pid = String(x ?? '').trim();
-            if (!pid || seenPid.has(pid)) continue;
-            if (!eligible.has(pid)) {
-              return commandFail('command.playerNotInClassSeedingList', { pid });
-            }
-            seenPid.add(pid);
-            ordered.push(pid);
-          }
-          if (hasSize) {
-            const ts = Number((payload as { targetGroupSize: number }).targetGroupSize);
-            const tInt = Math.floor(ts);
-            if (!Number.isFinite(ts) || tInt < 1) {
-              return commandFail('command.targetGroupSizePositive');
-            }
-            const defs = buildNumberedGroupsFromPlayerOrder(ordered, tInt);
-            groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
-          } else {
-            const tc = Number((payload as { targetGroupCount: number }).targetGroupCount);
-            const gInt = Math.floor(tc);
-            if (!Number.isFinite(tc) || gInt < 1) {
-              return commandFail('command.targetGroupCountPositive');
-            }
-            const defs = buildNumberedGroupsFromPlayerOrderByGroupCount(ordered, gInt);
-            groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
-          }
-        } else if (hasGroups) {
-          const arr = (payload as { groups: unknown }).groups;
-          if (!Array.isArray(arr)) {
-            return commandFail('command.groupsMustBeArray');
-          }
-          groups = arr as Array<{ id: string; label?: string; playerIds: string[] }>;
-        } else {
-          return {
-            success: false,
-            reason: 'command.setClassGroupsRequiresOneOf',
-          };
-        }
-        for (const mid of Object.keys(tournament.matches)) {
-          const m = tournament.matches[mid];
-          if (m.classId === cid && m.groupId) {
-            delete tournament.matches[mid];
-          }
-        }
-        const rec: Record<string, GroupDefinition> = {};
-        const gidSeen = new Set<string>();
-        const pidSeen = new Set<string>();
-        for (const raw of groups) {
-          const id = String(raw.id ?? '').trim();
-          if (!id) {
-            return commandFail('command.eachGroupNeedsId');
-          }
-          if (gidSeen.has(id)) {
-            return commandFail('command.duplicateGroupId');
-          }
-          gidSeen.add(id);
-          const label = String(raw.label ?? '').trim();
-          const playerIds = Array.isArray(raw.playerIds) ? [...raw.playerIds] : [];
-          for (const pid of playerIds) {
-            if (!eligible.has(pid)) {
-              return commandFail('command.playerNotInClassSeedingList', { pid });
-            }
-            if (pidSeen.has(pid)) {
-              return commandFail('command.playerInMultipleGroups', { pid });
-            }
-            pidSeen.add(pid);
-          }
-          rec[id] = {
-            id,
-            ...(label ? { label } : {}),
-            playerIds: shuffleGroupMemberOrder
-              ? shuffleDeterministic(playerIds, `${command.id}:class:${cid}:group-order:${id}`)
-              : [...playerIds],
-          };
-        }
-        slice.groups = rec;
-        addGroupRoundRobinMatches(tournament, rec, cid);
         return { success: true };
       }
       case 'GenerateGroupRoundRobin': {
@@ -1310,7 +1123,7 @@ export class CommandRunner {
         if (Object.keys(tournament.teamMatches).length > 0) {
           return commandFail('command.groupRoundRobinNotWithTeamMatch');
         }
-        const groupsRecord = cid ? tournament.classTournaments[cid]?.groups ?? {} : tournament.groups;
+        const groupsRecord = getCompetitionTrack(tournament, cid).groups;
         if (Object.keys(groupsRecord).length === 0) {
           return commandFail('command.defineGroupsBeforeRoundRobin');
         }
@@ -1318,28 +1131,28 @@ export class CommandRunner {
         return { success: true };
       }
       case 'GenerateBracket': {
-        if (tournamentUsesClassTabs(tournament)) {
-          return {
-            success: false,
-            reason: 'command.globalBracketDisabledMultiClass',
-          };
-        }
         if (Object.keys(tournament.teamMatches).length > 0) {
           return commandFail('command.cannotGenerateBracketWithTeamMatch');
         }
         const { cullToPowerOfTwo, shuffleKey, tieBreakSalt, cullByGroupPlacement, classId, bracketSeedingMode } =
           command.payload;
+        const trackResolved = resolveTrackClassId(tournament, classId);
+        if ('key' in trackResolved) {
+          return commandFail(trackResolved.key);
+        }
+        const trackClassId = trackResolved.classId;
+        const seedings = trackSeedingsForBracket(tournament, trackClassId);
         try {
-          const bm = generateBracket(tournament.seedings, tournament, {
+          const bm = generateBracket(seedings, tournament, {
             fillByes: true,
             cullToPowerOfTwo: cullToPowerOfTwo ?? false,
             ...(shuffleKey !== undefined ? { shuffleKey } : {}),
             ...(tieBreakSalt !== undefined ? { tieBreakSalt } : {}),
             ...(cullByGroupPlacement ? { cullByGroupPlacement: true } : {}),
-            ...(classId !== undefined ? { classId } : {}),
+            ...(trackClassId !== undefined ? { classId: trackClassId } : {}),
             ...(bracketSeedingMode !== undefined ? { bracketSeedingMode } : {}),
           });
-          applyBracketToTournament(tournament, bm);
+          applyBracketToTrack(tournament, bm, trackClassId);
         } catch (e) {
           return commandFailFromText(e instanceof Error ? e.message : String(e));
         }
@@ -1349,28 +1162,35 @@ export class CommandRunner {
         if (Object.keys(tournament.teamMatches).length > 0) {
           return commandFail('command.cannotClearBracketWithTeamMatch');
         }
-        const err = clearBracketFromTournament(tournament, command.payload.classId);
+        const trackResolved = resolveTrackClassId(tournament, command.payload.classId);
+        if ('key' in trackResolved) {
+          return commandFail(trackResolved.key);
+        }
+        const err = clearBracketFromTournament(tournament, trackResolved.classId);
         if (err) {
           return commandFail(err.key, err.params);
         }
         return { success: true };
       }
       case 'EliminateLowestBracketRound': {
-        if (tournamentUsesClassTabs(tournament)) {
-          return {
-            success: false,
-            reason: 'command.globalBracketActionsDisabledMultiClass',
-          };
-        }
         if (Object.keys(tournament.teamMatches).length > 0) {
           return commandFail('command.bracketEliminationNotWithTeamMatch');
         }
         const { round, classId, tieBreakSalt } = command.payload;
+        const trackResolved = resolveTrackClassId(tournament, classId);
+        if ('key' in trackResolved) {
+          return commandFail(trackResolved.key);
+        }
         const r = Math.floor(Number(round));
         if (!Number.isFinite(r) || r < 1) {
           return commandFail('command.roundMustBePositive');
         }
-        const err = eliminateLowestRankedPlayersInBracketRound(tournament, r, classId, tieBreakSalt);
+        const err = eliminateLowestRankedPlayersInBracketRound(
+          tournament,
+          r,
+          trackResolved.classId,
+          tieBreakSalt,
+        );
         if (err) {
           return commandFail(err.key, err.params);
         }
@@ -1420,8 +1240,18 @@ export class CommandRunner {
         return { success: true };
       }
       case 'AdvanceBracketRound': {
+        const trackResolved = resolveTrackClassId(tournament, command.payload.classId);
+        if ('key' in trackResolved) {
+          return commandFail(trackResolved.key);
+        }
+        const track = getCompetitionTrack(tournament, trackResolved.classId);
         try {
-          advanceBracketRound(tournament);
+          const added = advanceBracketRoundIn(track.bracketMatches);
+          if (added.length > 0) {
+            mutateCompetitionTrack(tournament, trackResolved.classId, (tr) => {
+              tr.bracketMatches = [...tr.bracketMatches, ...added];
+            });
+          }
         } catch (e) {
           return commandFailFromText(e instanceof Error ? e.message : String(e));
         }
@@ -1467,17 +1297,18 @@ export class CommandRunner {
   }
 
   private reconcileBracketAfterScore(tournament: Tournament): void {
-    if (tournament.bracketMatches.length > 0) {
-      this.reconcileBracketScope(tournament, tournament.bracketMatches, true);
-    }
-    for (const slice of Object.values(tournament.classTournaments)) {
-      if (slice.bracketMatches.length > 0) {
-        this.reconcileBracketScope(tournament, slice.bracketMatches, false);
+    for (const track of listCompetitionTracks(tournament)) {
+      if (track.bracketMatches.length > 0) {
+        this.reconcileBracketScope(tournament, track.bracketMatches, track.classId);
       }
     }
   }
 
-  private reconcileBracketScope(tournament: Tournament, bracketMatches: BracketMatch[], allowAdvance: boolean): void {
+  private reconcileBracketScope(
+    tournament: Tournament,
+    bracketMatches: BracketMatch[],
+    classId: string | undefined,
+  ): void {
     if (bracketMatches.length === 0) {
       return;
     }
@@ -1493,12 +1324,22 @@ export class CommandRunner {
       settleBracketWinnersIn(tournament, bracketMatches);
       syncBracketMatchPlayerRows(tournament, bracketMatches);
     }
-    if (allowAdvance) {
-      const currentRound = Math.max(0, ...bracketMatches.map((m) => bracketMatchRound(m)));
-      if (isBracketRoundCompleteIn(bracketMatches, currentRound)) {
-        advanceBracketRound(tournament);
+    const currentRound = Math.max(0, ...bracketMatches.map((m) => bracketMatchRound(m)));
+    if (isBracketRoundCompleteIn(bracketMatches, currentRound)) {
+      try {
+        const added = advanceBracketRoundIn(bracketMatches);
+        if (added.length > 0) {
+          mutateCompetitionTrack(tournament, classId, (tr) => {
+            tr.bracketMatches = [...tr.bracketMatches, ...added];
+          });
+        }
+      } catch {
+        // Incomplete round winners — materialize path may still apply on next score.
       }
     }
-    ensureBracketPhasePlayerMatchesIn(tournament, bracketMatches);
+    ensureBracketPhasePlayerMatchesIn(
+      tournament,
+      getCompetitionTrack(tournament, classId).bracketMatches,
+    );
   }
 }

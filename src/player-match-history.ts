@@ -1,4 +1,9 @@
 import {
+  getCompetitionTrack,
+  tournamentUsesClassTabs,
+  trackTitle,
+} from './competition-track';
+import {
   type BracketMatch,
   type GroupDefinition,
   type Match,
@@ -32,12 +37,28 @@ export type PlayerMatchHistoryBracketSection = {
   lines: PlayerMatchHistoryLine[];
 };
 
+export type PlayerMatchHistoryTrackSection = {
+  classId: string | undefined;
+  trackTitle: string;
+  group: GroupDefinition | undefined;
+  groupSection: PlayerMatchHistoryGroupSection | null;
+  bracketSections: PlayerMatchHistoryBracketSection[];
+  bracketMatches: BracketMatch[];
+};
+
+export type PlayerTournamentMatchHistory = {
+  playerId: PlayerId;
+  tracks: PlayerMatchHistoryTrackSection[];
+  /** True when every track has no group assignment and no bracket rows. */
+  showNoMatchesAvailable: boolean;
+};
+
+/** @deprecated Use {@link PlayerTournamentMatchHistory}; kept for single-track callers. */
 export type SingleTournamentPlayerMatchHistory = {
   playerId: PlayerId;
   group: GroupDefinition | undefined;
   groupSection: PlayerMatchHistoryGroupSection | null;
   bracketSections: PlayerMatchHistoryBracketSection[];
-  /** True when there is no group assignment (or no groups) and no bracket rows for this player. */
   showNoMatchesAvailable: boolean;
 };
 
@@ -66,9 +87,11 @@ function findGroupMatchBetweenPlayers(
   groupId: string,
   playerA: PlayerId,
   playerB: PlayerId,
+  classId: string | undefined,
 ): Match | undefined {
   for (const m of Object.values(tournament.matches)) {
-    if (m.groupId !== groupId || m.classId) continue;
+    if (m.groupId !== groupId) continue;
+    if (classId ? m.classId !== classId : Boolean(m.classId)) continue;
     const ok =
       (m.playerA === playerA && m.playerB === playerB) || (m.playerA === playerB && m.playerB === playerA);
     if (ok) return m;
@@ -112,11 +135,12 @@ function compareGroupHistoryLinesByPlayOrder(
   tournament: Tournament,
   groupId: string,
   playerId: PlayerId,
+  classId: string | undefined,
   a: PlayerMatchHistoryLine,
   b: PlayerMatchHistoryLine,
 ): number {
-  const matchA = findGroupMatchBetweenPlayers(tournament, groupId, playerId, a.opponentId);
-  const matchB = findGroupMatchBetweenPlayers(tournament, groupId, playerId, b.opponentId);
+  const matchA = findGroupMatchBetweenPlayers(tournament, groupId, playerId, a.opponentId, classId);
+  const matchB = findGroupMatchBetweenPlayers(tournament, groupId, playerId, b.opponentId, classId);
   return compareGroupMatchPlayOrderKeys(
     groupMatchPlayOrderKey(tournament, matchA, a.opponentId),
     groupMatchPlayOrderKey(tournament, matchB, b.opponentId),
@@ -145,41 +169,102 @@ function bracketLinesForPlayer(
     .map((round) => ({ kind: 'bracket' as const, round, lines: byRound.get(round)! }));
 }
 
-/**
- * Match history for one player in a single-track (non–per-class) tournament.
- * Bracket sections use {@link tournament.bracketMatches} only.
- */
-export function buildSingleTournamentPlayerMatchHistory(
+function buildTrackSection(
   tournament: Tournament,
   playerId: PlayerId,
-): SingleTournamentPlayerMatchHistory {
-  const group = findGroupForPlayer(tournament, playerId, undefined);
-  const groupsExist = Object.keys(tournament.groups).length > 0;
+  classId: string | undefined,
+  trackTitleLabel: string,
+): PlayerMatchHistoryTrackSection {
+  const track = getCompetitionTrack(tournament, classId);
+  const group = findGroupForPlayer(tournament, playerId, classId);
+  const groupsExist = Object.keys(track.groups).length > 0;
 
   let groupSection: PlayerMatchHistoryGroupSection | null = null;
   if (group) {
     const lines: PlayerMatchHistoryLine[] = [];
     for (const opponentId of group.playerIds) {
       if (opponentId === playerId) continue;
-      const match = findGroupMatchBetweenPlayers(tournament, group.id, playerId, opponentId);
+      const match = findGroupMatchBetweenPlayers(tournament, group.id, playerId, opponentId, classId);
       lines.push({
         opponentId,
         score: match ? matchDecidedGamesWon(match, playerId) : null,
       });
     }
-    lines.sort((a, b) => compareGroupHistoryLinesByPlayOrder(tournament, group.id, playerId, a, b));
+    lines.sort((a, b) => compareGroupHistoryLinesByPlayOrder(tournament, group.id, playerId, classId, a, b));
     groupSection = { kind: 'group', group, lines };
   }
 
-  const bracketSections = bracketLinesForPlayer(tournament, tournament.bracketMatches, playerId);
-
-  const showNoMatchesAvailable = (!groupsExist || !group) && bracketSections.length === 0;
+  const bracketSections = bracketLinesForPlayer(tournament, track.bracketMatches, playerId);
 
   return {
-    playerId,
+    classId,
+    trackTitle: trackTitleLabel,
     group,
     groupSection,
     bracketSections,
+    bracketMatches: track.bracketMatches,
+  };
+}
+
+function trackHasNoMatches(tournament: Tournament, track: PlayerMatchHistoryTrackSection): boolean {
+  const groupsExist = Object.keys(getCompetitionTrack(tournament, track.classId).groups).length > 0;
+  return (!groupsExist || !track.group) && track.bracketSections.length === 0;
+}
+
+/** Match history for one player across all competition tracks they are entered in. */
+export function buildPlayerMatchHistory(
+  tournament: Tournament,
+  playerId: PlayerId,
+  mainDrawLabel: string,
+): PlayerTournamentMatchHistory {
+  const tracks: PlayerMatchHistoryTrackSection[] = [];
+
+  if (!tournamentUsesClassTabs(tournament)) {
+    tracks.push(buildTrackSection(tournament, playerId, undefined, mainDrawLabel));
+  } else {
+    const flags = tournament.playerClassFlags[playerId] ?? {};
+    for (const def of tournament.classDefinitions) {
+      if (!flags[def.id]) continue;
+      const title = trackTitle(tournament, def.id, mainDrawLabel);
+      tracks.push(buildTrackSection(tournament, playerId, def.id, title));
+    }
+  }
+
+  const showNoMatchesAvailable =
+    tracks.length === 0 ||
+    tracks.every((tr) => trackHasNoMatches(tournament, tr));
+
+  return {
+    playerId,
+    tracks,
     showNoMatchesAvailable,
+  };
+}
+
+/**
+ * Match history for one player in a single-track tournament (first/only track).
+ * @deprecated Prefer {@link buildPlayerMatchHistory} for multi-class support.
+ */
+export function buildSingleTournamentPlayerMatchHistory(
+  tournament: Tournament,
+  playerId: PlayerId,
+): SingleTournamentPlayerMatchHistory {
+  const full = buildPlayerMatchHistory(tournament, playerId, 'Main draw');
+  const track = full.tracks[0];
+  if (!track) {
+    return {
+      playerId,
+      group: undefined,
+      groupSection: null,
+      bracketSections: [],
+      showNoMatchesAvailable: true,
+    };
+  }
+  return {
+    playerId,
+    group: track.group,
+    groupSection: track.groupSection,
+    bracketSections: track.bracketSections,
+    showNoMatchesAvailable: track.groupSection === null && track.bracketSections.length === 0,
   };
 }

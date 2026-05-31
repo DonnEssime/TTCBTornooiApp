@@ -308,13 +308,23 @@ export class TournamentController {
     return result;
   }
 
-  setPlayerGroup(playerId: string, groupId: string | null, dependsOn: string[] = [], commandId?: string): CommandResult {
+  setPlayerGroup(
+    playerId: string,
+    groupId: string | null,
+    dependsOn: string[] = [],
+    commandId?: string,
+    classId?: string,
+  ): CommandResult {
     const command: SetPlayerGroupCommand = {
       id: commandId ?? this.newCommandId(),
       type: 'SetPlayerGroup',
       timestamp: this.makeTimestamp(),
       dependsOn,
-      payload: { playerId, groupId },
+      payload: {
+        playerId,
+        groupId,
+        ...(classId !== undefined ? { classId } : {}),
+      },
     };
     const result = this.runner.execute(command);
     this.view?.renderMessage(`SetPlayerGroup: ${JSON.stringify(result)}`);
@@ -459,13 +469,23 @@ export class TournamentController {
     return result;
   }
 
-  setRoundLock(bracketRound: number, locked: boolean, dependsOn: string[] = [], commandId?: string): CommandResult {
+  setRoundLock(
+    bracketRound: number,
+    locked: boolean,
+    dependsOn: string[] = [],
+    commandId?: string,
+    classId?: string,
+  ): CommandResult {
     const command: SetRoundLockCommand = {
       id: commandId ?? this.newCommandId(),
       type: 'SetRoundLock',
       timestamp: this.makeTimestamp(),
       dependsOn,
-      payload: { bracketRound, locked },
+      payload: {
+        bracketRound,
+        locked,
+        ...(classId !== undefined ? { classId } : {}),
+      },
     };
     const result = this.runner.execute(command);
     this.view?.renderMessage(`SetRoundLock: ${JSON.stringify(result)}`);
@@ -473,13 +493,17 @@ export class TournamentController {
     return result;
   }
 
-  advanceBracketRound(dependsOn: string[] = [], commandId?: string): CommandResult {
+  advanceBracketRound(
+    dependsOn: string[] = [],
+    commandId?: string,
+    classId?: string,
+  ): CommandResult {
     const command: AdvanceBracketRoundCommand = {
       id: commandId ?? this.newCommandId(),
       type: 'AdvanceBracketRound',
       timestamp: this.makeTimestamp(),
       dependsOn,
-      payload: {},
+      payload: classId !== undefined ? { classId } : {},
     };
     const result = this.runner.execute(command);
     this.view?.renderMessage(`AdvanceBracketRound: ${JSON.stringify(result)}`);

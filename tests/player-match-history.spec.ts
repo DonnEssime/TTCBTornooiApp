@@ -6,9 +6,11 @@ import {
   generateBracket,
 } from '../src/model';
 import {
+  buildPlayerMatchHistory,
   buildSingleTournamentPlayerMatchHistory as buildHistory,
   matchDecidedGamesWon,
 } from '../src/player-match-history';
+import { recomputeClassTournamentSlices } from '../src/model';
 
 describe('matchDecidedGamesWon', () => {
   it('counts decided games from the focal player perspective', () => {
@@ -162,5 +164,77 @@ describe('buildSingleTournamentPlayerMatchHistory', () => {
     const h = buildHistory(t, 'p1');
     expect(h.showNoMatchesAvailable).toBe(false);
     expect(h.bracketSections[0]!.lines[0]!.score).toBeNull();
+  });
+});
+
+describe('buildPlayerMatchHistory', () => {
+  function seedPlayers(t: ReturnType<typeof createTournament>, ids: string[]): void {
+    for (const id of ids) {
+      t.players[id] = { id, name: id.toUpperCase(), handicap: 0 };
+    }
+  }
+
+  it('returns one track for single-class tournaments', () => {
+    const t = createTournament();
+    seedPlayers(t, ['p1', 'p2']);
+    t.groups['1'] = { id: '1', playerIds: ['p1', 'p2'] };
+    t.matches['gm-1-p1-p2'] = {
+      id: 'gm-1-p1-p2',
+      playerA: 'p1',
+      playerB: 'p2',
+      scores: [{ playerA: 11, playerB: 9 }],
+      status: 'finished',
+      winner: 'p1',
+      groupId: '1',
+    };
+    const h = buildPlayerMatchHistory(t, 'p1', 'Main');
+    expect(h.tracks).toHaveLength(1);
+    expect(h.tracks[0]!.classId).toBeUndefined();
+    expect(h.tracks[0]!.groupSection?.lines).toHaveLength(1);
+    expect(h.showNoMatchesAvailable).toBe(false);
+  });
+
+  it('returns per-class tracks with class-scoped group and bracket matches', () => {
+    const t = createTournament();
+    t.classDefinitions = [
+      { id: 'jun', name: 'Junior' },
+      { id: 'sen', name: 'Senior' },
+    ];
+    seedPlayers(t, ['p1', 'p2']);
+    t.seedings = ['p1', 'p2'];
+    t.playerClassFlags = {
+      p1: { jun: true, sen: false },
+      p2: { jun: true, sen: false },
+    };
+    recomputeClassTournamentSlices(t);
+    t.classTournaments.jun!.groups = { '1': { id: '1', playerIds: ['p1', 'p2'] } };
+    t.matches['gm-jun-1-p1-p2'] = {
+      id: 'gm-jun-1-p1-p2',
+      playerA: 'p1',
+      playerB: 'p2',
+      scores: [{ playerA: 11, playerB: 9 }],
+      status: 'finished',
+      winner: 'p1',
+      groupId: '1',
+      classId: 'jun',
+    };
+    const r1 = generateBracket(['p1', 'p2'], { fillByes: false, cullToPowerOfTwo: false });
+    t.classTournaments.jun!.bracketMatches = r1;
+    ensureBracketPhasePlayerMatches(t);
+    const bm = r1[0]!;
+    const mid = bracketPlayerMatchId(bm.id);
+    t.matches[mid] = {
+      ...t.matches[mid]!,
+      scores: [{ playerA: 11, playerB: 6 }],
+      status: 'finished',
+      winner: 'p1',
+    };
+
+    const h = buildPlayerMatchHistory(t, 'p1', 'Main');
+    expect(h.tracks).toHaveLength(1);
+    expect(h.tracks[0]!.classId).toBe('jun');
+    expect(h.tracks[0]!.trackTitle).toBe('Junior');
+    expect(h.tracks[0]!.groupSection?.lines[0]?.score).toEqual({ playerGames: 1, opponentGames: 0 });
+    expect(h.tracks[0]!.bracketSections.length).toBeGreaterThan(0);
   });
 });

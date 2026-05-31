@@ -1,9 +1,11 @@
 import type { Locale } from './i18n/types';
 import { txt, bracketKnockoutRoundParams } from './i18n';
+import { listCompetitionTracks, trackGroupMatches, trackTitle, tournamentUsesClassTabs } from './competition-track';
 import type { BracketMatch, GroupDefinition, Match, PlayerId, Tournament } from './model';
 import {
   bracketEffectiveWinner,
   bracketMatchesSortedForRound,
+  bracketPlayerIdentityResolvedForDisplay,
   bracketPlayerMatchId,
   compareBracketMatchIdString,
   displayLabelForGroup,
@@ -12,7 +14,6 @@ import {
   isBracketByeWalkoverMatch,
   isHandicapActive,
   isMiscActive,
-  tournamentUsesClassTabs,
 } from './model';
 
 export const MATCH_NOTES_SLIPS_PER_PAGE = 6;
@@ -56,30 +57,13 @@ type TrackSlice = {
 };
 
 function trackSlices(t: Tournament, locale: Locale): TrackSlice[] {
-  if (!tournamentUsesClassTabs(t)) {
-    return [
-      {
-        classId: undefined,
-        trackTitle: txt('ui.ov.mainDraw', locale),
-        groups: t.groups,
-        bracketMatches: t.bracketMatches,
-      },
-    ];
-  }
-  return t.classDefinitions.map((def) => ({
-    classId: def.id,
-    trackTitle: def.name?.trim() || def.id,
-    groups: t.classTournaments[def.id]?.groups ?? {},
-    bracketMatches: t.classTournaments[def.id]?.bracketMatches ?? [],
+  const mainLabel = txt('ui.ov.mainDraw', locale);
+  return listCompetitionTracks(t).map((tr) => ({
+    classId: tr.classId,
+    trackTitle: trackTitle(t, tr.classId, mainLabel),
+    groups: tr.groups,
+    bracketMatches: tr.bracketMatches,
   }));
-}
-
-function groupMatchesFiltered(t: Tournament, classId: string | undefined): Match[] {
-  return Object.values(t.matches).filter((m) => {
-    if (!m.groupId) return false;
-    if (classId === undefined) return !m.classId;
-    return m.classId === classId;
-  });
 }
 
 function sortGroups(groups: Record<string, GroupDefinition>): GroupDefinition[] {
@@ -147,6 +131,43 @@ function slipFromPlayerMatch(
   };
 }
 
+function bracketMatchBothPlayersKnown(
+  t: Tournament,
+  bm: BracketMatch,
+  classId: string | undefined,
+): boolean {
+  if (!bm.seedA || !bm.seedB) return false;
+  return (
+    bracketPlayerIdentityResolvedForDisplay(t, bm.seedA, classId) &&
+    bracketPlayerIdentityResolvedForDisplay(t, bm.seedB, classId)
+  );
+}
+
+/** Unfinished, non-bye bracket slots in a round (candidates for match-note slips). */
+function bracketRoundPendingMatches(
+  t: Tournament,
+  bracketMatches: BracketMatch[],
+  round: number,
+): BracketMatch[] {
+  return bracketMatchesSortedForRound(bracketMatches, round).filter(
+    (bm) => !isBracketByeWalkoverMatch(bm) && bracketEffectiveWinner(t, bm) === undefined,
+  );
+}
+
+/** Bracket-round slips print only when every pending slot in the round has both players known. */
+function isBracketRoundNotesPrintable(
+  t: Tournament,
+  classId: string | undefined,
+  round: number,
+): boolean {
+  const tr =
+    listCompetitionTracks(t).find((x) => x.classId === classId) ?? listCompetitionTracks(t)[0];
+  if (!tr) return false;
+  const pending = bracketRoundPendingMatches(t, tr.bracketMatches, round);
+  if (pending.length === 0) return true;
+  return pending.every((bm) => bracketMatchBothPlayersKnown(t, bm, classId));
+}
+
 function isBracketSlotNotePrintable(t: Tournament, bm: BracketMatch): boolean {
   if (isBracketByeWalkoverMatch(bm)) return false;
   if (bracketEffectiveWinner(t, bm) !== undefined) return false;
@@ -196,7 +217,7 @@ function collectGroupOverallBatches(t: Tournament, locale: Locale): MatchNoteSli
   if (!tournamentUsesClassTabs(t)) {
     const tr = trackSlices(t, locale)[0]!;
     for (const g of sortGroups(tr.groups)) {
-      const matches = groupMatchesFiltered(t, undefined).filter((m) => m.groupId === g.id);
+      const matches = trackGroupMatches(t, undefined).filter((m) => m.groupId === g.id);
       const ctx = groupContextLine(locale, tr.trackTitle, g);
       const slips = collectGroupSlipsForMatches(t, matches, () => ctx, undefined, locale);
       if (slips.length > 0) batches.push(slips);
@@ -205,7 +226,7 @@ function collectGroupOverallBatches(t: Tournament, locale: Locale): MatchNoteSli
   }
   for (const tr of trackSlices(t, locale)) {
     for (const g of sortGroups(tr.groups)) {
-      const matches = groupMatchesFiltered(t, tr.classId).filter((m) => m.groupId === g.id);
+      const matches = trackGroupMatches(t, tr.classId).filter((m) => m.groupId === g.id);
       const ctx = groupContextLine(locale, tr.trackTitle, g);
       const slips = collectGroupSlipsForMatches(t, matches, () => ctx, tr.classId, locale);
       if (slips.length > 0) batches.push(slips);
@@ -224,7 +245,7 @@ function collectGroupPool(t: Tournament, classId: string | undefined, groupId: s
   if (!tr) return [];
   const g = tr.groups[groupId];
   if (!g) return [];
-  const matches = groupMatchesFiltered(t, classId).filter((m) => m.groupId === groupId);
+  const matches = trackGroupMatches(t, classId).filter((m) => m.groupId === groupId);
   const ctx = groupContextLine(locale, tr.trackTitle, g);
   return collectGroupSlipsForMatches(t, matches, () => ctx, classId, locale);
 }
@@ -235,6 +256,7 @@ function collectBracketRound(
   round: number,
   locale: Locale,
 ): MatchNoteSlip[] {
+  if (!isBracketRoundNotesPrintable(t, classId, round)) return [];
   const tr =
     trackSlices(t, locale).find((x) => x.classId === classId) ?? trackSlices(t, locale)[0];
   if (!tr) return [];
@@ -288,6 +310,9 @@ export function matchNotesSegmentHasSlips(
   segment: MatchNotesSegment,
   locale: Locale = 'en',
 ): boolean {
+  if (segment.kind === 'bracket-round' && !isBracketRoundNotesPrintable(tournament, segment.classId, segment.round)) {
+    return false;
+  }
   return collectMatchNoteSlips(tournament, segment, locale).length > 0;
 }
 

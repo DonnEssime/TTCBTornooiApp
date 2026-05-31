@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { CommandRunner, CreatePlayerCommand, CreateMatchCommand, type UndoCommand } from '../src/command';
 import { TournamentController } from '../src/controller';
 import {
+  bracketMatchRound,
+  bracketPlayerMatchId,
   buildNumberedGroupsFromPlayerOrder,
   buildNumberedGroupsFromPlayerOrderByGroupCount,
   closedFormGroupCountForPlayerCount,
@@ -369,7 +371,7 @@ describe('CommandRunner dependency-aware undo', () => {
     expect(t.classTournaments['sen']?.seedings).toEqual(['p2']);
   });
 
-  it('rejects GenerateBracket when two competition classes are defined', () => {
+  it('GenerateBracket requires classId when two competition classes are defined', () => {
     const runner = new CommandRunner();
     runner.execute({
       id: 'tc',
@@ -405,7 +407,81 @@ describe('CommandRunner dependency-aware undo', () => {
       timestamp: '2026-01-01T00:00:03.000Z',
     });
     expect(r.success).toBe(false);
-    expect(r.reason).toBe('command.globalBracketDisabledMultiClass');
+    expect(r.reason).toBe('model.trackClassIdRequired');
+  });
+
+  it('GenerateBracket applies to class slice when classId is set', () => {
+    const runner = new CommandRunner();
+    runner.execute({
+      id: 'tc',
+      type: 'SetTournamentClasses',
+      dependsOn: [],
+      payload: {
+        classes: [
+          { id: 'jun', name: 'Junior' },
+          { id: 'sen', name: 'Senior' },
+        ],
+      },
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    for (const [pid, name] of [
+      ['p1', 'A'],
+      ['p2', 'B'],
+    ] as const) {
+      runner.execute({
+        id: pid,
+        type: 'CreatePlayer',
+        dependsOn: [],
+        payload: { playerId: pid, name, handicap: 0 },
+        timestamp: '2026-01-01T00:00:01.000Z',
+      });
+    }
+    runner.execute({
+      id: 'seed',
+      type: 'SetSeedings',
+      dependsOn: ['p1', 'p2'],
+      payload: { playerIds: ['p1', 'p2'] },
+      timestamp: '2026-01-01T00:00:02.000Z',
+    });
+    runner.execute({
+      id: 'f1',
+      type: 'SetPlayerClassFlags',
+      dependsOn: ['p1', 'p2'],
+      payload: { playerId: 'p1', flags: { jun: true, sen: false } },
+      timestamp: '2026-01-01T00:00:03.000Z',
+    });
+    runner.execute({
+      id: 'f2',
+      type: 'SetPlayerClassFlags',
+      dependsOn: ['p1', 'p2', 'f1'],
+      payload: { playerId: 'p2', flags: { jun: true, sen: false } },
+      timestamp: '2026-01-01T00:00:04.000Z',
+    });
+    runner.execute({
+      id: 'scg',
+      type: 'SetClassGroups',
+      dependsOn: ['p1', 'p2', 'seed', 'f1', 'f2'],
+      payload: { classId: 'jun', groups: [{ id: '1', playerIds: ['p1', 'p2'] }] },
+      timestamp: '2026-01-01T00:00:05.000Z',
+    });
+    runner.execute({
+      id: 'ggrr',
+      type: 'GenerateGroupRoundRobin',
+      dependsOn: ['scg'],
+      payload: { classId: 'jun' },
+      timestamp: '2026-01-01T00:00:06.000Z',
+    });
+    const r = runner.execute({
+      id: 'gen',
+      type: 'GenerateBracket',
+      dependsOn: ['scg', 'ggrr'],
+      payload: { fillByes: true, cullToPowerOfTwo: false, classId: 'jun' },
+      timestamp: '2026-01-01T00:00:07.000Z',
+    });
+    expect(r.success).toBe(true);
+    const t = runner.getTournament();
+    expect(t.bracketMatches).toEqual([]);
+    expect(t.classTournaments.jun!.bracketMatches.length).toBeGreaterThan(0);
   });
 
   it('SetTournamentClasses assigns ids when only display names are given', () => {
@@ -907,6 +983,137 @@ describe('ClearBracket', () => {
     });
     expect(c.getTournament().bracketMatches.length).toBeGreaterThan(0);
     expect(c.getTournament().matches['match-m1']).toBeDefined();
+  });
+});
+
+describe('AdvanceBracketRound', () => {
+  it('advances only the class slice when classId is set', () => {
+    const runner = new CommandRunner();
+    runner.execute({
+      id: 'tc',
+      type: 'SetTournamentClasses',
+      dependsOn: [],
+      payload: {
+        classes: [
+          { id: 'jun', name: 'Junior' },
+          { id: 'sen', name: 'Senior' },
+        ],
+      },
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    for (const [pid, name] of [
+      ['p1', 'A'],
+      ['p2', 'B'],
+      ['p3', 'C'],
+      ['p4', 'D'],
+    ] as const) {
+      runner.execute({
+        id: pid,
+        type: 'CreatePlayer',
+        dependsOn: [],
+        payload: { playerId: pid, name, handicap: 0 },
+        timestamp: '2026-01-01T00:00:01.000Z',
+      });
+    }
+    runner.execute({
+      id: 'seed',
+      type: 'SetSeedings',
+      dependsOn: ['p1', 'p2', 'p3', 'p4'],
+      payload: { playerIds: ['p1', 'p2', 'p3', 'p4'] },
+      timestamp: '2026-01-01T00:00:02.000Z',
+    });
+    runner.execute({
+      id: 'f1',
+      type: 'SetPlayerClassFlags',
+      dependsOn: ['p1', 'p2', 'p3', 'p4'],
+      payload: { playerId: 'p1', flags: { jun: true, sen: false } },
+      timestamp: '2026-01-01T00:00:03.000Z',
+    });
+    runner.execute({
+      id: 'f2',
+      type: 'SetPlayerClassFlags',
+      dependsOn: ['p1', 'p2', 'p3', 'p4', 'f1'],
+      payload: { playerId: 'p2', flags: { jun: true, sen: false } },
+      timestamp: '2026-01-01T00:00:04.000Z',
+    });
+    runner.execute({
+      id: 'f3',
+      type: 'SetPlayerClassFlags',
+      dependsOn: ['p1', 'p2', 'p3', 'p4', 'f1', 'f2'],
+      payload: { playerId: 'p3', flags: { jun: true, sen: false } },
+      timestamp: '2026-01-01T00:00:05.000Z',
+    });
+    runner.execute({
+      id: 'f4',
+      type: 'SetPlayerClassFlags',
+      dependsOn: ['p1', 'p2', 'p3', 'p4', 'f1', 'f2', 'f3'],
+      payload: { playerId: 'p4', flags: { jun: true, sen: false } },
+      timestamp: '2026-01-01T00:00:06.000Z',
+    });
+    runner.execute({
+      id: 'scg',
+      type: 'SetClassGroups',
+      dependsOn: ['p1', 'p2', 'p3', 'p4', 'seed', 'f1', 'f2', 'f3', 'f4'],
+      payload: {
+        classId: 'jun',
+        groups: [{ id: '1', playerIds: ['p1', 'p2', 'p3', 'p4'] }],
+      },
+      timestamp: '2026-01-01T00:00:07.000Z',
+    });
+    runner.execute({
+      id: 'gen',
+      type: 'GenerateBracket',
+      dependsOn: ['scg'],
+      payload: { fillByes: false, cullToPowerOfTwo: false, classId: 'jun' },
+      timestamp: '2026-01-01T00:00:08.000Z',
+    });
+    const junR1 = runner
+      .getTournament()
+      .classTournaments.jun!.bracketMatches.filter((m) => bracketMatchRound(m) === 1);
+    expect(junR1).toHaveLength(2);
+    const bo5 = [
+      { playerA: 11, playerB: 9 },
+      { playerA: 11, playerB: 6 },
+      { playerA: 11, playerB: 5 },
+    ];
+    let lastDep = 'gen';
+    for (const bm of junR1) {
+      if (!bm.seedA || !bm.seedB) continue;
+      const mid = bracketPlayerMatchId(bm.id);
+      const pairId = `pair-${bm.id}`;
+      expect(
+        runner.execute({
+          id: pairId,
+          type: 'CreateMatch',
+          dependsOn: [lastDep],
+          payload: { matchId: mid, playerA: bm.seedA, playerB: bm.seedB },
+          timestamp: '2026-01-01T00:00:08.500Z',
+        }).success,
+      ).toBe(true);
+      const scoreId = `score-${bm.id}`;
+      expect(
+        runner.execute({
+          id: scoreId,
+          type: 'EnterScore',
+          dependsOn: [pairId],
+          payload: { matchId: mid, scores: bo5 },
+          timestamp: '2026-01-01T00:00:08.750Z',
+        }).success,
+      ).toBe(true);
+      lastDep = scoreId;
+    }
+    const r = runner.execute({
+      id: 'adv',
+      type: 'AdvanceBracketRound',
+      dependsOn: [lastDep],
+      payload: { classId: 'jun' },
+      timestamp: '2026-01-01T00:00:09.000Z',
+    });
+    expect(r).toEqual({ success: true });
+    const t = runner.getTournament();
+    expect(t.bracketMatches).toEqual([]);
+    expect(t.classTournaments.jun!.bracketMatches.some((m) => m.round === 2)).toBe(true);
+    expect(t.classTournaments.sen!.bracketMatches).toEqual([]);
   });
 });
 

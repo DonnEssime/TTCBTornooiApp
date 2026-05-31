@@ -51,6 +51,8 @@
     HEURISTIC_BRACKET_SEARCH_TRIALS,
     bracketRoundHasOpenEliminationPairings,
     groupNumberedTitle,
+    getCompetitionTrack,
+    trackGroupMatches,
     tournamentUsesClassTabs,
     isGameScoreLegal,
     isMatchScoreLegal,
@@ -164,11 +166,6 @@
   const handicapBounds = $derived(
     tournament.handicapConfig ? handicapValueBounds(tournament.handicapConfig) : { min: 0, max: 0 },
   );
-  const bracketSeedingParticipantIds = $derived(eligibleGlobalGroupPlayerIds(tournament));
-  const closedFormSeedingKind = $derived.by(() =>
-    resolveClosedFormBracketSeedingKind(tournament, bracketSeedingParticipantIds, undefined),
-  );
-  const canPickClosedFormSeeding = $derived(closedFormSeedingKind !== null);
   const globalGroupPlayerCount = $derived(eligibleGlobalGroupPlayerIds(tournament).length);
   const suggestedGlobalGroupTargetCount = $derived(
     closedFormGroupCountForPlayerCount(globalGroupPlayerCount),
@@ -748,22 +745,24 @@
     playerHistoryModalPid = null;
   }
 
-  function setActivePlayerGroupFromModal(nextGroupId: string | null): void {
+  function setActivePlayerGroupFromModal(nextGroupId: string | null, classId?: string): void {
     const pid = playerHistoryModalPid;
     if (!pid) return;
     const s = getActiveSession();
     if (!s) return;
-    if (tournament.bracketMatches.length > 0) {
+    const track = getCompetitionTrack(tournament, classId);
+    if (track.bracketMatches.length > 0) {
       showErrorKey('ui.group.knockoutActiveLock');
       return;
     }
-    if (Object.keys(tournament.groups).length === 0) {
+    if (Object.keys(track.groups).length === 0) {
       showErrorKey('ui.group.addPlayersFirst');
       return;
     }
     runUiBatch(() => {
-      const deps = s.lastSetGroupsCommandId ? [s.lastSetGroupsCommandId] : [];
-      const r = s.controller.setPlayerGroup(pid, nextGroupId, deps);
+      const scgId = trackSetGroupsCommandId(s, classId);
+      const deps = scgId ? [scgId] : [];
+      const r = s.controller.setPlayerGroup(pid, nextGroupId, deps, undefined, classId);
       showCommandError(r, 'command.replayFailed');
       if (r.success) {
         showInfoKey('ui.toast.playerGroupChanged', {
@@ -913,12 +912,8 @@
 
   function bracketLocksForMatch(match: Match | undefined): { br: BracketMatch[]; locks: number[] } {
     if (!match) return { br: [], locks: [] };
-    const cid = match.classId;
-    if (cid && tournament.classTournaments[cid]?.bracketMatches?.length) {
-      const s = tournament.classTournaments[cid];
-      return { br: s.bracketMatches, locks: s.lockedBracketRounds ?? [] };
-    }
-    return { br: tournament.bracketMatches, locks: tournament.lockedBracketRounds ?? [] };
+    const tr = getCompetitionTrack(tournament, match.classId);
+    return { br: tr.bracketMatches, locks: tr.lockedBracketRounds };
   }
 
   function bracketMatchBySlotId(t: Tournament, bmId: string): BracketMatch | undefined {
@@ -1311,9 +1306,8 @@
     return out;
   }
 
-  function anyUnfinishedGroupPhaseMatch(t: Tournament): boolean {
-    for (const m of Object.values(t.matches)) {
-      if (!m.groupId) continue;
+  function anyUnfinishedGroupPhaseMatch(t: Tournament, classId?: string): boolean {
+    for (const m of trackGroupMatches(t, classId)) {
       if (m.status === 'scheduled' || m.status === 'in-progress') return true;
     }
     return false;
@@ -1325,17 +1319,23 @@
   }
 
   /** After undo/clear, bracket slots may lack a `match-*` row; create scheduled rows so debug scoring can run. */
-  function debugEnsureBracketMatchRows(c: TournamentController, s: TournamentSession): void {
+  function debugEnsureBracketMatchRows(
+    c: TournamentController,
+    s: TournamentSession,
+    classId?: string,
+  ): void {
     if (Object.keys(c.getTournament().teamMatches).length > 0) return;
     let t = c.getTournament();
-    for (const bm of t.bracketMatches) {
+    const bracketMatches = getCompetitionTrack(t, classId).bracketMatches;
+    for (const bm of bracketMatches) {
       if (!bm.seedA || !bm.seedB) continue;
       if (!t.players[bm.seedA] || !t.players[bm.seedB]) continue;
       const mid = bracketPlayerMatchId(bm.id);
       if (t.matches[mid]) continue;
       const deps: string[] = [`cmd-${bm.seedA}`, `cmd-${bm.seedB}`];
       if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
-      if (s.lastSetGroupsCommandId) deps.push(s.lastSetGroupsCommandId);
+      const scgId = trackSetGroupsCommandId(s, classId);
+      if (scgId) deps.push(scgId);
       const cmdId = `cmd-dbg-ensure-${bm.id}-${Date.now()}`;
       const r = c.createMatch(mid, bm.seedA, bm.seedB, deps, cmdId);
       if (!r.success && r.reason !== 'command.matchAlreadyExists') {
@@ -1346,16 +1346,19 @@
   }
 
   /** Knockout slots that still need scores (ignores stale `bm.winner` when the player row is still open). */
-  function bracketSimulateEligibleEntries(t: Tournament): Array<{ m: Match; round: number }> {
+  function bracketSimulateEligibleEntries(
+    t: Tournament,
+    classId?: string,
+  ): Array<{ m: Match; round: number }> {
     const entries: Array<{ m: Match; round: number }> = [];
-    for (const bm of t.bracketMatches) {
+    for (const bm of getCompetitionTrack(t, classId).bracketMatches) {
       if (!bm.seedA || !bm.seedB) continue;
       const mid = bracketPlayerMatchId(bm.id);
       const m = t.matches[mid];
       if (!m || m.groupId) continue;
       if (!matchOpenForScoring(m)) continue;
       if (m.scores.length > 0) continue;
-      if (!matchPlayersResolvedForBracketPhaseList(t, m, undefined)) continue;
+      if (!matchPlayersResolvedForBracketPhaseList(t, m, classId)) continue;
       entries.push({ m, round: bracketMatchRound(bm) });
     }
     return entries;
@@ -1370,20 +1373,20 @@
     });
   }
 
-  function debugSimulateBracketPhaseMatches(): void {
+  function debugSimulateBracketPhaseMatches(classId?: string): void {
     clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const c = s.controller;
     let t = c.getTournament();
-    if (anyUnfinishedGroupPhaseMatch(t)) {
+    if (anyUnfinishedGroupPhaseMatch(t, classId)) {
       showWarnKey('ui.finish_all_group_phase_matches_before_simulating');
       pull();
       return;
     }
-    debugEnsureBracketMatchRows(c, s);
+    debugEnsureBracketMatchRows(c, s, classId);
     t = c.getTournament();
-    const seedEntries = bracketSimulateEligibleEntries(t);
+    const seedEntries = bracketSimulateEligibleEntries(t, classId);
     if (seedEntries.length === 0) {
       showWarnKey('ui.no_knockout_matches_awaiting_scores_to_simulate_');
       pull();
@@ -1397,9 +1400,9 @@
     runUiBatch(() => {
       for (let iter = 0; iter < maxIters; iter++) {
         let t = c.getTournament();
-        debugEnsureBracketMatchRows(c, s);
+        debugEnsureBracketMatchRows(c, s, classId);
         t = c.getTournament();
-        const roundEntries = bracketSimulateEligibleEntries(t).filter((e) => e.round === targetRound);
+        const roundEntries = bracketSimulateEligibleEntries(t, classId).filter((e) => e.round === targetRound);
         if (roundEntries.length === 0) break;
         const m = sortBracketSimulateMatches(roundEntries.map((e) => e.m))[0]!;
 
@@ -1409,7 +1412,9 @@
           return;
         }
         const bid = m.id.startsWith('match-') ? m.id.slice('match-'.length) : '';
-        const bm = bid ? t.bracketMatches.find((x) => x.id === bid) : undefined;
+        const bm = bid
+          ? getCompetitionTrack(t, classId).bracketMatches.find((x) => x.id === bid)
+          : undefined;
         const createCmdId = bm ? c.findLatestActiveCreateMatchCommandId(m.id) : undefined;
         const deps = createCmdId ? [createCmdId] : [];
         const cmdId = `cmd-dbg-brkt-${m.id}-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
@@ -1921,14 +1926,27 @@
   }
 
   function classSlice(t: Tournament, classId: string): ClassTournamentSlice {
-    return (
-      t.classTournaments[classId] ?? {
-        seedings: [],
-        groups: {},
-        bracketMatches: [],
-        lockedBracketRounds: [],
-      }
-    );
+    const tr = getCompetitionTrack(t, classId);
+    return {
+      seedings: tr.seedings,
+      groups: tr.groups,
+      bracketMatches: tr.bracketMatches,
+      lockedBracketRounds: tr.lockedBracketRounds,
+    };
+  }
+
+  function trackSetGroupsCommandId(s: TournamentSession, classId: string | undefined): string {
+    if (classId) {
+      return s.lastSetClassGroupsCommandIdByClass[classId] ?? '';
+    }
+    return s.lastSetGroupsCommandId;
+  }
+
+  function eligibleTrackGroupPlayerIds(t: Tournament, classId: string | undefined): string[] {
+    if (classId) {
+      return [...getCompetitionTrack(t, classId).seedings];
+    }
+    return eligibleGlobalGroupPlayerIds(t);
   }
 
   function patchActiveSession(patch: Partial<TournamentSession>): void {
@@ -2361,23 +2379,19 @@
     pull();
   }
 
-  async function generateKnockoutBracket(): Promise<void> {
+  async function generateKnockoutBracket(classId?: string): Promise<void> {
     clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const c = s.controller;
     const t = c.getTournament();
-    if (tournamentUsesClassTabs(t)) {
-      showWarn(
-        msgText('ui.this_tournament_has_multiple_competition_classes'),
-      );
-      return;
-    }
-    if (Object.keys(t.groups).length === 0) {
+    const track = getCompetitionTrack(t, classId);
+    if (Object.keys(track.groups).length === 0) {
       showWarnKey('ui.create_groups_group_phase_before_generating_the_');
       return;
     }
-    if (t.seedings.length === 0 || s.playerOrder.length === 0) {
+    const trackSeedings = track.seedings;
+    if (trackSeedings.length === 0 || s.playerOrder.length === 0) {
       showWarnKey('ui.add_at_least_one_player_first');
       return;
     }
@@ -2385,8 +2399,9 @@
     if (s.lastSeedingCommandId) {
       deps.push(s.lastSeedingCommandId);
     }
-    if (s.lastSetGroupsCommandId) {
-      deps.push(s.lastSetGroupsCommandId);
+    const scgId = trackSetGroupsCommandId(s, classId);
+    if (scgId) {
+      deps.push(scgId);
     }
     const genId = `cmd-gen-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
     const shuffleKey = s.tournamentName.trim() || 'Tournament';
@@ -2394,13 +2409,13 @@
     let tieBreakSalt = baseSalt;
 
     if (bracketSeedingChoice === 'heuristic') {
-      const participants = [...t.seedings];
+      const participants = [...trackSeedings];
       bracketHeuristicSearch = { done: 0, total: HEURISTIC_BRACKET_SEARCH_TRIALS };
       try {
         const search = await searchBestHeuristicBracketOrderAsync(
           t,
           participants,
-          undefined,
+          classId,
           baseSalt,
           {
             trials: HEURISTIC_BRACKET_SEARCH_TRIALS,
@@ -2424,13 +2439,15 @@
       const r = c.generateBracket(true, false, deps, genId, shuffleKey, {
         bracketSeedingMode: bracketSeedingChoice,
         tieBreakSalt,
+        ...(classId !== undefined ? { classId } : {}),
       });
       if (!r.success) {
         showCommandError(r, 'ui.fallback.bracketGeneration');
         return;
       }
       const live = c.getTournament();
-      const r1 = live.bracketMatches.filter((m) => bracketMatchRound(m) === 1 && m.seedA && m.seedB);
+      const liveTrack = getCompetitionTrack(live, classId);
+      const r1 = liveTrack.bracketMatches.filter((m) => bracketMatchRound(m) === 1 && m.seedA && m.seedB);
       if (r1.length === 0) {
         showWarnKey('ui.bracket_generated_but_no_round_1_pairings_with_t');
         return;
@@ -2447,8 +2464,12 @@
           return;
         }
       }
-      if (c.getTournament().bracketMatches.length > 0) {
-        patchActiveSession({ nav: { kind: 'single', inner: 'bracket' } });
+      if (getCompetitionTrack(c.getTournament(), classId).bracketMatches.length > 0) {
+        if (classId) {
+          patchActiveSession({ nav: { kind: 'multi', screen: { classId, inner: 'bracket' } } });
+        } else {
+          patchActiveSession({ nav: { kind: 'single', inner: 'bracket' } });
+        }
       }
       const trialsNote =
         bracketSeedingChoice === 'heuristic'
@@ -2460,30 +2481,30 @@
     });
   }
 
-  function removeKnockoutBracket(): void {
+  function removeKnockoutBracket(classId?: string): void {
     clearStatus();
     const s = getActiveSession();
     if (!s) return;
-    if (tournament.bracketMatches.length === 0) {
+    const track = getCompetitionTrack(tournament, classId);
+    if (track.bracketMatches.length === 0) {
       showWarnKey('ui.no_knockout_bracket_to_remove');
       return;
     }
-    if (anyBracketKnockoutMatchHasRecordedPlay(tournament, tournament.bracketMatches)) {
+    if (anyBracketKnockoutMatchHasRecordedPlay(tournament, track.bracketMatches)) {
       showWarnKey('model.cannotRemoveKnockoutBracketWithPlayedMatches');
       return;
     }
-    if (
-      !confirm(msgText('ui.confirm.removeBracketLong'))
-    ) {
+    if (!confirm(msgText('ui.confirm.removeBracketLong'))) {
       return;
     }
     const deps: string[] = s.playerOrder.map((pid) => `cmd-${pid}`);
     if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
-    if (s.lastSetGroupsCommandId) deps.push(s.lastSetGroupsCommandId);
+    const scgId = trackSetGroupsCommandId(s, classId);
+    if (scgId) deps.push(scgId);
     const gen = [...s.controller.getCommandLog()].reverse().find((c) => c.type === 'GenerateBracket');
     if (gen) deps.push(gen.id);
     const cmdId = `cmd-clear-bracket-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
-    const r = s.controller.clearBracket(deps, cmdId);
+    const r = s.controller.clearBracket(deps, cmdId, classId);
     if (!r.success) {
       showCommandError(r, 'ui.fallback.removeBracket');
       pull();
@@ -2493,19 +2514,20 @@
     pull();
   }
 
-  function eliminateBracketRoundByRanking(round: number): void {
+  function eliminateBracketRoundByRanking(round: number, classId?: string): void {
     clearStatus();
     const s = getActiveSession();
     if (!s) return;
     const salt = crypto.randomUUID();
     const deps: string[] = s.playerOrder.map((pid) => `cmd-${pid}`);
     if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
-    if (s.lastSetGroupsCommandId) deps.push(s.lastSetGroupsCommandId);
+    const scgId = trackSetGroupsCommandId(s, classId);
+    if (scgId) deps.push(scgId);
     const log = s.controller.getCommandLog();
     const gen = [...log].reverse().find((c) => c.type === 'GenerateBracket');
     if (gen) deps.push(gen.id);
     const cmdId = `cmd-elim-r${round}-${salt.replaceAll('-', '').slice(0, 12)}`;
-    const r = s.controller.eliminateLowestBracketRound(round, deps, salt, cmdId);
+    const r = s.controller.eliminateLowestBracketRound(round, deps, salt, cmdId, classId);
     if (!r.success) {
       showCommandError(r, 'ui.fallback.elimination');
       pull();
@@ -2548,7 +2570,7 @@
     );
   }
 
-  function setRoundLock(round: number, locked: boolean): void {
+  function setRoundLock(round: number, locked: boolean, classId?: string): void {
     clearStatus();
     const s = getActiveSession();
     if (!s) return;
@@ -2558,6 +2580,7 @@
       locked,
       [],
       `cmd-lock-${round}-${locked ? 'on' : 'off'}-${crypto.randomUUID().slice(0, 8)}`,
+      classId,
     );
     if (!r.success) {
       showCommandError(r, 'ui.fallback.setRoundLock');
@@ -3660,19 +3683,31 @@
 
             </section>
           {:else if !useClassTabs && singleTrackInner === 'bracket'}
+            {@const bracketTrack = getCompetitionTrack(tournament, undefined)}
+            {@const bracketTrackSeedingIds = eligibleTrackGroupPlayerIds(tournament, undefined)}
+            {@const bracketTrackClosedForm = resolveClosedFormBracketSeedingKind(
+              tournament,
+              bracketTrackSeedingIds,
+              undefined,
+            )}
             <section class="card">
               <h2 class="h2"><Msg key="ui.bracket" /></h2>
-              {#if tournament.bracketMatches.length === 0}
+              {#if bracketTrack.bracketMatches.length === 0}
                 <fieldset class="bracket-seed-fieldset">
                   <legend class="muted small"><Msg key="ui.bracket_seeding" /></legend>
                   <label class="radio-line">
-                    <input type="radio" bind:group={bracketSeedingChoice} value="crop_closed_form" disabled={!canPickClosedFormSeeding} />
+                    <input
+                      type="radio"
+                      bind:group={bracketSeedingChoice}
+                      value="crop_closed_form"
+                      disabled={bracketTrackClosedForm === null}
+                    />
                     <span>
                       <strong><Msg key="ui.closed_form" /></strong>
                       <Msg key="ui.bracket.closedFormDesc" tag="span" />
-                      {#if closedFormSeedingKind === 'culled'}
+                      {#if bracketTrackClosedForm === 'culled'}
                         <Msg key="ui.bracket.closedFormCulled" />
-                      {:else if closedFormSeedingKind === 'exact'}
+                      {:else if bracketTrackClosedForm === 'exact'}
                         <Msg key="ui.bracket.closedFormExact" />
                       {/if}
                     </span>
@@ -3690,19 +3725,19 @@
                     type="button"
                     class="btn primary"
                     disabled={bracketHeuristicSearch !== null ||
-                      Object.keys(tournament.groups).length === 0 ||
-                      eligibleGlobalGroupPlayerIds(tournament).length === 0}
+                      Object.keys(bracketTrack.groups).length === 0 ||
+                      bracketTrackSeedingIds.length === 0}
                     onclick={() => void generateKnockoutBracket()}
                   >
                     <Msg key="ui.bracket.createKnockout" />
                   </button>
                 </div>
-                {#if Object.keys(tournament.groups).length === 0}
+                {#if Object.keys(bracketTrack.groups).length === 0}
                   <Msg key="ui.group.finishGroupPhaseFirst" tag="p" class="muted small" />
                 {/if}
               {/if}
 
-              {#if tournament.bracketMatches.length > 0}
+              {#if bracketTrack.bracketMatches.length > 0}
                 <div class="row align-end bracket-remove-row" style="margin-bottom: 0.75rem;">
                   <button type="button" class="btn danger-ghost" onclick={removeKnockoutBracket}>
                     <Msg key="ui.bracket.removeBracket" />
@@ -3733,7 +3768,7 @@
                         <button
                           type="button"
                           class="btn subtle"
-                          disabled={useClassTabs || (tournament.lockedBracketRounds ?? []).includes(elimRound)}
+                          disabled={(tournament.lockedBracketRounds ?? []).includes(elimRound)}
                           title={bracketElimRoundButtonTitle(elimRound)}
                           onclick={() => eliminateBracketRoundByRanking(elimRound)}
                         >
@@ -3749,7 +3784,7 @@
                       <button
                         type="button"
                         class="btn subtle"
-                        disabled={useClassTabs || (tournament.lockedBracketRounds ?? []).includes(elimRound)}
+                        disabled={(bracketTrack.lockedBracketRounds ?? []).includes(elimRound)}
                         title={bracketElimRoundButtonTitle(elimRound)}
                         onclick={() => eliminateBracketRoundByRanking(elimRound)}
                       >
@@ -3961,16 +3996,65 @@
 
               </section>
             {:else if cin === 'bracket'}
+              {@const classBracketSeedingIds = eligibleTrackGroupPlayerIds(tournament, cid)}
+              {@const classBracketClosedForm = resolveClosedFormBracketSeedingKind(
+                tournament,
+                classBracketSeedingIds,
+                cid,
+              )}
               <section class="card">
                 <h2 class="h2"><Msg key="ui.bracket.classTitle" params={{ name: def?.name ?? cid }} /></h2>
-                <p class="muted small">
-                  <Msg key="ui.bracket.classNotWired" tag="p" class="muted small" />
-                </p>
-                <div class="row align-end bracket-create-row">
-                  <button type="button" class="btn primary" disabled><Msg key="ui.per_class_bracket_generation_coming_soon" /></button>
-                </div>
+                {#if slice.bracketMatches.length === 0}
+                  <fieldset class="bracket-seed-fieldset">
+                    <legend class="muted small"><Msg key="ui.bracket_seeding" /></legend>
+                    <label class="radio-line">
+                      <input
+                        type="radio"
+                        bind:group={bracketSeedingChoice}
+                        value="crop_closed_form"
+                        disabled={classBracketClosedForm === null}
+                      />
+                      <span>
+                        <strong><Msg key="ui.closed_form" /></strong>
+                        <Msg key="ui.bracket.closedFormDesc" tag="span" />
+                        {#if classBracketClosedForm === 'culled'}
+                          <Msg key="ui.bracket.closedFormCulled" />
+                        {:else if classBracketClosedForm === 'exact'}
+                          <Msg key="ui.bracket.closedFormExact" />
+                        {/if}
+                      </span>
+                    </label>
+                    <label class="radio-line">
+                      <input type="radio" bind:group={bracketSeedingChoice} value="heuristic" />
+                      <span>
+                        <strong><Msg key="ui.heuristic" /></strong>
+                        <Msg key="ui.bracket.heuristicDesc" tag="span" />
+                      </span>
+                    </label>
+                  </fieldset>
+                  <div class="row align-end bracket-create-row">
+                    <button
+                      type="button"
+                      class="btn primary"
+                      disabled={bracketHeuristicSearch !== null ||
+                        Object.keys(slice.groups).length === 0 ||
+                        slice.seedings.length === 0}
+                      onclick={() => void generateKnockoutBracket(cid)}
+                    >
+                      <Msg key="ui.bracket.createKnockout" />
+                    </button>
+                  </div>
+                  {#if Object.keys(slice.groups).length === 0}
+                    <Msg key="ui.group.finishGroupPhaseFirst" tag="p" class="muted small" />
+                  {/if}
+                {/if}
 
                 {#if slice.bracketMatches.length > 0}
+                  <div class="row align-end bracket-remove-row" style="margin-bottom: 0.75rem;">
+                    <button type="button" class="btn danger-ghost" onclick={() => removeKnockoutBracket(cid)}>
+                      <Msg key="ui.bracket.removeBracket" />
+                    </button>
+                  </div>
                   <h3 class="h3"><Msg key="ui.knockout_bracket" /></h3>
                   <Msg
                     key="ui.bracket.classLayoutHint"
@@ -3992,21 +4076,55 @@
                     emptyMessage={msgText('ui.bracket.classEmptyEntrants')}
                   />
                   {#if DEBUG_UI}
+                    {@const debugElimRounds = uniqueSortedRounds(slice.bracketMatches).filter((elimRound) =>
+                      bracketRoundHasOpenEliminationPairings(tournament, slice.bracketMatches, elimRound),
+                    )}
+                    {#if debugElimRounds.length > 0}
+                      <div class="row align-end bracket-elim-row" style="flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem;">
+                        <span class="muted small"><Msg key="ui.bureaucratic_elimination_distinct_from_forfeit" /></span>
+                        {#each debugElimRounds as elimRound (elimRound)}
+                          <button
+                            type="button"
+                            class="btn subtle"
+                            disabled={(slice.lockedBracketRounds ?? []).includes(elimRound)}
+                            title={bracketElimRoundButtonTitle(elimRound)}
+                            onclick={() => eliminateBracketRoundByRanking(elimRound, cid)}
+                          >
+                            <Msg key="ui.bracket.eliminateLowestRound" params={bracketRoundParams(elimRound)} />
+                          </button>
+                        {/each}
+                      </div>
+                    {/if}
+                  {:else}
+                    <div class="row align-end bracket-elim-row" style="flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem;">
+                      <span class="muted small"><Msg key="ui.bureaucratic_elimination_distinct_from_forfeit" /></span>
+                      {#each uniqueSortedRounds(slice.bracketMatches) as elimRound (elimRound)}
+                        <button
+                          type="button"
+                          class="btn subtle"
+                          disabled={(slice.lockedBracketRounds ?? []).includes(elimRound)}
+                          title={bracketElimRoundButtonTitle(elimRound)}
+                          onclick={() => eliminateBracketRoundByRanking(elimRound, cid)}
+                        >
+                          <Msg key="ui.bracket.eliminateLowestRound" params={bracketRoundParams(elimRound)} />
+                        </button>
+                      {/each}
+                    </div>
+                  {/if}
+                  {#if DEBUG_UI}
                     <div class="row align-end">
                       <button
                         type="button"
                         class="btn subtle"
-                        disabled={anyUnfinishedGroupPhaseMatch(tournament)}
+                        disabled={anyUnfinishedGroupPhaseMatch(tournament, cid)}
                         title={debugSimulateBracketTitle()}
-                        onclick={debugSimulateBracketPhaseMatches}
+                        onclick={() => debugSimulateBracketPhaseMatches(cid)}
                       >
                         <Msg key="ui.bracket.debugSimulatePhase" />
                       </button>
                     </div>
                   {/if}
                   <Msg key="ui.bracket.clickPairingHint" tag="p" class="muted small" />
-                {:else}
-                  <Msg key="ui.bracket.classAfterCreate" tag="p" class="muted small" />
                 {/if}
               </section>
             {:else if cin === 'results'}
@@ -4327,7 +4445,7 @@
     {/if}
   {/if}
 
-  {#if playerHistoryModalPid && !useClassTabs}
+  {#if playerHistoryModalPid}
     <PlayerMatchHistoryModal
       {tournament}
       playerId={playerHistoryModalPid}
