@@ -60,6 +60,19 @@ export type ForfeitPhase = 'group' | 'bracket';
 export interface ForfeitEntry {
   phase: ForfeitPhase;
   timestamp: string;
+  /** When set, the forfeit applies only to that competition track (multi-class). Omitted = all tracks (legacy). */
+  classId?: string;
+}
+
+/** Whether a stored player forfeit applies to the given track (main draw when `trackClassId` is undefined). */
+export function playerForfeitAppliesToTrack(
+  entry: ForfeitEntry | undefined,
+  phase: ForfeitPhase,
+  trackClassId: string | undefined,
+): boolean {
+  if (!entry || entry.phase !== phase) return false;
+  if (entry.classId === undefined) return true;
+  return entry.classId === trackClassId;
 }
 
 export interface ForfeitState {
@@ -523,7 +536,7 @@ export function clearBracketFromTournament(tournament: Tournament, classId?: str
   tournament.tableAssignments = tournament.tableAssignments.filter((a) => !matchIdsToRemove.has(a.matchId));
 
   for (const [pid, entry] of Object.entries(tournament.forfeits.players)) {
-    if (entry.phase === 'bracket') {
+    if (playerForfeitAppliesToTrack(entry, 'bracket', classId)) {
       delete tournament.forfeits.players[pid];
     }
   }
@@ -2651,9 +2664,10 @@ export function generateBracket(
 
   // Remove group-forfeited players from participants pre-bracket (player tournaments only).
   if (tournament?.forfeits) {
+    const trackClassId = opts.classId;
     participants = participants.filter((p) => {
       const playerForfeit = tournament.forfeits.players[p as PlayerId];
-      if (playerForfeit?.phase === 'group') {
+      if (playerForfeitAppliesToTrack(playerForfeit, 'group', trackClassId)) {
         return false;
       }
       return true;
@@ -3270,7 +3284,7 @@ export function settleBracketWinnersIn(
     if (bm.seedA && !bm.seedB) {
       if (rBm === 1) {
         const fa = tournament.forfeits?.players?.[bm.seedA];
-        bm.winner = fa?.phase === 'bracket' ? undefined : bm.seedA;
+        bm.winner = playerForfeitAppliesToTrack(fa, 'bracket', classId) ? undefined : bm.seedA;
       } else {
         const [, right] = bracketFeederPairForMatchIn(bracketMatches, bm);
         const structuralMissingB =
@@ -3279,7 +3293,7 @@ export function settleBracketWinnersIn(
           bracketWinnerToNextRoundSeed(right!.winner) === undefined;
         if (structuralMissingB) {
           const fa = tournament.forfeits?.players?.[bm.seedA];
-          bm.winner = fa?.phase === 'bracket' ? undefined : bm.seedA;
+          bm.winner = playerForfeitAppliesToTrack(fa, 'bracket', classId) ? undefined : bm.seedA;
         } else {
           bm.winner = undefined;
         }
@@ -3289,7 +3303,7 @@ export function settleBracketWinnersIn(
     if (!bm.seedA && bm.seedB) {
       if (rBm === 1) {
         const fb = tournament.forfeits?.players?.[bm.seedB];
-        bm.winner = fb?.phase === 'bracket' ? undefined : bm.seedB;
+        bm.winner = playerForfeitAppliesToTrack(fb, 'bracket', classId) ? undefined : bm.seedB;
       } else {
         const [left] = bracketFeederPairForMatchIn(bracketMatches, bm);
         const structuralMissingA =
@@ -3298,7 +3312,7 @@ export function settleBracketWinnersIn(
           bracketWinnerToNextRoundSeed(left!.winner) === undefined;
         if (structuralMissingA) {
           const fb = tournament.forfeits?.players?.[bm.seedB];
-          bm.winner = fb?.phase === 'bracket' ? undefined : bm.seedB;
+          bm.winner = playerForfeitAppliesToTrack(fb, 'bracket', classId) ? undefined : bm.seedB;
         } else {
           bm.winner = undefined;
         }
@@ -3310,16 +3324,18 @@ export function settleBracketWinnersIn(
     const seedB = bm.seedB!;
     const seedAforfeit = tournament.forfeits?.players?.[seedA];
     const seedBforfeit = tournament.forfeits?.players?.[seedB];
+    const seedABracketForfeit = playerForfeitAppliesToTrack(seedAforfeit, 'bracket', classId);
+    const seedBBracketForfeit = playerForfeitAppliesToTrack(seedBforfeit, 'bracket', classId);
 
-    if (seedAforfeit?.phase === 'bracket' && seedBforfeit?.phase !== 'bracket') {
+    if (seedABracketForfeit && !seedBBracketForfeit) {
       bm.winner = seedB;
       continue;
     }
-    if (seedBforfeit?.phase === 'bracket' && seedAforfeit?.phase !== 'bracket') {
+    if (seedBBracketForfeit && !seedABracketForfeit) {
       bm.winner = seedA;
       continue;
     }
-    if (seedAforfeit?.phase === 'bracket' && seedBforfeit?.phase === 'bracket') {
+    if (seedABracketForfeit && seedBBracketForfeit) {
       bm.winner = undefined;
       continue;
     }
@@ -3860,7 +3876,8 @@ export function scheduleRound(
     ? (tournament.classTournaments[classId]?.bracketMatches ?? [])
     : tournament.bracketMatches;
   const matches = bracketMatches.filter((m) => m.round === round).sort(compareBracketMatchId);
-  tournament.tableAssignments = tournament.tableAssignments.filter((a) => a.round !== round);
+  const matchIdsForRound = new Set(matches.map((bm) => bracketPlayerMatchId(bm.id, classId)));
+  tournament.tableAssignments = tournament.tableAssignments.filter((a) => !matchIdsForRound.has(a.matchId));
   let tableIndex = 0;
   for (const bm of matches) {
     const assignment: TableAssignment = {
@@ -3897,7 +3914,11 @@ export function forfeitPlayer(
     }
   }
 
-  tournament.forfeits.players[playerId] = { phase, timestamp: new Date().toISOString() };
+  tournament.forfeits.players[playerId] = {
+    phase,
+    timestamp: new Date().toISOString(),
+    ...(classId !== undefined ? { classId } : {}),
+  };
 
   if (phase === 'group') {
     handleGroupForfeitForPlayer(tournament, playerId, classId);

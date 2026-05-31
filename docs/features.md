@@ -13,6 +13,21 @@ Central list of larger product items not yet fully delivered. Smaller fixes and 
 
 - **Done:** competition classes, per-class registration flags, group phase (`SetClassGroups`), knockout generation/clear/elimination per class track, overview/PDF scoped by track. Single-class tournaments use the same command and model paths with `classId` omitted.
 
+#### Shared resources (one tournament, not duplicated per class)
+
+These are intentional **venue-wide** or **registration-wide** state — not independent copies per competition class:
+
+| Resource | Scope | Notes |
+|----------|--------|--------|
+| **Physical tables** | Whole tournament | `tables`, live `assignMatchToTable`, and drag/drop on the overview share one table pool. Batch `AssignTables` / `scheduleRound` only replaces assignments for match ids on the requested track and round. |
+| **Global seedings** | Whole tournament | `SetSeedings` defines one ordered player list; per-class seedings are derived via `playerClassFlags` and `recomputeClassTournamentSlices`. |
+| **`matchFinishOrder`** | Whole tournament | Append-only finish order for match-ordering heuristics (may mix classes). |
+| **`forfeitGroupMode`** | Whole tournament | First group forfeit sets `auto-win` vs `not-played` for the event. |
+| **Player forfeit record** | One row per player | `forfeits.players[id]` stores `phase` and optional `classId` (track). Group/bracket forfeits apply only to that track when `classId` is set; bracket generation omits group-forfeited players only for the matching class. |
+| **Team vs team** | Whole tournament | A standalone team fixture still blocks player brackets and group phase everywhere while it exists. |
+
+Per-class tracks **do** own: `groups`, `bracketMatches`, `lockedBracketRounds`, group/knockout match rows (`Match.classId`), and class-scoped commands (`classId` required when `classDefinitions.length >= 2`).
+
 ### Team vs team
 
 - **Partial today:** a single standalone team-vs-team fixture can exist; it blocks player brackets and group phase in several paths.

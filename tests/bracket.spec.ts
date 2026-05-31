@@ -203,6 +203,44 @@ describe('Bracket generation', () => {
     expect(tournament.tableAssignments).toEqual([{ tableId: 'T1', matchId: 'match-m1', round: 1 }]);
   });
 
+  it('scheduleRound for one class does not remove another class round-1 assignments', () => {
+    const tournament = createTournament();
+    tournament.classDefinitions = [
+      { id: 'jun', name: 'Junior' },
+      { id: 'sen', name: 'Senior' },
+    ];
+    tournament.classTournaments = {
+      jun: {
+        seedings: ['p1', 'p2'],
+        groups: {},
+        bracketMatches: [{ id: 'm1', seedA: 'p1', seedB: 'p2', round: 1 }],
+        lockedBracketRounds: [],
+      },
+      sen: {
+        seedings: ['p3', 'p4'],
+        groups: {},
+        bracketMatches: [{ id: 'm1', seedA: 'p3', seedB: 'p4', round: 1 }],
+        lockedBracketRounds: [],
+      },
+    };
+    scheduleRound(tournament, ['T1'], 1, 'sen');
+    expect(tournament.tableAssignments).toEqual([
+      { tableId: 'T1', matchId: 'match-sen-m1', round: 1 },
+    ]);
+
+    scheduleRound(tournament, ['T2', 'T3'], 1, 'jun');
+    expect(tournament.tableAssignments).toContainEqual({
+      tableId: 'T1',
+      matchId: 'match-sen-m1',
+      round: 1,
+    });
+    expect(tournament.tableAssignments).toContainEqual({
+      tableId: 'T2',
+      matchId: 'match-jun-m1',
+      round: 1,
+    });
+  });
+
   it('advances bracket match when a seeded player forfeits in bracket', () => {
     const tournament = createTournament();
     tournament.players['p1'] = { id: 'p1', name: 'Alice', handicap: 0 };

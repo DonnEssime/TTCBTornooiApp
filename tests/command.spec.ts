@@ -359,6 +359,7 @@ describe('CommandRunner dependency-aware undo', () => {
     });
     expect(r.success).toBe(true);
     const t = runner.getTournament();
+    expect(t.forfeits.players.p1?.classId).toBe('jun');
     expect(t.forfeitResults.playerWins['p2']).toBe(1);
     expect(t.forfeitResults.playerWins['p3']).toBe(1);
     expect(t.forfeitResults.playerWins['p4']).toBeUndefined();
@@ -1443,5 +1444,194 @@ describe('Multi-class parity gaps', () => {
     const t = runner.getTournament();
     expect(t.matches[junMid]?.status).toBe('forfeit');
     expect(t.matches[senMid]?.status).toBe('scheduled');
+    expect(t.forfeits.players[junBm.seedA!]?.classId).toBe('jun');
+  });
+
+  it('AssignTables for one class does not remove another class round assignments', () => {
+    const runner = new CommandRunner();
+    runner.execute({
+      id: 'tc',
+      type: 'SetTournamentClasses',
+      dependsOn: [],
+      payload: { classes: [{ id: 'jun', name: 'Junior' }, { id: 'sen', name: 'Senior' }] },
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    for (const [pid, name] of [
+      ['p1', 'J1'],
+      ['p2', 'J2'],
+      ['p3', 'S1'],
+      ['p4', 'S2'],
+    ] as const) {
+      runner.execute({
+        id: pid,
+        type: 'CreatePlayer',
+        dependsOn: ['tc'],
+        payload: { playerId: pid, name, handicap: 0 },
+        timestamp: '2026-01-01T00:00:01.000Z',
+      });
+    }
+    runner.execute({
+      id: 'seed',
+      type: 'SetSeedings',
+      dependsOn: ['p1', 'p2', 'p3', 'p4'],
+      payload: { playerIds: ['p1', 'p2', 'p3', 'p4'] },
+      timestamp: '2026-01-01T00:00:02.000Z',
+    });
+    for (const [pid, flags] of [
+      ['p1', { jun: true, sen: false }],
+      ['p2', { jun: true, sen: false }],
+      ['p3', { jun: false, sen: true }],
+      ['p4', { jun: false, sen: true }],
+    ] as const) {
+      runner.execute({
+        id: `f-${pid}`,
+        type: 'SetPlayerClassFlags',
+        dependsOn: ['seed'],
+        payload: { playerId: pid, flags },
+        timestamp: '2026-01-01T00:00:03.000Z',
+      });
+    }
+    for (const classId of ['jun', 'sen'] as const) {
+      const players = classId === 'jun' ? ['p1', 'p2'] : ['p3', 'p4'];
+      runner.execute({
+        id: `scg-${classId}`,
+        type: 'SetClassGroups',
+        dependsOn: ['seed'],
+        payload: { classId, groups: [{ id: '1', playerIds: players }] },
+        timestamp: '2026-01-01T00:00:04.000Z',
+      });
+      runner.execute({
+        id: `gen-${classId}`,
+        type: 'GenerateBracket',
+        dependsOn: [`scg-${classId}`],
+        payload: { fillByes: false, cullToPowerOfTwo: false, classId },
+        timestamp: '2026-01-01T00:00:05.000Z',
+      });
+    }
+    const senBm = runner
+      .getTournament()
+      .classTournaments.sen!.bracketMatches.find((m) => m.round === 1 && m.seedA && m.seedB)!;
+    const senMid = bracketPlayerMatchId(senBm.id, 'sen');
+
+    expect(
+      runner.execute({
+        id: 'assign-sen',
+        type: 'AssignTables',
+        dependsOn: ['gen-sen'],
+        payload: { tableIds: ['T1'], round: 1, classId: 'sen' },
+        timestamp: '2026-01-01T00:00:06.000Z',
+      }).success,
+    ).toBe(true);
+    const senAssignment = { tableId: 'T1', matchId: senMid, round: 1 };
+
+    expect(
+      runner.execute({
+        id: 'assign-jun',
+        type: 'AssignTables',
+        dependsOn: ['gen-jun'],
+        payload: { tableIds: ['T2', 'T3'], round: 1, classId: 'jun' },
+        timestamp: '2026-01-01T00:00:07.000Z',
+      }).success,
+    ).toBe(true);
+
+    const assignments = runner.getTournament().tableAssignments;
+    expect(assignments).toContainEqual(senAssignment);
+    const junMids = new Set(
+      runner
+        .getTournament()
+        .classTournaments.jun!.bracketMatches.filter((m) => m.round === 1 && m.seedA && m.seedB)
+        .map((m) => bracketPlayerMatchId(m.id, 'jun')),
+    );
+    expect(assignments.filter((a) => junMids.has(a.matchId)).length).toBe(junMids.size);
+  });
+
+  it('group forfeit in one class does not drop player from another class bracket', () => {
+    const runner = new CommandRunner();
+    runner.execute({
+      id: 'tc',
+      type: 'SetTournamentClasses',
+      dependsOn: [],
+      payload: { classes: [{ id: 'jun', name: 'Junior' }, { id: 'sen', name: 'Senior' }] },
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    for (const [pid, name] of [
+      ['p1', 'Both'],
+      ['p2', 'J2'],
+      ['p3', 'S2'],
+    ] as const) {
+      runner.execute({
+        id: pid,
+        type: 'CreatePlayer',
+        dependsOn: ['tc'],
+        payload: { playerId: pid, name, handicap: 0 },
+        timestamp: '2026-01-01T00:00:01.000Z',
+      });
+    }
+    runner.execute({
+      id: 'seed',
+      type: 'SetSeedings',
+      dependsOn: ['p1', 'p2', 'p3'],
+      payload: { playerIds: ['p1', 'p2', 'p3'] },
+      timestamp: '2026-01-01T00:00:02.000Z',
+    });
+    for (const [pid, flags] of [
+      ['p1', { jun: true, sen: true }],
+      ['p2', { jun: true, sen: false }],
+      ['p3', { jun: false, sen: true }],
+    ] as const) {
+      runner.execute({
+        id: `f-${pid}`,
+        type: 'SetPlayerClassFlags',
+        dependsOn: ['seed'],
+        payload: { playerId: pid, flags },
+        timestamp: '2026-01-01T00:00:03.000Z',
+      });
+    }
+    runner.execute({
+      id: 'scg-jun',
+      type: 'SetClassGroups',
+      dependsOn: ['seed'],
+      payload: { classId: 'jun', groups: [{ id: '1', playerIds: ['p1', 'p2'] }] },
+      timestamp: '2026-01-01T00:00:04.000Z',
+    });
+    runner.execute({
+      id: 'scg-sen',
+      type: 'SetClassGroups',
+      dependsOn: ['seed'],
+      payload: { classId: 'sen', groups: [{ id: '1', playerIds: ['p1', 'p3'] }] },
+      timestamp: '2026-01-01T00:00:05.000Z',
+    });
+    runner.execute({
+      id: 'ff',
+      type: 'PlayerForfeit',
+      dependsOn: ['scg-jun'],
+      payload: { playerId: 'p1', phase: 'group', groupMode: 'auto-win', classId: 'jun' },
+      timestamp: '2026-01-01T00:00:06.000Z',
+    });
+    expect(runner.getTournament().forfeits.players.p1?.classId).toBe('jun');
+
+    runner.execute({
+      id: 'gen-jun',
+      type: 'GenerateBracket',
+      dependsOn: ['scg-jun', 'ff'],
+      payload: { fillByes: false, cullToPowerOfTwo: false, classId: 'jun' },
+      timestamp: '2026-01-01T00:00:07.000Z',
+    });
+    const junSeeds = new Set(
+      runner.getTournament().classTournaments.jun!.bracketMatches.flatMap((m) => [m.seedA, m.seedB]).filter(Boolean),
+    );
+    expect(junSeeds.has('p1')).toBe(false);
+
+    runner.execute({
+      id: 'gen-sen',
+      type: 'GenerateBracket',
+      dependsOn: ['scg-sen'],
+      payload: { fillByes: false, cullToPowerOfTwo: false, classId: 'sen' },
+      timestamp: '2026-01-01T00:00:08.000Z',
+    });
+    const senSeeds = new Set(
+      runner.getTournament().classTournaments.sen!.bracketMatches.flatMap((m) => [m.seedA, m.seedB]).filter(Boolean),
+    );
+    expect(senSeeds.has('p1')).toBe(true);
   });
 });
