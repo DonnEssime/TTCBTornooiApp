@@ -1,4 +1,5 @@
 export * from './model';
+export * from './match-notes';
 export * from './match-ordering';
 export * from './player-match-history';
 export * from './command';

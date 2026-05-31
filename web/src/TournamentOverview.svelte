@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { BracketMatch, GroupDefinition, Match, Tournament } from 'ttc-tornooiapp';
+  import type { BracketMatch, GroupDefinition, Match, MatchNotesSegment, Tournament } from 'ttc-tornooiapp';
   import {
     bracketKnockoutRoundParams,
     bracketMatchRound,
@@ -13,6 +13,8 @@
     inProgressMatchIdsForPlayer,
     matchAssignedTableId,
     matchIdOnTable,
+    matchNotesSegmentHasSlips,
+    matchNotesSegmentLabel,
     matchPlayersResolvedForBracketPhaseList,
     estimateScheduleWaves,
     matchesOnTablesInAssignmentOrder,
@@ -32,6 +34,7 @@
     onOpenTableMatch,
     onAssignMatchToTable,
     onClearMatchFromTable,
+    onPrintMatchNotes,
     tableCount,
     onIncrementTables,
     onDecrementTables,
@@ -53,6 +56,7 @@
     onOpenTableMatch: (m: Match) => void;
     onAssignMatchToTable: (matchId: string, tableId: string) => void;
     onClearMatchFromTable: (matchId: string) => void;
+    onPrintMatchNotes: (segment: MatchNotesSegment) => void;
   } = $props();
 
   const DND_MATCH = 'application/x-ttc-match-id';
@@ -266,6 +270,18 @@
       total: String(total),
       pct: String(p),
     });
+  }
+
+  function segmentPrintAria(segment: MatchNotesSegment): string {
+    void getLocale();
+    return msgText('ui.matchNotes.printAria', {
+      segment: matchNotesSegmentLabel(tournament, segment, getLocale()),
+    });
+  }
+
+  function canPrintSegment(segment: MatchNotesSegment): boolean {
+    void getLocale();
+    return matchNotesSegmentHasSlips(tournament, segment, getLocale());
   }
 
   function groupProgressForMatch(t: Tournament, m: Match): { total: number; done: number } {
@@ -753,7 +769,13 @@
       {#if aggregateGroupPhase.total === 0}
         <p class="muted small"><Msg key="ui.no_group_matches_yet_create_groups_on_the_group_" /></p>
       {:else}
-        <div class="ov-metric">
+        <button
+          type="button"
+          class="ov-metric-btn ov-metric"
+          disabled={!canPrintSegment({ kind: 'group-overall' })}
+          aria-label={segmentPrintAria({ kind: 'group-overall' })}
+          onclick={() => onPrintMatchNotes({ kind: 'group-overall' })}
+        >
           <div class="ov-metric-top">
             <span class="ov-metric-label"><Msg key="ui.overall" /></span>
             <span class="ov-progress-meta" title={progressBarAria(aggregateGroupPhase.done, aggregateGroupPhase.total)}>
@@ -780,14 +802,21 @@
           >
             <div class="ov-fill" style={`width: ${pct(aggregateGroupPhase.done, aggregateGroupPhase.total)}%`}></div>
           </div>
-        </div>
+        </button>
         <div class="ov-sub">
           {#each tracks as tr (tr.key)}
             {#each sortGroupsForDisplay(tr.groups) as g (g.id)}
               {@const gm = groupMatchesFiltered(tournament, tr.classId).filter((m) => m.groupId === g.id)}
               {@const c = groupPhaseCounts(gm)}
               {#if c.total > 0}
-                <div class="ov-metric ov-metric-sub">
+                {@const poolSegment = { kind: 'group-pool', classId: tr.classId, groupId: g.id } as const}
+                <button
+                  type="button"
+                  class="ov-metric-btn ov-metric ov-metric-sub"
+                  disabled={!canPrintSegment(poolSegment)}
+                  aria-label={segmentPrintAria(poolSegment)}
+                  onclick={() => onPrintMatchNotes(poolSegment)}
+                >
                   <div class="ov-metric-top">
                     <span class="ov-metric-label" title={`${tr.title} · ${groupDisplayLabel(g)}`}>{tr.title} · {groupDisplayLabel(g)}</span>
                     <span class="ov-progress-meta" title={progressBarAria(c.done, c.total)}>
@@ -808,7 +837,7 @@
                   >
                     <div class="ov-fill ov-fill-sub" style={`width: ${pct(c.done, c.total)}%`}></div>
                   </div>
-                </div>
+                </button>
               {/if}
             {/each}
           {/each}
@@ -853,7 +882,14 @@
           {#each tracks as tr (tr.key)}
             {#if tr.bracketMatches.length > 0}
               {#each bracketRoundAggregatesIncludingFutureRounds(tr.bracketMatches) as row (row.round)}
-                <div class="ov-metric ov-metric-sub">
+                {@const roundSegment = { kind: 'bracket-round', classId: tr.classId, round: row.round } as const}
+                <button
+                  type="button"
+                  class="ov-metric-btn ov-metric ov-metric-sub"
+                  disabled={!canPrintSegment(roundSegment)}
+                  aria-label={segmentPrintAria(roundSegment)}
+                  onclick={() => onPrintMatchNotes(roundSegment)}
+                >
                   <div class="ov-metric-top">
                     <span class="ov-metric-label"
                       >{tr.title} · {bracketKnockoutRoundParams(getLocale(), row.round, tr.bracketMatches).round}</span
@@ -876,7 +912,7 @@
                   >
                     <div class="ov-fill ov-fill-bracket ov-fill-sub" style={`width: ${pct(row.done, row.total)}%`}></div>
                   </div>
-                </div>
+                </button>
               {/each}
             {/if}
           {/each}
@@ -1230,11 +1266,40 @@
     margin: 0.15rem 0 0;
   }
 
+  .ov-metric-btn {
+    display: block;
+    width: 100%;
+    margin: 0;
+    padding: 0.2rem 0.15rem;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    font: inherit;
+    text-align: inherit;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .ov-metric-btn:hover:not(:disabled) {
+    background: #f1f5f9;
+    border-color: #e2e8f0;
+  }
+
+  .ov-metric-btn:focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
+  }
+
+  .ov-metric-btn:disabled {
+    cursor: default;
+    opacity: 0.85;
+  }
+
   .ov-metric {
     margin-top: 0.35rem;
   }
 
-  .ov-metric:first-of-type {
+  .ov-metric-btn.ov-metric:first-of-type {
     margin-top: 0;
   }
 

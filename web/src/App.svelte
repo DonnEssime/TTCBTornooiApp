@@ -64,6 +64,8 @@
     matchIdOnTable,
     matchesOnTablesInAssignmentOrder,
     planFillEmptyTablesFromReady,
+    matchNotesSegmentHasSlips,
+    type MatchNotesSegment,
   } from 'ttc-tornooiapp';
   import BracketStreamView from './BracketStreamView.svelte';
   import { displayBracketColumns } from './bracketStream/displayColumns';
@@ -81,6 +83,7 @@
     type TournamentMeta,
   } from './tournamentStorage';
   import { downloadTournamentPdf } from './tournamentPdf';
+  import { openMatchNotesPdfInNewTab } from './matchNotesPdf';
   import {
     bracketKnockoutRoundParams,
     type MessageKey,
@@ -2595,6 +2598,31 @@
     }
   }
 
+  function printMatchNotes(segment: MatchNotesSegment): void {
+    const s = getActiveSession();
+    if (!s) {
+      showWarnKey('ui.create_or_import_a_tournament_before_exporting');
+      return;
+    }
+    const t = s.controller.getTournament();
+    const locale = getLocale();
+    if (!matchNotesSegmentHasSlips(t, segment, locale)) {
+      showWarnKey('ui.matchNotes.emptySegment');
+      return;
+    }
+    try {
+      openMatchNotesPdfInNewTab(s.tournamentName, t, segment, locale);
+      showInfoKey('ui.toast.matchNotesOpened');
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      if (reason.includes('popup')) {
+        showErrorKey('ui.toast.matchNotesPopupBlocked');
+      } else {
+        showErrorKey('ui.toast.pdfFailed', { reason });
+      }
+    }
+  }
+
   async function onImportFile(ev: Event): Promise<void> {
     if (tournamentLoad) return;
     const input = ev.target as HTMLInputElement;
@@ -3364,6 +3392,7 @@
                 onClearMatchFromTable={overviewClearMatchFromTable}
                 onDebugSimulateTables={debugSimulateOverviewTableMatches}
                 onDebugFillReadyTables={debugFillOverviewEmptyTables}
+                onPrintMatchNotes={printMatchNotes}
               />
             </section>
           {:else if showPlayersPanel}
