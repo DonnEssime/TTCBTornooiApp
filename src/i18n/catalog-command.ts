@@ -183,6 +183,14 @@ export const commandCatalog = {
     'classId is required and must be valid to generate group matches for a class track',
     'classId is verplicht en moet geldig zijn om poule-wedstrijden te genereren voor een reekstraject',
   ),
+  'command.classIdRequired': t(
+    'classId is required for this command in a multi-class tournament',
+    '',
+  ),
+  'command.requireZeroOrTwoOrMoreClasses': t(
+    'Define zero competition classes (single-class mode) or two or more — exactly one class is not supported',
+    '',
+  ),
   'command.classIdMustNotBeSetSingleClass': t(
     'classId must not be set when only one competition class is in use',
     'classId mag niet worden ingesteld wanneer slechts één wedstrijdreeks in gebruik is',

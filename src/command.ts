@@ -138,7 +138,7 @@ export interface EnterTeamScoreCommand extends CommandBase {
 
 export interface PlayerForfeitCommand extends CommandBase {
   type: 'PlayerForfeit';
-  payload: { playerId: string; phase: 'group' | 'bracket'; groupMode?: 'auto-win' | 'not-played' };
+  payload: { playerId: string; phase: 'group' | 'bracket'; groupMode?: 'auto-win' | 'not-played'; classId?: string };
 }
 
 export interface TeamForfeitCommand extends CommandBase {
@@ -239,7 +239,7 @@ export interface EliminateLowestBracketRoundCommand extends CommandBase {
 
 export interface AssignTablesCommand extends CommandBase {
   type: 'AssignTables';
-  payload: { tableIds: string[]; round: number };
+  payload: { tableIds: string[]; round: number; classId?: string };
 }
 
 export interface SetTournamentTablesCommand extends CommandBase {
@@ -682,7 +682,7 @@ export class CommandRunner {
       }
       case 'CreateTeamMatch': {
         const { matchId, teamA, teamB } = command.payload;
-        if (tournament.bracketMatches.length > 0) {
+        if (listCompetitionTracks(tournament).some((tr) => tr.bracketMatches.length > 0)) {
           return commandFail('command.teamVsTeamWithPlayerBracket');
         }
         if (Object.keys(tournament.teamMatches).length > 0) {
@@ -827,11 +827,18 @@ export class CommandRunner {
         return { success: true };
       }
       case 'PlayerForfeit': {
-        const { playerId, phase, groupMode } = command.payload;
+        const { playerId, phase, groupMode, classId } = command.payload;
         if (!tournament.players[playerId]) {
           return commandFail('command.playerNotFound');
         }
-        forfeitPlayer(tournament, playerId, phase, groupMode);
+        if (phase === 'group' && tournamentUsesClassTabs(tournament) && classId === undefined) {
+          return commandFail('command.classIdRequired');
+        }
+        const trackResolved = resolveTrackClassId(tournament, classId);
+        if ('key' in trackResolved) {
+          return commandFail(trackResolved.key);
+        }
+        forfeitPlayer(tournament, playerId, phase, groupMode, trackResolved.classId);
         return { success: true };
       }
       case 'TeamForfeit': {
@@ -942,6 +949,10 @@ export class CommandRunner {
             return commandFail('command.duplicateClassId');
           }
           idSet.add(c.id);
+        }
+
+        if (normalized.length === 1) {
+          return commandFail('command.requireZeroOrTwoOrMoreClasses');
         }
 
         const hasPlayers = Object.keys(tournament.players).length > 0;
@@ -1208,11 +1219,18 @@ export class CommandRunner {
         return { success: true };
       }
       case 'AssignTables': {
-        const { tableIds, round } = command.payload;
+        const { tableIds, round, classId } = command.payload;
         if (!tableIds?.length) {
           return commandFail('command.atLeastOneTableId');
         }
-        scheduleRound(tournament, tableIds, round);
+        if (tournamentUsesClassTabs(tournament) && classId === undefined) {
+          return commandFail('command.classIdRequired');
+        }
+        const trackResolved = resolveTrackClassId(tournament, classId);
+        if ('key' in trackResolved) {
+          return commandFail(trackResolved.key);
+        }
+        scheduleRound(tournament, tableIds, round, trackResolved.classId);
         return { success: true };
       }
       case 'SetTournamentTables': {

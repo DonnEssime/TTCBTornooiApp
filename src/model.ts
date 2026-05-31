@@ -3850,14 +3850,22 @@ export function releaseTableForFinishedOrClearedMatch(tournament: Tournament, ma
   releaseLiveTableForMatch(tournament, matchId);
 }
 
-export function scheduleRound(tournament: Tournament, tableIds: string[], round: number): Tournament {
-  const matches = tournament.bracketMatches.filter((m) => m.round === round).sort(compareBracketMatchId);
+export function scheduleRound(
+  tournament: Tournament,
+  tableIds: string[],
+  round: number,
+  classId?: string,
+): Tournament {
+  const bracketMatches = classId
+    ? (tournament.classTournaments[classId]?.bracketMatches ?? [])
+    : tournament.bracketMatches;
+  const matches = bracketMatches.filter((m) => m.round === round).sort(compareBracketMatchId);
   tournament.tableAssignments = tournament.tableAssignments.filter((a) => a.round !== round);
   let tableIndex = 0;
-  for (const match of matches) {
+  for (const bm of matches) {
     const assignment: TableAssignment = {
       tableId: tableIds[tableIndex % tableIds.length],
-      matchId: match.id,
+      matchId: bracketPlayerMatchId(bm.id, classId),
       round,
     };
     tournament.tableAssignments.push(assignment);
@@ -3866,11 +3874,19 @@ export function scheduleRound(tournament: Tournament, tableIds: string[], round:
   return tournament;
 }
 
+function groupsForTrack(tournament: Tournament, classId?: string): Record<string, GroupDefinition> {
+  if (classId) {
+    return tournament.classTournaments[classId]?.groups ?? {};
+  }
+  return tournament.groups;
+}
+
 export function forfeitPlayer(
   tournament: Tournament,
   playerId: PlayerId,
   phase: ForfeitPhase,
   configuredGroupMode?: ForfeitGroupMode,
+  classId?: string,
 ): Tournament {
   if (!tournament.players[playerId]) {
     throw new Error('Player not found');
@@ -3884,9 +3900,9 @@ export function forfeitPlayer(
   tournament.forfeits.players[playerId] = { phase, timestamp: new Date().toISOString() };
 
   if (phase === 'group') {
-    handleGroupForfeitForPlayer(tournament, playerId);
+    handleGroupForfeitForPlayer(tournament, playerId, classId);
   } else {
-    applyForfeitToOngoingMatches(tournament, playerId);
+    applyForfeitToOngoingMatches(tournament, playerId, classId);
   }
 
   return tournament;
@@ -3907,8 +3923,8 @@ export function forfeitTeam(tournament: Tournament, teamId: TeamId, phase: Forfe
   return tournament;
 }
 
-function handleGroupForfeitForPlayer(tournament: Tournament, playerId: PlayerId): void {
-  const group = Object.values(tournament.groups).find((g) => g.playerIds.includes(playerId));
+function handleGroupForfeitForPlayer(tournament: Tournament, playerId: PlayerId, classId?: string): void {
+  const group = Object.values(groupsForTrack(tournament, classId)).find((g) => g.playerIds.includes(playerId));
   if (!group) return;
 
   const mode = tournament.forfeitGroupMode ?? 'auto-win';
@@ -3937,8 +3953,9 @@ function handlePlayerMatchForfeit(tournament: Tournament, matchId: string, loser
   m.winner = m.playerA === loserPlayerId ? m.playerB : m.playerB === loserPlayerId ? m.playerA : undefined;
 }
 
-function applyForfeitToOngoingMatches(tournament: Tournament, playerId: PlayerId): void {
+function applyForfeitToOngoingMatches(tournament: Tournament, playerId: PlayerId, classId?: string): void {
   for (const match of Object.values(tournament.matches)) {
+    if (classId !== undefined && match.classId !== classId) continue;
     if (match.status === 'scheduled' || match.status === 'in-progress') {
       if (match.playerA === playerId || match.playerB === playerId) {
         handlePlayerMatchForfeit(tournament, match.id, playerId);

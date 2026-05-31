@@ -520,13 +520,19 @@ export class TournamentController {
     return result;
   }
 
-  assignTables(tables: string[], round: number, dependsOn: string[] = [], commandId?: string): CommandResult {
+  assignTables(
+    tables: string[],
+    round: number,
+    dependsOn: string[] = [],
+    commandId?: string,
+    classId?: string,
+  ): CommandResult {
     const command: AssignTablesCommand = {
       id: commandId ?? this.newCommandId(),
       type: 'AssignTables',
       timestamp: this.makeTimestamp(),
       dependsOn,
-      payload: { tableIds: tables, round },
+      payload: { tableIds: tables, round, ...(classId !== undefined ? { classId } : {}) },
     };
     const result = this.runner.execute(command);
     if (result.success) {
@@ -586,13 +592,14 @@ export class TournamentController {
     groupMode?: 'auto-win' | 'not-played',
     dependsOn: string[] = [],
     commandId?: string,
+    classId?: string,
   ): CommandResult {
     const command: PlayerForfeitCommand = {
       id: commandId ?? this.newCommandId(),
       type: 'PlayerForfeit',
       timestamp: this.makeTimestamp(),
       dependsOn,
-      payload: { playerId, phase, groupMode },
+      payload: { playerId, phase, groupMode, ...(classId !== undefined ? { classId } : {}) },
     };
     const result = this.runner.execute(command);
     this.view?.renderMessage(`PlayerForfeit: ${JSON.stringify(result)}`);

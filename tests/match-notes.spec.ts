@@ -174,4 +174,122 @@ describe('match-notes', () => {
     expect(matchNotesSegmentHasSlips(t, segment, 'en')).toBe(false);
     expect(collectMatchNoteSlips(t, segment, 'en')).toEqual([]);
   });
+
+  it('collects class-scoped group-pool and bracket-round slips in multi-class tournaments', () => {
+    const runner = new CommandRunner();
+    runner.execute({
+      id: 'tc',
+      type: 'SetTournamentClasses',
+      dependsOn: [],
+      payload: { classes: [{ id: 'jun', name: 'Junior' }, { id: 'sen', name: 'Senior' }] },
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    for (const [pid, name] of [['p1', 'J1'], ['p2', 'J2'], ['p3', 'S1'], ['p4', 'S2']] as const) {
+      runner.execute({
+        id: pid,
+        type: 'CreatePlayer',
+        dependsOn: ['tc'],
+        payload: { playerId: pid, name, handicap: 0 },
+        timestamp: '2026-01-01T00:00:01.000Z',
+      });
+    }
+    runner.execute({
+      id: 'seed',
+      type: 'SetSeedings',
+      dependsOn: ['p1', 'p2', 'p3', 'p4'],
+      payload: { playerIds: ['p1', 'p2', 'p3', 'p4'] },
+      timestamp: '2026-01-01T00:00:02.000Z',
+    });
+    for (const [pid, flags] of [
+      ['p1', { jun: true, sen: false }],
+      ['p2', { jun: true, sen: false }],
+      ['p3', { jun: false, sen: true }],
+      ['p4', { jun: false, sen: true }],
+    ] as const) {
+      runner.execute({
+        id: `f-${pid}`,
+        type: 'SetPlayerClassFlags',
+        dependsOn: ['seed'],
+        payload: { playerId: pid, flags },
+        timestamp: '2026-01-01T00:00:03.000Z',
+      });
+    }
+    runner.execute({
+      id: 'scg-jun',
+      type: 'SetClassGroups',
+      dependsOn: ['seed'],
+      payload: { classId: 'jun', groups: [{ id: '1', playerIds: ['p1', 'p2'] }] },
+      timestamp: '2026-01-01T00:00:04.000Z',
+    });
+    runner.execute({
+      id: 'scg-sen',
+      type: 'SetClassGroups',
+      dependsOn: ['seed'],
+      payload: { classId: 'sen', groups: [{ id: '1', playerIds: ['p3', 'p4'] }] },
+      timestamp: '2026-01-01T00:00:05.000Z',
+    });
+    runner.execute({
+      id: 'ggrr-jun',
+      type: 'GenerateGroupRoundRobin',
+      dependsOn: ['scg-jun'],
+      payload: { classId: 'jun' },
+      timestamp: '2026-01-01T00:00:06.000Z',
+    });
+    runner.execute({
+      id: 'ggrr-sen',
+      type: 'GenerateGroupRoundRobin',
+      dependsOn: ['scg-sen'],
+      payload: { classId: 'sen' },
+      timestamp: '2026-01-01T00:00:07.000Z',
+    });
+    runner.execute({
+      id: 'gen-jun',
+      type: 'GenerateBracket',
+      dependsOn: ['scg-jun'],
+      payload: { fillByes: false, cullToPowerOfTwo: false, classId: 'jun' },
+      timestamp: '2026-01-01T00:00:08.000Z',
+    });
+    const gm = Object.values(runner.getTournament().matches).find(
+      (m) => m.classId === 'jun' && m.groupId === '1',
+    )!;
+    runner.execute({
+      id: 'fin-jun',
+      type: 'EnterScore',
+      dependsOn: ['ggrr-jun'],
+      payload: {
+        matchId: gm.id,
+        scores: [
+          { playerA: 11, playerB: 5 },
+          { playerA: 11, playerB: 5 },
+          { playerA: 11, playerB: 5 },
+        ],
+      },
+      timestamp: '2026-01-01T00:00:08.500Z',
+    });
+    const t = runner.getTournament();
+    const junBm = t.classTournaments.jun!.bracketMatches.find((m) => m.round === 1 && m.seedA && m.seedB)!;
+    runner.execute({
+      id: 'pair-jun',
+      type: 'CreateMatch',
+      dependsOn: ['gen-jun'],
+      payload: {
+        matchId: `match-jun-${junBm.id}`,
+        playerA: junBm.seedA,
+        playerB: junBm.seedB,
+        classId: 'jun',
+      },
+      timestamp: '2026-01-01T00:00:08.750Z',
+    });
+    const tAfter = runner.getTournament();
+    const junPool = collectMatchNoteSlips(tAfter, { kind: 'group-pool', classId: 'jun', groupId: '1' }, 'en');
+    const senPool = collectMatchNoteSlips(tAfter, { kind: 'group-pool', classId: 'sen', groupId: '1' }, 'en');
+    expect(junPool.length).toBe(0);
+    expect(senPool.length).toBe(1);
+    expect(senPool[0]!.playerA.name).toBe('S1');
+    const junBracket = collectMatchNoteSlips(tAfter, { kind: 'bracket-round', classId: 'jun', round: 1 }, 'en');
+    expect(junBracket.length).toBe(1);
+    expect(junBracket[0]!.contextLine).toContain('Junior');
+    const senBracket = collectMatchNoteSlips(tAfter, { kind: 'bracket-round', classId: 'sen', round: 1 }, 'en');
+    expect(senBracket.length).toBe(0);
+  });
 });

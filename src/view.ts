@@ -1,4 +1,5 @@
 import { Tournament } from './model';
+import { listCompetitionTracks } from './competition-track';
 
 export interface TournamentView {
   renderTournament(tournament: Tournament): void;
@@ -12,7 +13,12 @@ export class ConsoleTournamentView implements TournamentView {
   }
 
   renderBracket(tournament: Tournament): void {
-    console.log('Bracket matches:', JSON.stringify(tournament.bracketMatches, null, 2));
+    for (const tr of listCompetitionTracks(tournament)) {
+      const label = tr.classId
+        ? (tournament.classDefinitions.find((d) => d.id === tr.classId)?.name ?? tr.classId)
+        : 'Main draw';
+      console.log(`Bracket matches (${label}):`, JSON.stringify(tr.bracketMatches, null, 2));
+    }
   }
 
   renderMessage(message: string): void {
@@ -128,16 +134,24 @@ export class HtmlStringTournamentView implements TournamentView {
   }
 
   private renderBracketToHtml(tournament: Tournament): string {
-    const rows = tournament.bracketMatches
-      .map((m) => `<li>${this.escapeHtml(m.id)}: ${this.escapeHtml(String(m.seedA))} vs ${this.escapeHtml(String(m.seedB))} (round ${m.round})</li>`)
-      .join('');
-
-    return `
+    return listCompetitionTracks(tournament)
+      .map((tr) => {
+        const label = tr.classId
+          ? (tournament.classDefinitions.find((d) => d.id === tr.classId)?.name ?? tr.classId)
+          : 'Main draw';
+        const rows = tr.bracketMatches
+          .map(
+            (m) =>
+              `<li>${this.escapeHtml(m.id)}: ${this.escapeHtml(String(m.seedA))} vs ${this.escapeHtml(String(m.seedB))} (round ${m.round})</li>`,
+          )
+          .join('');
+        return `
       <section class="bracket">
-        <h2>Bracket</h2>
+        <h2>Bracket — ${this.escapeHtml(label)}</h2>
         <ul>${rows}</ul>
-      </section>
-    `;
+      </section>`;
+      })
+      .join('');
   }
 }
 
@@ -200,15 +214,23 @@ export class DomTournamentView implements TournamentView {
   }
 
   private renderBracketToHtml(tournament: Tournament): string {
-    const rows = tournament.bracketMatches
-      .map((m) => `<li>${this.escapeHtml(m.id)}: ${this.escapeHtml(String(m.seedA))} vs ${this.escapeHtml(String(m.seedB))} (round ${m.round})</li>`)
-      .join('');
-
-    return `
+    return listCompetitionTracks(tournament)
+      .map((tr) => {
+        const label = tr.classId
+          ? (tournament.classDefinitions.find((d) => d.id === tr.classId)?.name ?? tr.classId)
+          : 'Main draw';
+        const rows = tr.bracketMatches
+          .map(
+            (m) =>
+              `<li>${this.escapeHtml(m.id)}: ${this.escapeHtml(String(m.seedA))} vs ${this.escapeHtml(String(m.seedB))} (round ${m.round})</li>`,
+          )
+          .join('');
+        return `
       <section class="bracket">
-        <h2>Bracket</h2>
+        <h2>Bracket — ${this.escapeHtml(label)}</h2>
         <ul>${rows}</ul>
-      </section>
-    `;
+      </section>`;
+      })
+      .join('');
   }
 }

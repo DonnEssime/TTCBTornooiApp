@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { BracketMatch, Tournament } from 'ttc-tornooiapp';
-  import { bracketKnockoutRoundLabel, bracketMatchRound } from 'ttc-tornooiapp';
+  import { bracketKnockoutRoundLabel, bracketMatchRound, getCompetitionTrack } from 'ttc-tornooiapp';
   import { getLocale } from './i18n/locale.svelte';
   import BracketSlotRow from './BracketSlotRow.svelte';
   import BracketSubtree from './BracketSubtree.svelte';
@@ -60,7 +60,10 @@
   function earlyRoundLabel(col: BracketMatch[], idx: number): string {
     void getLocale();
     const r = col[0] ? bracketMatchRound(col[0]) : idx + 1;
-    return bracketKnockoutRoundLabel(getLocale(), r, tournament.bracketMatches, mainDrawSlotCount);
+    const bracketForLabels = bracketClassId
+      ? getCompetitionTrack(tournament, bracketClassId).bracketMatches
+      : tournament.bracketMatches;
+    return bracketKnockoutRoundLabel(getLocale(), r, bracketForLabels, mainDrawSlotCount);
   }
 
   let streamInnerEl: HTMLDivElement | undefined = $state();

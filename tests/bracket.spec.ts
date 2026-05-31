@@ -200,7 +200,7 @@ describe('Bracket generation', () => {
     expect(tournament.bracketMatches[0].winner).toBe('p1');
 
     scheduleRound(tournament, ['T1', 'T2'], 1);
-    expect(tournament.tableAssignments).toEqual([{ tableId: 'T1', matchId: 'm1', round: 1 }]);
+    expect(tournament.tableAssignments).toEqual([{ tableId: 'T1', matchId: 'match-m1', round: 1 }]);
   });
 
   it('advances bracket match when a seeded player forfeits in bracket', () => {

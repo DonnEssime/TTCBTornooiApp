@@ -56,6 +56,7 @@
     getCompetitionTrack,
     trackGroupMatches,
     tournamentUsesClassTabs,
+    MAIN_TRACK_KEY,
     isGameScoreLegal,
     isMatchScoreLegal,
     isPlayerDisplayNameTaken,
@@ -146,6 +147,10 @@
     classGroupTargetCountByClassId: Record<string, number>;
     /** Latest `SetClassGroups` command id per class. */
     lastSetClassGroupsCommandIdByClass: Record<string, string>;
+    /** Latest `GenerateBracket` command id for the main track. */
+    lastGenerateBracketCommandId: string;
+    /** Latest `GenerateBracket` command id per class. */
+    lastGenerateBracketCommandIdByClass: Record<string, string>;
     /** Planned flow; only `group-bracket` is implemented end-to-end. */
     tournamentFormat: TournamentFormat;
   }
@@ -532,6 +537,17 @@
       lastSeedingCommandId: lastSetSeedingsCommandId(log),
       lastSetGroupsCommandId: lastCommandIdOfType(log, 'SetGroups'),
       lastSetClassGroupsCommandIdByClass: lastSetClassGroupsCommandIdsFromLog(log),
+      ...(() => {
+        const gen = lastGenerateBracketCommandIdsFromLog(log);
+        const byClass: Record<string, string> = {};
+        for (const [k, v] of Object.entries(gen)) {
+          if (k !== MAIN_TRACK_KEY) byClass[k] = v;
+        }
+        return {
+          lastGenerateBracketCommandId: gen[MAIN_TRACK_KEY] ?? '',
+          lastGenerateBracketCommandIdByClass: byClass,
+        };
+      })(),
       nav: normalizeSessionNav(t0, { kind: 'single', inner: 'players' }),
       classEditorRows:
         t0.classDefinitions.length > 0
@@ -1050,6 +1066,19 @@
       if (cmd.type !== 'SetClassGroups') continue;
       const p = cmd.payload as { classId?: string } | undefined;
       if (p?.classId) out[p.classId] = cmd.id;
+    }
+    return out;
+  }
+
+  function lastGenerateBracketCommandIdsFromLog(
+    commands: Array<{ id: string; type: string; payload?: unknown }>,
+  ): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const cmd of commands) {
+      if (cmd.type !== 'GenerateBracket') continue;
+      const p = cmd.payload as { classId?: string } | undefined;
+      const key = p?.classId ?? MAIN_TRACK_KEY;
+      out[key] = cmd.id;
     }
     return out;
   }
@@ -1976,6 +2005,13 @@
     return s.lastSetGroupsCommandId;
   }
 
+  function trackGenerateBracketCommandId(s: TournamentSession, classId: string | undefined): string {
+    if (classId) {
+      return s.lastGenerateBracketCommandIdByClass[classId] ?? '';
+    }
+    return s.lastGenerateBracketCommandId;
+  }
+
   function eligibleTrackGroupPlayerIds(t: Tournament, classId: string | undefined): string[] {
     if (classId) {
       return [...getCompetitionTrack(t, classId).seedings];
@@ -2051,6 +2087,29 @@
       patchActiveSession({
         lastSetGroupsCommandId: lastSG,
         lastSetClassGroupsCommandIdByClass: lastSCG,
+      });
+    }
+
+    const lastGen = lastGenerateBracketCommandIdsFromLog(log);
+    const prevGen = sAfter.lastGenerateBracketCommandIdByClass;
+    let genChanged = (lastGen[MAIN_TRACK_KEY] ?? '') !== sAfter.lastGenerateBracketCommandId;
+    if (!genChanged) {
+      for (const k of new Set([...Object.keys(prevGen), ...Object.keys(lastGen)])) {
+        if (k === MAIN_TRACK_KEY) continue;
+        if (prevGen[k] !== lastGen[k]) {
+          genChanged = true;
+          break;
+        }
+      }
+    }
+    if (genChanged) {
+      const byClass: Record<string, string> = {};
+      for (const [k, v] of Object.entries(lastGen)) {
+        if (k !== MAIN_TRACK_KEY) byClass[k] = v;
+      }
+      patchActiveSession({
+        lastGenerateBracketCommandId: lastGen[MAIN_TRACK_KEY] ?? '',
+        lastGenerateBracketCommandIdByClass: byClass,
       });
     }
 
@@ -2189,6 +2248,10 @@
           }))
           .filter((r) => r.name.length > 0)
       : [];
+    if (namedClasses.length === 1) {
+      showErrorKey('ui.classes.requireZeroOrTwoOrMore');
+      return;
+    }
     if (namedClasses.length > 0) {
       const cmdId = `cmd-classes-init-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
       const r = controller.setTournamentClasses(namedClasses, [], cmdId);
@@ -2229,6 +2292,8 @@
       classGroupTargetSizeByClassId: {},
       classGroupTargetCountByClassId: {},
       lastSetClassGroupsCommandIdByClass: {},
+      lastGenerateBracketCommandId: '',
+      lastGenerateBracketCommandIdByClass: {},
       tournamentFormat: draftTournamentFormat,
     };
     activateSession(session);
@@ -2524,7 +2589,7 @@
       showWarnKey('ui.no_knockout_bracket_to_remove');
       return;
     }
-    if (anyBracketKnockoutMatchHasRecordedPlay(tournament, track.bracketMatches)) {
+    if (anyBracketKnockoutMatchHasRecordedPlay(tournament, track.bracketMatches, classId)) {
       showWarnKey('model.cannotRemoveKnockoutBracketWithPlayedMatches');
       return;
     }
@@ -2535,8 +2600,8 @@
     if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
     const scgId = trackSetGroupsCommandId(s, classId);
     if (scgId) deps.push(scgId);
-    const gen = [...s.controller.getCommandLog()].reverse().find((c) => c.type === 'GenerateBracket');
-    if (gen) deps.push(gen.id);
+    const genId = trackGenerateBracketCommandId(s, classId);
+    if (genId) deps.push(genId);
     const cmdId = `cmd-clear-bracket-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
     const r = s.controller.clearBracket(deps, cmdId, classId);
     if (!r.success) {
@@ -2557,9 +2622,8 @@
     if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
     const scgId = trackSetGroupsCommandId(s, classId);
     if (scgId) deps.push(scgId);
-    const log = s.controller.getCommandLog();
-    const gen = [...log].reverse().find((c) => c.type === 'GenerateBracket');
-    if (gen) deps.push(gen.id);
+    const genId = trackGenerateBracketCommandId(s, classId);
+    if (genId) deps.push(genId);
     const cmdId = `cmd-elim-r${round}-${salt.replaceAll('-', '').slice(0, 12)}`;
     const r = s.controller.eliminateLowestBracketRound(round, deps, salt, cmdId, classId);
     if (!r.success) {
@@ -3532,18 +3596,14 @@
                 {#each activeSess.playerOrder as pid (pid)}
                   <li class="player-row">
                     <div class="player-main">
-                      {#if !useClassTabs}
-                        <button
-                          type="button"
-                          class="name player-name-btn"
-                          aria-label={msgText('ui.players.openMatchHistory', { name: playerLabel(pid) })}
-                          onclick={() => openPlayerHistoryModal(pid)}
-                        >
-                          {playerLabel(pid)}
-                        </button>
-                      {:else}
-                        <span class="name">{playerLabel(pid)}</span>
-                      {/if}
+                      <button
+                        type="button"
+                        class="name player-name-btn"
+                        aria-label={msgText('ui.players.openMatchHistory', { name: playerLabel(pid) })}
+                        onclick={() => openPlayerHistoryModal(pid)}
+                      >
+                        {playerLabel(pid)}
+                      </button>
                       {#if handicapEnabled}
                         <span class="hc-wrap">
                           <label class="hc-label" for={`hc-${pid}`}><Msg key="ui.handicap" /></label>
