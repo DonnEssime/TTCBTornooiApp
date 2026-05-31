@@ -27,7 +27,7 @@
     /** When set (multi-class track), group placeholders resolve against this class slice. */
     bracketClassId?: string;
     /** When set, match boxes are buttons and invoke this with the bracket slot. */
-    onPairingClick?: (bm: BracketMatch) => void;
+    onPairingClick?: (bm: BracketMatch, classId?: string) => void;
     ariaLabel?: string;
     emptyMessage?: string;
   } = $props();
@@ -54,7 +54,7 @@
   }
 
   function activate(m: BracketMatch): void {
-    onPairingClick?.(m);
+    onPairingClick?.(m, bracketClassId);
   }
 
   function earlyRoundLabel(col: BracketMatch[], idx: number): string {

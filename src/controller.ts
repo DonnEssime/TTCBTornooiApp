@@ -128,13 +128,20 @@ export class TournamentController {
     return result;
   }
 
-  createMatch(matchId: string, playerA: string, playerB: string, dependsOn: string[] = [], commandId?: string): CommandResult {
+  createMatch(
+    matchId: string,
+    playerA: string,
+    playerB: string,
+    dependsOn: string[] = [],
+    commandId?: string,
+    classId?: string,
+  ): CommandResult {
     const command: CreateMatchCommand = {
       id: commandId ?? this.newCommandId(),
       type: 'CreateMatch',
       timestamp: this.makeTimestamp(),
       dependsOn,
-      payload: { matchId, playerA, playerB },
+      payload: { matchId, playerA, playerB, ...(classId ? { classId } : {}) },
     };
     const result = this.runner.execute(command);
     this.view?.renderMessage(`CreateMatch: ${JSON.stringify(result)}`);

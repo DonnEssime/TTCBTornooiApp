@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { BracketMatch, GroupDefinition, Match, MatchNotesSegment, Tournament } from 'ttc-tornooiapp';
-  import { listCompetitionTracks, trackGroupMatches, trackTitle } from 'ttc-tornooiapp';
+  import { listCompetitionTracks, trackGroupMatches, trackDefinedGroupMatches, aggregateGroupPhaseCounts, trackTitle } from 'ttc-tornooiapp';
   import {
     bracketKnockoutRoundParams,
     bracketMatchRound,
@@ -229,8 +229,8 @@
     bm: BracketMatch,
     classId: string | undefined,
   ): string | null {
-    if (!bracketSlotAwaitingPlay(t, bm)) return null;
-    const mid = bracketPlayerMatchId(bm.id);
+    if (!bracketSlotAwaitingPlay(t, bm, classId)) return null;
+    const mid = bracketPlayerMatchId(bm.id, classId);
     const m = t.matches[mid];
     if (!m || m.groupId) return null;
     if (m.status !== 'scheduled' || m.scores.length > 0) return null;
@@ -316,8 +316,8 @@
   function readyBracketMatches(t: Tournament, bracketMatches: BracketMatch[], classId: string | undefined): BracketMatch[] {
     const out: BracketMatch[] = [];
     for (const bm of bracketMatches) {
-      if (!bracketSlotAwaitingPlay(t, bm)) continue;
-      const mid = bracketPlayerMatchId(bm.id);
+      if (!bracketSlotAwaitingPlay(t, bm, classId)) continue;
+      const mid = bracketPlayerMatchId(bm.id, classId);
       const m = t.matches[mid];
 
       const playableScheduled =
@@ -340,7 +340,7 @@
 
   /** Lower = show first within the same round (scheduled playable before decided / pairing-only). */
   function bracketKnockoutReadyRank(t: Tournament, bm: BracketMatch, classId: string | undefined): number {
-    const mid = bracketPlayerMatchId(bm.id);
+    const mid = bracketPlayerMatchId(bm.id, classId);
     const m = t.matches[mid];
     if (
       m &&
@@ -375,14 +375,9 @@
     }));
   });
 
-  /** All group matches across classes when multi-tab */
-  function allClassGroupMatches(t: Tournament): Match[] {
-    return Object.values(t.matches).filter((m) => Boolean(m.groupId && m.classId));
-  }
-
   const aggregateGroupPhase = $derived.by(() => {
-    if (!useClassTabs) return groupPhaseCounts(trackGroupMatches(tournament, undefined));
-    return groupPhaseCounts(allClassGroupMatches(tournament));
+    void getLocale();
+    return aggregateGroupPhaseCounts(tournament);
   });
 
   const aggregateBracketPhase = $derived.by(() => {
@@ -396,6 +391,69 @@
     }
     return { total, done };
   });
+
+  function phaseFullyComplete(c: { total: number; done: number }): boolean {
+    return c.total > 0 && c.done >= c.total;
+  }
+
+  /** Single-class: drop the whole card when done. Multi-class: keep Overall, drop finished sub-rows only. */
+  function showPhaseSection(c: { total: number; done: number }): boolean {
+    if (c.total === 0) return true;
+    if (useClassTabs) return true;
+    return !phaseFullyComplete(c);
+  }
+
+  /** Per-track sidebar rows: hide once finished in multi-class; single-class hides the whole section instead. */
+  function showProgressSubItem(c: { total: number; done: number }): boolean {
+    return c.total > 0 && (!useClassTabs || !phaseFullyComplete(c));
+  }
+
+  const hasVisibleGroupSubItems = $derived.by(() => {
+    for (const tr of tracks) {
+      for (const g of sortGroupsForDisplay(tr.groups)) {
+        const gm = trackDefinedGroupMatches(tournament, tr.classId, tr.groups).filter((m) => m.groupId === g.id);
+        if (showProgressSubItem(groupPhaseCounts(gm))) return true;
+      }
+    }
+    return false;
+  });
+
+  type BracketProgressSubItem = {
+    trackKey: string;
+    title: string;
+    classId: string | undefined;
+    bracketMatches: BracketMatch[];
+    round: number;
+    done: number;
+    total: number;
+  };
+
+  /** Multi-class: interleave tracks by round (lowest first), then phase name. */
+  const bracketProgressSubItems = $derived.by((): BracketProgressSubItem[] => {
+    const items: BracketProgressSubItem[] = [];
+    for (const tr of tracks) {
+      if (tr.bracketMatches.length === 0) continue;
+      for (const row of bracketRoundAggregatesIncludingFutureRounds(tr.bracketMatches)) {
+        if (!showProgressSubItem(row)) continue;
+        items.push({
+          trackKey: tr.key,
+          title: tr.title,
+          classId: tr.classId,
+          bracketMatches: tr.bracketMatches,
+          round: row.round,
+          done: row.done,
+          total: row.total,
+        });
+      }
+    }
+    items.sort((a, b) => {
+      if (a.round !== b.round) return a.round - b.round;
+      return a.title.localeCompare(b.title);
+    });
+    return items;
+  });
+
+  const hasVisibleBracketSubItems = $derived(bracketProgressSubItems.length > 0);
 
   const readyGroupsAll = $derived.by(() => {
     const list: Match[] = [];
@@ -441,27 +499,65 @@
   });
 
   type ReadyDisplayEntry =
-    | { kind: 'group'; match: Match }
-    | { kind: 'bracket'; bm: BracketMatch; meta: string; classId: string | undefined; matchId: string };
+    | { kind: 'group'; match: Match; key: string }
+    | { kind: 'bracket'; bm: BracketMatch; meta: string; classId: string | undefined; matchId: string; key: string };
+
+  function readyGroupQueueKey(matchId: string): string {
+    return `g:${matchId}`;
+  }
+
+  /** Bracket slot ids (m1, m2, …) repeat per class track — keys must include class scope. */
+  function readyBracketQueueKey(classId: string | undefined, bmId: string): string {
+    return `b:${classId ?? 'main'}:${bmId}`;
+  }
+
+  function matchIdForReadyEntry(entry: ReadyDisplayEntry): string {
+    return entry.kind === 'group' ? entry.match.id : entry.matchId;
+  }
+
+  const readyItemsByKey = $derived.by((): Map<string, ReadyDisplayEntry> => {
+    const map = new Map<string, ReadyDisplayEntry>();
+    for (const m of readyGroupsAll) {
+      map.set(readyGroupQueueKey(m.id), { kind: 'group', match: m, key: readyGroupQueueKey(m.id) });
+    }
+    for (const item of readyBracketsAll) {
+      const mid = readyBracketPlayableMatchId(tournament, item.bm, item.classId);
+      if (!mid) continue;
+      const key = readyBracketQueueKey(item.classId, item.bm.id);
+      map.set(key, { kind: 'bracket', ...item, matchId: mid, key });
+    }
+    return map;
+  });
 
   // Warm-start tie-break hint. Must NOT be $state — a reactive write would loop with $derived below.
   let lastReadyIds: string[] = [];
 
-  const readyMatchIdsAllOrdered = $derived.by((): string[] => {
-    const ids: string[] = [];
-    for (const m of readyGroupsAll) ids.push(m.id);
+  const readyQueueKeysOrdered = $derived.by((): string[] => {
+    const items = readyItemsByKey;
+    const keys: string[] = [];
+    for (const m of readyGroupsAll) keys.push(readyGroupQueueKey(m.id));
     for (const item of readyBracketsAll) {
       const mid = readyBracketPlayableMatchId(tournament, item.bm, item.classId);
-      if (mid) ids.push(mid);
+      if (mid) keys.push(readyBracketQueueKey(item.classId, item.bm.id));
     }
 
     if (readyOrderingChoice !== 'minWavesAvoidBackToBack') {
-      return ids;
+      return keys;
+    }
+
+    const matchToKeys = new Map<string, string[]>();
+    for (const key of keys) {
+      const entry = items.get(key);
+      if (!entry) continue;
+      const mid = matchIdForReadyEntry(entry);
+      const list = matchToKeys.get(mid);
+      if (list) list.push(key);
+      else matchToKeys.set(mid, [key]);
     }
 
     const readyMatches: Match[] = [];
-    for (const id of ids) {
-      const m = tournament.matches[id];
+    for (const mid of matchToKeys.keys()) {
+      const m = tournament.matches[mid];
       if (m) readyMatches.push(m);
     }
 
@@ -479,7 +575,22 @@
       inProgressInAssignmentOrder: inProgress,
       preferredReadyOrderIds: lastReadyIds,
     });
-    return ordered.map((m) => m.id);
+
+    const orderedKeys: string[] = [];
+    for (const m of ordered) {
+      orderedKeys.push(...(matchToKeys.get(m.id) ?? []));
+    }
+    return orderedKeys;
+  });
+
+  const readyMatchIdsAllOrdered = $derived.by((): string[] => {
+    const items = readyItemsByKey;
+    return readyQueueKeysOrdered
+      .map((key) => {
+        const entry = items.get(key);
+        return entry ? matchIdForReadyEntry(entry) : null;
+      })
+      .filter((id): id is string => Boolean(id));
   });
 
   // Remember the last computed order for the next tournament-state change (non-reactive write).
@@ -491,24 +602,11 @@
 
   /** Ready queue in display order (single list mirrors optimizer / wave estimate). */
   const readyAllDisplay = $derived.by((): ReadyDisplayEntry[] => {
-    const groupById = new Map(readyGroupsAll.map((m) => [m.id, m] as const));
-    const bracketByMatchId = new Map<string, { bm: BracketMatch; meta: string; classId: string | undefined }>();
-    for (const item of readyBracketsAll) {
-      const mid = readyBracketPlayableMatchId(tournament, item.bm, item.classId);
-      if (mid) bracketByMatchId.set(mid, item);
-    }
-
+    const items = readyItemsByKey;
     const out: ReadyDisplayEntry[] = [];
-    for (const id of readyMatchIdsAllOrdered) {
-      const group = groupById.get(id);
-      if (group) {
-        out.push({ kind: 'group', match: group });
-        continue;
-      }
-      const bracket = bracketByMatchId.get(id);
-      if (bracket) {
-        out.push({ kind: 'bracket', ...bracket, matchId: id });
-      }
+    for (const key of readyQueueKeysOrdered) {
+      const entry = items.get(key);
+      if (entry) out.push(entry);
     }
     return out;
   });
@@ -652,7 +750,7 @@
         <p class="muted small"><Msg key="ui.ov.nothingToHighlight" tag="p" class="muted small" /></p>
       {:else}
         <ul class="ov-ready-list">
-          {#each readyAllDisplay as entry (entry.kind === 'group' ? entry.match.id : entry.bm.id)}
+          {#each readyAllDisplay as entry (entry.key)}
             {#if entry.kind === 'group'}
               {@const m = entry.match}
               {@const readyConstraint = readyMatchTableConstraint(tournament, m.id, m.playerA, m.playerB)}
@@ -742,6 +840,7 @@
       </div>
     </section>
 
+    {#if showPhaseSection(aggregateGroupPhase)}
     <section class="ov-card ov-sidebar-card">
       <h3 class="ov-h"><Msg key="ui.group_phase" /></h3>
       {#if aggregateGroupPhase.total === 0}
@@ -781,12 +880,13 @@
             <div class="ov-fill" style={`width: ${pct(aggregateGroupPhase.done, aggregateGroupPhase.total)}%`}></div>
           </div>
         </button>
+        {#if hasVisibleGroupSubItems}
         <div class="ov-sub">
           {#each tracks as tr (tr.key)}
             {#each sortGroupsForDisplay(tr.groups) as g (g.id)}
-              {@const gm = trackGroupMatches(tournament, tr.classId).filter((m) => m.groupId === g.id)}
+              {@const gm = trackDefinedGroupMatches(tournament, tr.classId, tr.groups).filter((m) => m.groupId === g.id)}
               {@const c = groupPhaseCounts(gm)}
-              {#if c.total > 0}
+              {#if showProgressSubItem(c)}
                 {@const poolSegment = { kind: 'group-pool', classId: tr.classId, groupId: g.id } as const}
                 <button
                   type="button"
@@ -820,9 +920,12 @@
             {/each}
           {/each}
         </div>
+        {/if}
       {/if}
     </section>
+    {/if}
 
+    {#if showPhaseSection(aggregateBracketPhase)}
     <section class="ov-card ov-sidebar-card">
       <h3 class="ov-h"><Msg key="ui.bracket_phase" /></h3>
       {#if aggregateBracketPhase.total === 0}
@@ -856,47 +959,46 @@
             <div class="ov-fill ov-fill-bracket" style={`width: ${pct(aggregateBracketPhase.done, aggregateBracketPhase.total)}%`}></div>
           </div>
         </div>
+        {#if hasVisibleBracketSubItems}
         <div class="ov-sub">
-          {#each tracks as tr (tr.key)}
-            {#if tr.bracketMatches.length > 0}
-              {#each bracketRoundAggregatesIncludingFutureRounds(tr.bracketMatches) as row (row.round)}
-                {@const roundSegment = { kind: 'bracket-round', classId: tr.classId, round: row.round } as const}
-                <button
-                  type="button"
-                  class="ov-metric-btn ov-metric ov-metric-sub"
-                  disabled={!canPrintSegment(roundSegment)}
-                  aria-label={segmentPrintAria(roundSegment)}
-                  onclick={() => onPrintMatchNotes(roundSegment)}
+          {#each bracketProgressSubItems as item (`${item.trackKey}-${item.round}`)}
+            {@const roundSegment = { kind: 'bracket-round', classId: item.classId, round: item.round } as const}
+            <button
+              type="button"
+              class="ov-metric-btn ov-metric ov-metric-sub"
+              disabled={!canPrintSegment(roundSegment)}
+              aria-label={segmentPrintAria(roundSegment)}
+              onclick={() => onPrintMatchNotes(roundSegment)}
+            >
+              <div class="ov-metric-top">
+                <span class="ov-metric-label"
+                  >{item.title} · {bracketKnockoutRoundParams(getLocale(), item.round, item.bracketMatches).round}</span
                 >
-                  <div class="ov-metric-top">
-                    <span class="ov-metric-label"
-                      >{tr.title} · {bracketKnockoutRoundParams(getLocale(), row.round, tr.bracketMatches).round}</span
-                    >
-                    <span class="ov-progress-meta" title={progressBarAria(row.done, row.total)}>
-                      <span class="ov-match-ratio">
-                        <Msg key="ui.ov.matchesRatio" params={{ done: String(row.done), total: String(row.total) }} />
-                      </span>
-                      <span class="ov-progress-spacer" aria-hidden="true"></span>
-                      <span class="ov-pct">{pct(row.done, row.total)}%</span>
-                    </span>
-                  </div>
-                  <div
-                    class="ov-track ov-track-sub"
-                    role="progressbar"
-                    aria-valuenow={row.total > 0 ? row.done : 0}
-                    aria-valuemin="0"
-                    aria-valuemax={Math.max(1, row.total)}
-                    aria-label={progressBarAria(row.done, row.total)}
-                  >
-                    <div class="ov-fill ov-fill-bracket ov-fill-sub" style={`width: ${pct(row.done, row.total)}%`}></div>
-                  </div>
-                </button>
-              {/each}
-            {/if}
+                <span class="ov-progress-meta" title={progressBarAria(item.done, item.total)}>
+                  <span class="ov-match-ratio">
+                    <Msg key="ui.ov.matchesRatio" params={{ done: String(item.done), total: String(item.total) }} />
+                  </span>
+                  <span class="ov-progress-spacer" aria-hidden="true"></span>
+                  <span class="ov-pct">{pct(item.done, item.total)}%</span>
+                </span>
+              </div>
+              <div
+                class="ov-track ov-track-sub"
+                role="progressbar"
+                aria-valuenow={item.total > 0 ? item.done : 0}
+                aria-valuemin="0"
+                aria-valuemax={Math.max(1, item.total)}
+                aria-label={progressBarAria(item.done, item.total)}
+              >
+                <div class="ov-fill ov-fill-bracket ov-fill-sub" style={`width: ${pct(item.done, item.total)}%`}></div>
+              </div>
+            </button>
           {/each}
         </div>
+        {/if}
       {/if}
     </section>
+    {/if}
   </aside>
 </div>
 

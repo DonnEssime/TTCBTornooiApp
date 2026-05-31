@@ -38,6 +38,11 @@ export const uiRemainingCatalog = {
   ),
   'ui.export.tournamentFile': t('Export Tournament File', 'Tornooibestand exporteren'),
   'ui.export.tournamentPdf': t('Export Tournament PDF', 'Tornooi-PDF exporteren'),
+  'ui.export.classPdfShort': t('Export PDF', 'PDF exporteren'),
+  'ui.export.classPdfTitle': t(
+    'Download groups, bracket, and results for {{name}}',
+    'Groepen, Afvallingstabel en uitslagen voor {{name}} downloaden',
+  ),
   'ui.group.knockoutActiveLock': t(
     'Knockout bracket is active — group lineup is locked here. You can still finish unfinished round‑robin matches from the matrix above.',
     'Afvallingstabel is actief — groepsindeling is hier vergrendeld. Je kunt nog onafgewerkte poule-wedstrijden afronden via de matrix hieronder.',

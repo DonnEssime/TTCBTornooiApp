@@ -15,6 +15,7 @@ import {
   shuffleDeterministic,
   tournamentUsesClassTabs,
 } from './model';
+import { groupPhaseCounts, type GroupProgressSnapshot } from './match-ordering';
 
 export type TrackGroupsPayload =
   | { groups: Array<{ id: string; label?: string; playerIds: string[] }> }
@@ -337,6 +338,32 @@ export function trackGroupMatches(t: Tournament, classId: string | undefined): M
     if (classId === undefined) return !m.classId;
     return m.classId === classId;
   });
+}
+
+/** Group matches for a track, limited to pools currently defined on that track. */
+export function trackDefinedGroupMatches(
+  t: Tournament,
+  classId: string | undefined,
+  groups: Record<string, GroupDefinition>,
+): Match[] {
+  const ids = new Set(Object.keys(groups));
+  if (ids.size === 0) return [];
+  return trackGroupMatches(t, classId).filter((m) => m.groupId !== undefined && ids.has(m.groupId));
+}
+
+/** Overview sidebar totals — same per-track scope as the per-pool progress rows. */
+export function aggregateGroupPhaseCounts(t: Tournament): GroupProgressSnapshot {
+  if (!tournamentUsesClassTabs(t)) {
+    return groupPhaseCounts(trackGroupMatches(t, undefined));
+  }
+  let total = 0;
+  let done = 0;
+  for (const tr of listCompetitionTracks(t)) {
+    const c = groupPhaseCounts(trackDefinedGroupMatches(t, tr.classId, tr.groups));
+    total += c.total;
+    done += c.done;
+  }
+  return { total, done };
 }
 
 /** Install a knockout bracket on the given track and clear round locks on that track. */

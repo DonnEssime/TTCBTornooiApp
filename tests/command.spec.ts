@@ -1079,14 +1079,14 @@ describe('AdvanceBracketRound', () => {
     let lastDep = 'gen';
     for (const bm of junR1) {
       if (!bm.seedA || !bm.seedB) continue;
-      const mid = bracketPlayerMatchId(bm.id);
+      const mid = bracketPlayerMatchId(bm.id, 'jun');
       const pairId = `pair-${bm.id}`;
       expect(
         runner.execute({
           id: pairId,
           type: 'CreateMatch',
           dependsOn: [lastDep],
-          payload: { matchId: mid, playerA: bm.seedA, playerB: bm.seedB },
+          payload: { matchId: mid, playerA: bm.seedA, playerB: bm.seedB, classId: 'jun' },
           timestamp: '2026-01-01T00:00:08.500Z',
         }).success,
       ).toBe(true);

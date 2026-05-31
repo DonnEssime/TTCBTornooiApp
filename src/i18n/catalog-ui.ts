@@ -89,6 +89,10 @@ export const uiCatalog = {
     'Downloaded tournament summary (.pdf).',
     'Tornooi-overzicht gedownload (.pdf).',
   ),
+  'ui.downloaded_class_summary_pdf': t(
+    'Downloaded class summary (.pdf).',
+    'Klasse-overzicht gedownload (.pdf).',
+  ),
   'ui.drop_last_undo_from_log': t('Drop last Undo from log', 'Laatste ongedaan maken uit log verwijderen'),
   'ui.enter_a_player_name': t('Enter a player name.', 'Voer een spelersnaam in.'),
   'ui.enter_a_positive_number_of_players': t(

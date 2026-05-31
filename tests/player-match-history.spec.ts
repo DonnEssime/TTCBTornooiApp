@@ -3,6 +3,7 @@ import {
   bracketPlayerMatchId,
   createTournament,
   ensureBracketPhasePlayerMatches,
+  ensureBracketPhasePlayerMatchesIn,
   generateBracket,
 } from '../src/model';
 import {
@@ -220,9 +221,9 @@ describe('buildPlayerMatchHistory', () => {
     };
     const r1 = generateBracket(['p1', 'p2'], { fillByes: false, cullToPowerOfTwo: false });
     t.classTournaments.jun!.bracketMatches = r1;
-    ensureBracketPhasePlayerMatches(t);
+    ensureBracketPhasePlayerMatchesIn(t, r1, 'jun');
     const bm = r1[0]!;
-    const mid = bracketPlayerMatchId(bm.id);
+    const mid = bracketPlayerMatchId(bm.id, 'jun');
     t.matches[mid] = {
       ...t.matches[mid]!,
       scores: [{ playerA: 11, playerB: 6 }],

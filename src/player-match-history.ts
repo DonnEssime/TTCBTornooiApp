@@ -151,13 +151,14 @@ function bracketLinesForPlayer(
   tournament: Tournament,
   bracketMatches: BracketMatch[],
   playerId: PlayerId,
+  classId?: string,
 ): PlayerMatchHistoryBracketSection[] {
   const byRound = new Map<number, PlayerMatchHistoryLine[]>();
   for (const bm of bracketMatches) {
     if (bm.seedA !== playerId && bm.seedB !== playerId) continue;
     const opponentId = bm.seedA === playerId ? bm.seedB : bm.seedA;
     if (!opponentId || !tournament.players[opponentId]) continue;
-    const pm = tournament.matches[bracketPlayerMatchId(bm.id)];
+    const pm = tournament.matches[bracketPlayerMatchId(bm.id, classId)];
     const score = pm && !pm.groupId ? matchDecidedGamesWon(pm, playerId) : null;
     const round = bm.round;
     const bucket = byRound.get(round) ?? [];
@@ -194,7 +195,7 @@ function buildTrackSection(
     groupSection = { kind: 'group', group, lines };
   }
 
-  const bracketSections = bracketLinesForPlayer(tournament, track.bracketMatches, playerId);
+  const bracketSections = bracketLinesForPlayer(tournament, track.bracketMatches, playerId, classId);
 
   return {
     classId,

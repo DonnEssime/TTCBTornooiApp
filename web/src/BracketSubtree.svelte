@@ -20,7 +20,7 @@
     tournament: Tournament;
     bracketClassId?: string;
     slotTitle: (m: BracketMatch, side: 'a' | 'b') => string;
-    onPairingClick?: (bm: BracketMatch) => void;
+    onPairingClick?: (bm: BracketMatch, classId?: string) => void;
   } = $props();
 
   const isLeaf = $derived(!node.left && !node.right);
@@ -43,7 +43,7 @@
   }
 
   function activate(m: BracketMatch): void {
-    onPairingClick?.(m);
+    onPairingClick?.(m, bracketClassId);
   }
 
   function measureConnector(): void {

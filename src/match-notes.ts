@@ -148,9 +148,10 @@ function bracketRoundPendingMatches(
   t: Tournament,
   bracketMatches: BracketMatch[],
   round: number,
+  classId?: string,
 ): BracketMatch[] {
   return bracketMatchesSortedForRound(bracketMatches, round).filter(
-    (bm) => !isBracketByeWalkoverMatch(bm) && bracketEffectiveWinner(t, bm) === undefined,
+    (bm) => !isBracketByeWalkoverMatch(bm) && bracketEffectiveWinner(t, bm, classId) === undefined,
   );
 }
 
@@ -163,15 +164,15 @@ function isBracketRoundNotesPrintable(
   const tr =
     listCompetitionTracks(t).find((x) => x.classId === classId) ?? listCompetitionTracks(t)[0];
   if (!tr) return false;
-  const pending = bracketRoundPendingMatches(t, tr.bracketMatches, round);
+  const pending = bracketRoundPendingMatches(t, tr.bracketMatches, round, classId);
   if (pending.length === 0) return true;
   return pending.every((bm) => bracketMatchBothPlayersKnown(t, bm, classId));
 }
 
-function isBracketSlotNotePrintable(t: Tournament, bm: BracketMatch): boolean {
+function isBracketSlotNotePrintable(t: Tournament, bm: BracketMatch, classId?: string): boolean {
   if (isBracketByeWalkoverMatch(bm)) return false;
-  if (bracketEffectiveWinner(t, bm) !== undefined) return false;
-  const mid = bracketPlayerMatchId(bm.id);
+  if (bracketEffectiveWinner(t, bm, classId) !== undefined) return false;
+  const mid = bracketPlayerMatchId(bm.id, classId);
   const pm = t.matches[mid];
   if (pm && !pm.groupId) return isMatchNotePrintable(pm);
   return Boolean(bm.seedA && bm.seedB);
@@ -184,7 +185,7 @@ function slipFromBracketMatch(
   classId: string | undefined,
   locale: Locale,
 ): MatchNoteSlip {
-  const mid = bracketPlayerMatchId(bm.id);
+  const mid = bracketPlayerMatchId(bm.id, classId);
   const pm = t.matches[mid];
   if (pm && !pm.groupId) {
     return slipFromPlayerMatch(t, pm, contextLine, classId, locale);
@@ -263,7 +264,7 @@ function collectBracketRound(
   const ctx = bracketContextLine(locale, tr.trackTitle, round, tr.bracketMatches);
   const out: MatchNoteSlip[] = [];
   for (const bm of bracketMatchesSortedForRound(tr.bracketMatches, round)) {
-    if (!isBracketSlotNotePrintable(t, bm)) continue;
+    if (!isBracketSlotNotePrintable(t, bm, classId)) continue;
     out.push(slipFromBracketMatch(t, bm, ctx, classId, locale));
   }
   out.sort((a, b) => compareBracketMatchIdString(a.matchKey, b.matchKey));

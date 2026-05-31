@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  aggregateGroupPhaseCounts,
   applyBracketToTrack,
   getCompetitionTrack,
   listCompetitionTracks,
   requireTrackClassId,
   resolveTrackClassId,
+  trackDefinedGroupMatches,
   trackGroupMatches,
 } from '../src/competition-track';
 import { createTournament, generateBracket, recomputeClassTournamentSlices } from '../src/model';
@@ -119,5 +121,73 @@ describe('competition-track', () => {
     expect(track.groups).toBe(t.groups);
     track.groups['g']!.playerIds.push('p2');
     expect(t.groups.g!.playerIds).toEqual(['p1', 'p2']);
+  });
+
+  it('trackDefinedGroupMatches ignores stale group ids not in the track definition', () => {
+    const t = createTournament();
+    t.classDefinitions = [
+      { id: 'jun', name: 'Junior' },
+      { id: 'sen', name: 'Senior' },
+    ];
+    recomputeClassTournamentSlices(t);
+    t.classTournaments.jun!.groups = { g1: { id: 'g1', playerIds: ['p1', 'p2'] } };
+    t.matches = {
+      'gm-jun-g1-p1-p2': {
+        id: 'gm-jun-g1-p1-p2',
+        playerA: 'p1',
+        playerB: 'p2',
+        scores: [{ a: 11, b: 0 }],
+        status: 'finished',
+        winner: 'p1',
+        groupId: 'g1',
+        classId: 'jun',
+      },
+      'gm-jun-old-p1-p2': {
+        id: 'gm-jun-old-p1-p2',
+        playerA: 'p1',
+        playerB: 'p2',
+        scores: [],
+        status: 'scheduled',
+        groupId: 'old',
+        classId: 'jun',
+      },
+    };
+    const defined = trackDefinedGroupMatches(t, 'jun', t.classTournaments.jun!.groups);
+    expect(defined.map((m) => m.id)).toEqual(['gm-jun-g1-p1-p2']);
+    expect(aggregateGroupPhaseCounts(t)).toEqual({ total: 1, done: 1 });
+  });
+
+  it('aggregateGroupPhaseCounts sums both class tracks', () => {
+    const t = createTournament();
+    t.classDefinitions = [
+      { id: 'jun', name: 'Junior' },
+      { id: 'sen', name: 'Senior' },
+    ];
+    recomputeClassTournamentSlices(t);
+    t.classTournaments.jun!.groups = { g1: { id: 'g1', playerIds: ['p1', 'p2'] } };
+    t.classTournaments.sen!.groups = { g2: { id: 'g2', playerIds: ['p3', 'p4'] } };
+    t.matches = {
+      'gm-jun-g1-p1-p2': {
+        id: 'gm-jun-g1-p1-p2',
+        playerA: 'p1',
+        playerB: 'p2',
+        scores: [{ a: 11, b: 0 }],
+        status: 'finished',
+        winner: 'p1',
+        groupId: 'g1',
+        classId: 'jun',
+      },
+      'gm-sen-g2-p3-p4': {
+        id: 'gm-sen-g2-p3-p4',
+        playerA: 'p3',
+        playerB: 'p4',
+        scores: [{ a: 11, b: 0 }],
+        status: 'finished',
+        winner: 'p3',
+        groupId: 'g2',
+        classId: 'sen',
+      },
+    };
+    expect(aggregateGroupPhaseCounts(t)).toEqual({ total: 2, done: 2 });
   });
 });

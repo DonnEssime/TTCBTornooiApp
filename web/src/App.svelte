@@ -23,6 +23,8 @@
     bracketMatchRound,
     inferBracketSlotCountFromRoundOne,
     bracketPlayerMatchId,
+    inferBracketClassIdFromPlayerMatchId,
+    parseBracketPlayerMatchId,
     canMutateBracketPlayerMatch,
     canMutateExistingGroupPhaseMatchScores,
     clampPlayerHandicapValue,
@@ -876,23 +878,24 @@
   }
 
   /** Bracket stream: open view/edit for a real pairing (both players known). */
-  function openBracketPairingModal(bm: BracketMatch): void {
+  function openBracketPairingModal(bm: BracketMatch, classId?: string): void {
     if (bm.id.startsWith('__ph-')) return;
     const s = getActiveSession();
     if (!s) return;
-    const canon = bracketMatchBySlotId(tournament, bm.id);
+    const canon = bracketMatchBySlotId(tournament, bm.id, classId);
     const seedA = bm.seedA ?? canon?.seedA;
     const seedB = bm.seedB ?? canon?.seedB;
     if (!seedA || !seedB) return;
-    const mid = bracketPlayerMatchId(bm.id);
+    const mid = bracketPlayerMatchId(bm.id, classId);
     let match = tournament.matches[mid];
     if (!match) {
       const c = s.controller;
       const deps: string[] = [`cmd-${seedA}`, `cmd-${seedB}`];
       if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
-      if (s.lastSetGroupsCommandId) deps.push(s.lastSetGroupsCommandId);
+      const scgId = trackSetGroupsCommandId(s, classId);
+      if (scgId) deps.push(scgId);
       const cmdId = `cmd-bracket-slot-${bm.id}-${Date.now()}`;
-      const r = c.createMatch(mid, seedA, seedB, deps, cmdId);
+      const r = c.createMatch(mid, seedA, seedB, deps, cmdId, classId);
       if (!r.success) {
         showCommandError(r, 'ui.fallback.createBracketMatchRow');
         return;
@@ -912,11 +915,16 @@
 
   function bracketLocksForMatch(match: Match | undefined): { br: BracketMatch[]; locks: number[] } {
     if (!match) return { br: [], locks: [] };
-    const tr = getCompetitionTrack(tournament, match.classId);
+    const cid = match.classId ?? inferBracketClassIdFromPlayerMatchId(tournament, match.id);
+    const tr = getCompetitionTrack(tournament, cid);
     return { br: tr.bracketMatches, locks: tr.lockedBracketRounds };
   }
 
-  function bracketMatchBySlotId(t: Tournament, bmId: string): BracketMatch | undefined {
+  function bracketMatchBySlotId(t: Tournament, bmId: string, classId?: string): BracketMatch | undefined {
+    if (classId) {
+      const hit = t.classTournaments[classId]?.bracketMatches.find((x) => x.id === bmId);
+      if (hit) return hit;
+    }
     const fromMain = t.bracketMatches.find((x) => x.id === bmId);
     if (fromMain) return fromMain;
     for (const sl of Object.values(t.classTournaments)) {
@@ -1330,14 +1338,14 @@
     for (const bm of bracketMatches) {
       if (!bm.seedA || !bm.seedB) continue;
       if (!t.players[bm.seedA] || !t.players[bm.seedB]) continue;
-      const mid = bracketPlayerMatchId(bm.id);
+      const mid = bracketPlayerMatchId(bm.id, classId);
       if (t.matches[mid]) continue;
       const deps: string[] = [`cmd-${bm.seedA}`, `cmd-${bm.seedB}`];
       if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
       const scgId = trackSetGroupsCommandId(s, classId);
       if (scgId) deps.push(scgId);
       const cmdId = `cmd-dbg-ensure-${bm.id}-${Date.now()}`;
-      const r = c.createMatch(mid, bm.seedA, bm.seedB, deps, cmdId);
+      const r = c.createMatch(mid, bm.seedA, bm.seedB, deps, cmdId, classId);
       if (!r.success && r.reason !== 'command.matchAlreadyExists') {
         showCommandError(r, 'ui.fallback.createMatch');
       }
@@ -1353,7 +1361,7 @@
     const entries: Array<{ m: Match; round: number }> = [];
     for (const bm of getCompetitionTrack(t, classId).bracketMatches) {
       if (!bm.seedA || !bm.seedB) continue;
-      const mid = bracketPlayerMatchId(bm.id);
+      const mid = bracketPlayerMatchId(bm.id, classId);
       const m = t.matches[mid];
       if (!m || m.groupId) continue;
       if (!matchOpenForScoring(m)) continue;
@@ -1537,7 +1545,10 @@
       );
     let bm: BracketMatch | undefined;
     if (match.id.startsWith('match-')) {
-      bm = bracketMatchBySlotId(t, match.id.slice('match-'.length));
+      const parsed = parseBracketPlayerMatchId(t, match.id);
+      if (parsed) {
+        bm = bracketMatchBySlotId(t, parsed.bracketSlotId, parsed.classId);
+      }
     }
     if (!bm) bm = t.bracketMatches.find(pairingPred);
     if (!bm) {
@@ -1861,12 +1872,33 @@
     return value as InnerTab;
   }
 
-  function normalizeInnerTab(_t: Tournament, current: InnerTab): InnerTab {
-    return coerceLegacyInnerTab(current) as InnerTab;
+  function normalizeInnerTab(t: Tournament, current: InnerTab): InnerTab {
+    const tab = coerceLegacyInnerTab(current) as InnerTab;
+    if (
+      tab === 'bracket' &&
+      t.bracketMatches.length > 0 &&
+      singleEliminationPlacementRows(t.bracketMatches, t)
+    ) {
+      return 'results';
+    }
+    return tab;
   }
 
-  function normalizeBracketSubTab(_rounds: number[], current: InnerTab | ClassInnerTab): InnerTab | ClassInnerTab {
-    return coerceLegacyInnerTab(current);
+  function normalizeBracketSubTab(
+    t: Tournament,
+    classId: string,
+    bracketMatches: BracketMatch[],
+    current: InnerTab | ClassInnerTab,
+  ): InnerTab | ClassInnerTab {
+    const tab = coerceLegacyInnerTab(current);
+    if (
+      tab === 'bracket' &&
+      bracketMatches.length > 0 &&
+      singleEliminationPlacementRows(bracketMatches, t, classId)
+    ) {
+      return 'results';
+    }
+    return tab;
   }
 
   function normalizeSessionNav(t: Tournament, nav: SessionNav): SessionNav {
@@ -1898,7 +1930,9 @@
       const innerRaw = nav.inner as string;
       const innerTab = (innerRaw === 'bracket-setup' ? 'groups' : nav.inner) as ClassInnerTab;
       const inner = normalizeBracketSubTab(
-        uniqueSortedRounds(t.classTournaments[first.id]?.bracketMatches ?? []),
+        t,
+        first.id,
+        t.classTournaments[first.id]?.bracketMatches ?? [],
         innerTab,
       ) as ClassInnerTab;
       return { kind: 'multi', screen: { classId: first.id, inner } };
@@ -1918,10 +1952,10 @@
       if (!first) return { kind: 'multi', screen: 'players' };
       return { kind: 'multi', screen: { classId: first.id, inner: 'groups' } };
     }
-    const rounds = uniqueSortedRounds(t.classTournaments[classId]?.bracketMatches ?? []);
+    const bracketMatches = t.classTournaments[classId]?.bracketMatches ?? [];
     return {
       kind: 'multi',
-      screen: { classId, inner: normalizeBracketSubTab(rounds, inner) as ClassInnerTab },
+      screen: { classId, inner: normalizeBracketSubTab(t, classId, bracketMatches, inner) as ClassInnerTab },
     };
   }
 
@@ -2453,12 +2487,12 @@
         return;
       }
       for (const bm of r1) {
-        const mid = `match-${bm.id}`;
+        const mid = bracketPlayerMatchId(bm.id, classId);
         if (live.matches[mid]) continue;
         const a = bm.seedA!;
         const b = bm.seedB!;
         const createCmdId = `${genId}-pair-${bm.id}`;
-        const rM = c.createMatch(mid, a, b, [genId, `cmd-${a}`, `cmd-${b}`], createCmdId);
+        const rM = c.createMatch(mid, a, b, [genId, `cmd-${a}`, `cmd-${b}`], createCmdId, classId);
         if (!rM.success) {
           showError(rM.reason ?? 'createMatch failed');
           return;
@@ -2607,15 +2641,17 @@
     showInfoKey('ui.downloaded_command_log_jsonl');
   }
 
-  function exportTournamentPdf(): void {
+  function exportTournamentPdf(classId?: string): void {
     const s = getActiveSession();
     if (!s) {
       showWarnKey('ui.create_or_import_a_tournament_before_exporting');
       return;
     }
     try {
-      downloadTournamentPdf(s.tournamentName, s.controller.getTournament(), getLocale());
-      showInfoKey('ui.downloaded_tournament_summary_pdf');
+      downloadTournamentPdf(s.tournamentName, s.controller.getTournament(), getLocale(), {
+        classId,
+      });
+      showInfoKey(classId ? 'ui.downloaded_class_summary_pdf' : 'ui.downloaded_tournament_summary_pdf');
     } catch (e) {
       showErrorKey('ui.toast.pdfFailed', { reason: e instanceof Error ? e.message : String(e) });
     }
@@ -2719,7 +2755,10 @@
       );
     let bm: BracketMatch | undefined;
     if (match.id.startsWith('match-')) {
-      bm = bracketMatchBySlotId(tournament, match.id.slice('match-'.length));
+      const parsed = parseBracketPlayerMatchId(tournament, match.id);
+      if (parsed) {
+        bm = bracketMatchBySlotId(tournament, parsed.bracketSlotId, parsed.classId);
+      }
     }
     if (!bm) {
       bm = tournament.bracketMatches.find(pairingPred);
@@ -3331,7 +3370,7 @@
                 type="button"
                 class="btn ghost title-export-btn"
                 title={msgText('ui.download_groups_bracket_and_results_summary_pdf')}
-                onclick={exportTournamentPdf}
+                onclick={() => exportTournamentPdf()}
               >
                 <Msg key="ui.export.tournamentPdf" />
               </button>
@@ -3382,7 +3421,8 @@
         </nav>
 
         {#if useClassTabs && multiClassScreen}
-          <nav class="inner-tabs inner-tabs-sub" aria-label={msgText('ui.class_track_sections')}>
+          {@const classPdfDef = tournament.classDefinitions.find((x) => x.id === multiClassScreen.classId)}
+          <nav class="inner-tabs inner-tabs-sub class-track-tabs" aria-label={msgText('ui.class_track_sections')}>
             {#each classSubTabsList as tab (tab.id)}
               <button
                 type="button"
@@ -3393,6 +3433,14 @@
                 <Msg key={tab.labelKey} />
               </button>
             {/each}
+            <button
+              type="button"
+              class="btn ghost subtle class-track-export-btn"
+              title={msgText('ui.export.classPdfTitle', { name: classPdfDef?.name ?? multiClassScreen.classId })}
+              onclick={() => exportTournamentPdf(multiClassScreen.classId)}
+            >
+              <Msg key="ui.export.classPdfShort" />
+            </button>
           </nav>
         {/if}
 
@@ -4131,7 +4179,7 @@
               <section class="card">
                 <h2 class="h2"><Msg key="ui.results.classTitle" params={{ name: def?.name ?? cid }} /></h2>
                 {#if slice.bracketMatches.length > 0}
-                  {@const classPlacementRows = singleEliminationPlacementRows(slice.bracketMatches, tournament)}
+                  {@const classPlacementRows = singleEliminationPlacementRows(slice.bracketMatches, tournament, cid)}
                   {#if classPlacementRows}
                     <ol class="plain-list placement-ol">
                       {#each classPlacementRows as row (row.playerId)}
@@ -5167,6 +5215,17 @@
     margin-top: 0.35rem;
     padding-top: 0.15rem;
     border-bottom-color: #e2e8f0;
+  }
+
+  .inner-tabs.class-track-tabs {
+    align-items: center;
+  }
+
+  .class-track-export-btn {
+    margin-left: auto;
+    margin-bottom: 0.15rem;
+    white-space: nowrap;
+    font-size: 0.84rem;
   }
 
   .inner-tab {

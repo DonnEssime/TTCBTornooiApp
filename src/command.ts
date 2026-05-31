@@ -24,6 +24,7 @@ import {
   type BracketMatch,
   type Match,
   type BracketSeedingMode,
+  inferBracketClassIdFromPlayerMatchId,
   isBracketRoundCompleteIn,
   isMatchScoreLegal,
   materializeReadyNextRoundBracketSlots,
@@ -754,7 +755,10 @@ export class CommandRunner {
           tournament.matchFinishOrder.push(matchId);
         }
         releaseTableForFinishedOrClearedMatch(tournament, matchId);
-        this.reconcileBracketAfterScore(tournament);
+        this.reconcileBracketAfterScore(
+          tournament,
+          match.classId ?? inferBracketClassIdFromPlayerMatchId(tournament, matchId),
+        );
         return { success: true };
       }
       case 'ClearMatchScores': {
@@ -778,7 +782,10 @@ export class CommandRunner {
           delete match.winner;
           tournament.matchFinishOrder = tournament.matchFinishOrder.filter((id) => id !== matchId);
           releaseTableForFinishedOrClearedMatch(tournament, matchId);
-          this.reconcileBracketAfterScore(tournament);
+          this.reconcileBracketAfterScore(
+            tournament,
+            match.classId ?? inferBracketClassIdFromPlayerMatchId(tournament, matchId),
+          );
           return { success: true };
         }
         if (!match.groupId && match.status === 'eliminated') {
@@ -801,7 +808,10 @@ export class CommandRunner {
         delete match.winner;
         tournament.matchFinishOrder = tournament.matchFinishOrder.filter((id) => id !== matchId);
         releaseTableForFinishedOrClearedMatch(tournament, matchId);
-        this.reconcileBracketAfterScore(tournament);
+        this.reconcileBracketAfterScore(
+          tournament,
+          match.classId ?? inferBracketClassIdFromPlayerMatchId(tournament, matchId),
+        );
         return { success: true };
       }
       case 'EnterTeamScore': {
@@ -1194,7 +1204,7 @@ export class CommandRunner {
         if (err) {
           return commandFail(err.key, err.params);
         }
-        this.reconcileBracketAfterScore(tournament);
+        this.reconcileBracketAfterScore(tournament, trackResolved.classId);
         return { success: true };
       }
       case 'AssignTables': {
@@ -1296,8 +1306,10 @@ export class CommandRunner {
     }
   }
 
-  private reconcileBracketAfterScore(tournament: Tournament): void {
-    for (const track of listCompetitionTracks(tournament)) {
+  private reconcileBracketAfterScore(tournament: Tournament, classId?: string): void {
+    const tracks =
+      classId !== undefined ? [getCompetitionTrack(tournament, classId)] : listCompetitionTracks(tournament);
+    for (const track of tracks) {
       if (track.bracketMatches.length > 0) {
         this.reconcileBracketScope(tournament, track.bracketMatches, track.classId);
       }
@@ -1314,15 +1326,15 @@ export class CommandRunner {
     }
     // Winners must be recomputed from player rows *before* feeding them into the next round; otherwise
     // a cleared match still leaves stale `bm.winner` on children and `propagate` copies wrong seeds upward.
-    settleBracketWinnersIn(tournament, bracketMatches);
+    settleBracketWinnersIn(tournament, bracketMatches, classId);
     propagateBracketSeedsFromChildWinners(bracketMatches);
-    settleBracketWinnersIn(tournament, bracketMatches);
-    syncBracketMatchPlayerRows(tournament, bracketMatches);
+    settleBracketWinnersIn(tournament, bracketMatches, classId);
+    syncBracketMatchPlayerRows(tournament, bracketMatches, classId);
     if (materializeReadyNextRoundBracketSlots(bracketMatches)) {
-      settleBracketWinnersIn(tournament, bracketMatches);
+      settleBracketWinnersIn(tournament, bracketMatches, classId);
       propagateBracketSeedsFromChildWinners(bracketMatches);
-      settleBracketWinnersIn(tournament, bracketMatches);
-      syncBracketMatchPlayerRows(tournament, bracketMatches);
+      settleBracketWinnersIn(tournament, bracketMatches, classId);
+      syncBracketMatchPlayerRows(tournament, bracketMatches, classId);
     }
     const currentRound = Math.max(0, ...bracketMatches.map((m) => bracketMatchRound(m)));
     if (isBracketRoundCompleteIn(bracketMatches, currentRound)) {
@@ -1340,6 +1352,7 @@ export class CommandRunner {
     ensureBracketPhasePlayerMatchesIn(
       tournament,
       getCompetitionTrack(tournament, classId).bracketMatches,
+      classId,
     );
   }
 }

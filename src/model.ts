@@ -497,16 +497,22 @@ export function clearBracketFromTournament(tournament: Tournament, classId?: str
   if (bracketMatches.length === 0) {
     return { key: 'model.noKnockoutBracketToRemove' };
   }
-  if (anyBracketKnockoutMatchHasRecordedPlay(tournament, bracketMatches)) {
+  if (anyBracketKnockoutMatchHasRecordedPlay(tournament, bracketMatches, classId)) {
     return { key: 'model.cannotRemoveKnockoutBracketWithPlayedMatches' };
   }
 
   const matchIdsToRemove = new Set<string>();
   for (const bm of bracketMatches) {
-    matchIdsToRemove.add(bracketPlayerMatchId(bm.id));
+    matchIdsToRemove.add(bracketPlayerMatchId(bm.id, classId));
   }
   for (const [id, m] of Object.entries(tournament.matches)) {
-    if (!m.groupId) {
+    if (m.groupId) continue;
+    if (classId) {
+      const inferred = inferBracketClassIdFromPlayerMatchId(tournament, id);
+      if (m.classId === classId || inferred === classId) {
+        matchIdsToRemove.add(id);
+      }
+    } else {
       matchIdsToRemove.add(id);
     }
   }
@@ -2935,16 +2941,50 @@ export function knockoutMatchHasDecisiveOutcome(m: Match): boolean {
   return m.status === 'finished' || m.status === 'forfeit' || m.status === 'eliminated';
 }
 
-function findMatchByPlayers(tournament: Tournament, playerA: string, playerB: string): Match | undefined {
+function findMatchByPlayers(
+  tournament: Tournament,
+  playerA: string,
+  playerB: string,
+  classId?: string,
+): Match | undefined {
   return Object.values(tournament.matches).find((m) => {
     const same = (m.playerA === playerA && m.playerB === playerB) || (m.playerA === playerB && m.playerB === playerA);
-    return same && !m.groupId && knockoutMatchHasDecisiveOutcome(m);
+    if (!same || m.groupId || !knockoutMatchHasDecisiveOutcome(m)) return false;
+    if (classId !== undefined) {
+      const inferred = inferBracketClassIdFromPlayerMatchId(tournament, m.id);
+      return (m.classId ?? inferred) === classId;
+    }
+    if (m.classId) return false;
+    return inferBracketClassIdFromPlayerMatchId(tournament, m.id) === undefined;
   });
 }
 
 /** Bracket slot id → canonical player match id used by the app and {@link ensureBracketPhasePlayerMatches}. */
-export function bracketPlayerMatchId(bracketMatchId: string): string {
-  return `match-${bracketMatchId}`;
+export function bracketPlayerMatchId(bracketMatchId: string, classId?: string): string {
+  const cid = classId?.trim();
+  return cid ? `match-${cid}-${bracketMatchId}` : `match-${bracketMatchId}`;
+}
+
+/** Reverse of {@link bracketPlayerMatchId} for multi-class ids (`match-jun-m1` → slot + class). */
+export function parseBracketPlayerMatchId(
+  tournament: Tournament,
+  matchId: string,
+): { bracketSlotId: string; classId: string | undefined } | undefined {
+  if (!matchId.startsWith('match-')) return undefined;
+  const rest = matchId.slice('match-'.length);
+  if (tournament.classDefinitions.length > 0) {
+    for (const def of tournament.classDefinitions) {
+      const prefix = `${def.id}-`;
+      if (rest.startsWith(prefix)) {
+        return { bracketSlotId: rest.slice(prefix.length), classId: def.id };
+      }
+    }
+  }
+  return { bracketSlotId: rest, classId: undefined };
+}
+
+export function inferBracketClassIdFromPlayerMatchId(tournament: Tournament, matchId: string): string | undefined {
+  return parseBracketPlayerMatchId(tournament, matchId)?.classId;
 }
 
 /**
@@ -2980,7 +3020,7 @@ export function bracketScopeForPlayerMatch(
   tournament: Tournament,
   match: Match,
 ): { bracketMatches: BracketMatch[]; lockedBracketRounds: number[] } {
-  const cid = match.classId;
+  const cid = match.classId ?? inferBracketClassIdFromPlayerMatchId(tournament, match.id);
   const slice = cid ? tournament.classTournaments[cid] : undefined;
   if (slice?.bracketMatches?.length) {
     return {
@@ -2998,10 +3038,11 @@ export function bracketScopeForPlayerMatch(
 export function anyBracketKnockoutMatchHasRecordedPlay(
   tournament: Tournament,
   bracketMatches: BracketMatch[],
+  classId?: string,
 ): boolean {
   if (bracketMatches.length === 0) return false;
   for (const bm of bracketMatches) {
-    const mid = bracketPlayerMatchId(bm.id);
+    const mid = bracketPlayerMatchId(bm.id, classId);
     const m = tournament.matches[mid];
     if (!m || m.groupId) continue;
     if (m.scores.length > 0) return true;
@@ -3022,7 +3063,7 @@ export function canMutateExistingGroupPhaseMatchScores(tournament: Tournament, m
       : tournament.bracketMatches;
   if (bracketMatches.length === 0) return true;
   if (match.status === 'scheduled' && match.scores.length === 0) return true;
-  return !anyBracketKnockoutMatchHasRecordedPlay(tournament, bracketMatches);
+  return !anyBracketKnockoutMatchHasRecordedPlay(tournament, bracketMatches, match.classId);
 }
 
 export function bracketMatchesSortedForRound(bracketMatches: BracketMatch[], round: number): BracketMatch[] {
@@ -3044,39 +3085,52 @@ export function bracketParentMatch(bracketMatches: BracketMatch[], bm: BracketMa
  * Resolved winner for a bracket slot from `bm.winner`, forfeits/byes, or a decisive canonical or
  * alias player row (same sources as {@link settleBracketWinnersIn}).
  */
-export function bracketEffectiveWinner(tournament: Tournament, bm: BracketMatch): PlayerId | undefined {
+export function bracketEffectiveWinner(
+  tournament: Tournament,
+  bm: BracketMatch,
+  classId?: string,
+): PlayerId | undefined {
   if (bm.winner && !isBracketStructuralEmptyAdvanceWinner(bm.winner)) return bm.winner;
   if (!bm.seedA || !bm.seedB) return undefined;
-  const mid = bracketPlayerMatchId(bm.id);
+  const mid = bracketPlayerMatchId(bm.id, classId);
   const direct = tournament.matches[mid];
   const match =
     direct && !direct.groupId && knockoutMatchHasDecisiveOutcome(direct)
       ? direct
-      : findMatchByPlayers(tournament, bm.seedA, bm.seedB);
+      : findMatchByPlayers(tournament, bm.seedA, bm.seedB, classId);
   if (match && !match.groupId && knockoutMatchHasDecisiveOutcome(match)) return match.winner;
   return undefined;
 }
 
 /** True when both seeds are set but the slot has no decisive outcome yet. */
-export function bracketSlotAwaitingPlay(tournament: Tournament, bm: BracketMatch): boolean {
+export function bracketSlotAwaitingPlay(tournament: Tournament, bm: BracketMatch, classId?: string): boolean {
   if (!bm.seedA || !bm.seedB) return false;
-  return bracketEffectiveWinner(tournament, bm) === undefined;
+  return bracketEffectiveWinner(tournament, bm, classId) === undefined;
 }
 
-function bracketEffectiveWinnerForLock(tournament: Tournament, bm: BracketMatch): PlayerId | undefined {
-  return bracketEffectiveWinner(tournament, bm);
+function bracketEffectiveWinnerForLock(
+  tournament: Tournament,
+  bm: BracketMatch,
+  classId?: string,
+): PlayerId | undefined {
+  return bracketEffectiveWinner(tournament, bm, classId);
 }
 
 /**
  * True when the winner of `bm` has a next-round bracket slot whose player match already has scores
  * or is finished (so changing `bm` would contradict recorded play).
  */
-export function bracketDownstreamMatchHasScores(tournament: Tournament, bracketMatches: BracketMatch[], bm: BracketMatch): boolean {
-  const w = bracketEffectiveWinnerForLock(tournament, bm);
+export function bracketDownstreamMatchHasScores(
+  tournament: Tournament,
+  bracketMatches: BracketMatch[],
+  bm: BracketMatch,
+  classId?: string,
+): boolean {
+  const w = bracketEffectiveWinnerForLock(tournament, bm, classId);
   if (!w) return false;
   const parent = bracketParentMatch(bracketMatches, bm);
   if (!parent?.seedA || !parent?.seedB) return false;
-  const mid = bracketPlayerMatchId(parent.id);
+  const mid = bracketPlayerMatchId(parent.id, classId);
   const pm = tournament.matches[mid];
   if (!pm || pm.groupId) return false;
   return pm.scores.length > 0 || knockoutMatchHasDecisiveOutcome(pm);
@@ -3096,9 +3150,11 @@ export function canMutateBracketPlayerMatch(
   const round = findBracketRoundForPlayerPairingIn(bracketMatches, match.playerA, match.playerB);
   if (round === undefined) return true;
   if (lockedBracketRounds.includes(round)) return false;
+  const classId = match.classId ?? inferBracketClassIdFromPlayerMatchId(tournament, match.id);
   let bm: BracketMatch | undefined;
   if (match.id.startsWith('match-')) {
-    const bid = match.id.slice('match-'.length);
+    const parsed = parseBracketPlayerMatchId(tournament, match.id);
+    const bid = parsed?.bracketSlotId ?? match.id.slice('match-'.length);
     bm = bracketMatches.find((x) => x.id === bid);
   }
   if (!bm) {
@@ -3110,7 +3166,7 @@ export function canMutateBracketPlayerMatch(
     );
   }
   if (!bm) return true;
-  return !bracketDownstreamMatchHasScores(tournament, bracketMatches, bm);
+  return !bracketDownstreamMatchHasScores(tournament, bracketMatches, bm, classId);
 }
 
 /** Copy feeder winners into round ≥2 seeds (same geometry as {@link advanceBracketRound}). */
@@ -3136,10 +3192,14 @@ export function propagateBracketSeedsFromChildWinners(bracketMatches: BracketMat
 }
 
 /** When a scheduled bracket slot’s players no longer match resolved seeds, reset that row (no scores / not finished). */
-export function syncBracketMatchPlayerRows(tournament: Tournament, bracketMatches: BracketMatch[]): void {
+export function syncBracketMatchPlayerRows(
+  tournament: Tournament,
+  bracketMatches: BracketMatch[],
+  classId?: string,
+): void {
   for (const bm of bracketMatches) {
     if (!bm.seedA || !bm.seedB) continue;
-    const mid = bracketPlayerMatchId(bm.id);
+    const mid = bracketPlayerMatchId(bm.id, classId);
     const m = tournament.matches[mid];
     if (!m || m.groupId) continue;
     const untouched = m.status === 'scheduled' && m.scores.length === 0;
@@ -3186,7 +3246,11 @@ export function bracketRoundHasFinishedPlayerMatchIn(
  * player rows (prefers {@link bracketPlayerMatchId} when present). Clears stale winners when the
  * underlying match is no longer decisive.
  */
-export function settleBracketWinnersIn(tournament: Tournament, bracketMatches: BracketMatch[]): Tournament {
+export function settleBracketWinnersIn(
+  tournament: Tournament,
+  bracketMatches: BracketMatch[],
+  classId?: string,
+): Tournament {
   const sorted = [...bracketMatches].sort(
     (a, b) => bracketMatchRound(a) - bracketMatchRound(b) || compareBracketMatchId(a, b),
   );
@@ -3260,10 +3324,12 @@ export function settleBracketWinnersIn(tournament: Tournament, bracketMatches: B
       continue;
     }
 
-    const mid = bracketPlayerMatchId(bm.id);
+    const mid = bracketPlayerMatchId(bm.id, classId);
     const direct = tournament.matches[mid];
     const match =
-      direct && !direct.groupId && knockoutMatchHasDecisiveOutcome(direct) ? direct : findMatchByPlayers(tournament, seedA, seedB);
+      direct && !direct.groupId && knockoutMatchHasDecisiveOutcome(direct)
+        ? direct
+        : findMatchByPlayers(tournament, seedA, seedB, classId);
 
     if (match && !match.groupId && knockoutMatchHasDecisiveOutcome(match)) {
       bm.winner = match.winner;
@@ -3282,13 +3348,17 @@ export function settleBracketWinners(tournament: Tournament): Tournament {
  * receive these rows when bracket reconciliation runs after a round completes (see command runner);
  * round 1 is still typically created via explicit `CreateMatch` commands from the app.
  */
-export function ensureBracketPhasePlayerMatchesIn(tournament: Tournament, bracketMatches: BracketMatch[]): void {
+export function ensureBracketPhasePlayerMatchesIn(
+  tournament: Tournament,
+  bracketMatches: BracketMatch[],
+  classId?: string,
+): void {
   if (Object.keys(tournament.teamMatches).length > 0) {
     return;
   }
   for (const bm of bracketMatches) {
     if (!bm.seedA || !bm.seedB || bm.winner) continue;
-    const mid = bracketPlayerMatchId(bm.id);
+    const mid = bracketPlayerMatchId(bm.id, classId);
     if (tournament.matches[mid]) continue;
     if (!tournament.players[bm.seedA] || !tournament.players[bm.seedB]) continue;
     tournament.matches[mid] = {
@@ -3297,6 +3367,7 @@ export function ensureBracketPhasePlayerMatchesIn(tournament: Tournament, bracke
       playerB: bm.seedB,
       scores: [],
       status: 'scheduled',
+      ...(classId ? { classId } : {}),
     };
   }
 }
@@ -3338,7 +3409,7 @@ function bracketMatchOpenForElimination(
   if (!a || !b) return false;
   if (!tournament.players[a] || !tournament.players[b]) return false;
 
-  const mid = bracketPlayerMatchId(bm.id);
+  const mid = bracketPlayerMatchId(bm.id, classId);
   const existing = tournament.matches[mid];
   if (existing) {
     if (existing.groupId) return false;
@@ -3399,7 +3470,7 @@ export function eliminateLowestRankedPlayersInBracketRound(
     const b = bm.seedB!;
     const ra = bracketFinishRankMeta(tournament, a, classId)!;
     const rb = bracketFinishRankMeta(tournament, b, classId)!;
-    const mid = bracketPlayerMatchId(bm.id);
+    const mid = bracketPlayerMatchId(bm.id, classId);
     const existing = tournament.matches[mid];
 
     const loser = pickBracketEliminationLoser(a, ra, b, rb, `${salt}:${bm.id}`);
@@ -3412,6 +3483,7 @@ export function eliminateLowestRankedPlayersInBracketRound(
         playerB: b,
         scores: [],
         status: 'scheduled',
+        ...(classId ? { classId } : {}),
       };
     }
     const m = tournament.matches[mid]!;
@@ -3457,11 +3529,15 @@ function isRealBracketMatch(m: BracketMatch): boolean {
 }
 
 /** Winner for placement: bracket row, decisive player match, or legal scores on the mapped row. */
-function placementBracketWinner(tournament: Tournament | undefined, m: BracketMatch): PlayerId | undefined {
+function placementBracketWinner(
+  tournament: Tournament | undefined,
+  m: BracketMatch,
+  classId?: string,
+): PlayerId | undefined {
   if (tournament) {
-    const w = bracketEffectiveWinner(tournament, m);
+    const w = bracketEffectiveWinner(tournament, m, classId);
     if (w) return w;
-    const mid = bracketPlayerMatchId(m.id);
+    const mid = bracketPlayerMatchId(m.id, classId);
     const pm = tournament.matches[mid];
     if (pm && !pm.groupId && pm.winner && isMatchScoreLegal(pm.scores)) return pm.winner;
   }
@@ -3473,6 +3549,7 @@ function placementBracketWinner(tournament: Tournament | undefined, m: BracketMa
 export function resolveBracketFinalMatch(
   bracketMatches: BracketMatch[],
   tournament?: Tournament,
+  classId?: string,
 ): BracketMatch | null {
   const real = bracketMatches.filter(isRealBracketMatch);
   if (real.length === 0) return null;
@@ -3485,7 +3562,7 @@ export function resolveBracketFinalMatch(
   for (let i = sorted.length - 1; i >= 0; i--) {
     const m = sorted[i]!;
     if (!m.seedA || !m.seedB) continue;
-    if (placementBracketWinner(tournament, m)) return m;
+    if (placementBracketWinner(tournament, m, classId)) return m;
   }
   return sorted[sorted.length - 1]!;
 }
@@ -3494,11 +3571,12 @@ function runnerUpFromFinal(
   tournament: Tournament | undefined,
   fm: BracketMatch,
   winner: PlayerId,
+  classId?: string,
 ): PlayerId | undefined {
   const fromSeeds = winner === fm.seedA ? fm.seedB : fm.seedA;
   if (fromSeeds) return fromSeeds;
   if (!tournament) return undefined;
-  const pm = tournament.matches[bracketPlayerMatchId(fm.id)];
+  const pm = tournament.matches[bracketPlayerMatchId(fm.id, classId)];
   if (!pm || pm.groupId || !pm.winner) return undefined;
   return pm.winner === winner ? pm.playerB : pm.playerA;
 }
@@ -3514,6 +3592,7 @@ function runnerUpFromFinal(
 export function singleEliminationPlacementRows(
   bracketMatches: BracketMatch[],
   tournament?: Tournament,
+  classId?: string,
 ): BracketPlacementRow[] | null {
   if (bracketMatches.length === 0) return null;
 
@@ -3523,7 +3602,7 @@ export function singleEliminationPlacementRows(
   if (tournament) {
     ms = ms.map((m) => ({ ...m }));
     propagateBracketSeedsFromChildWinners(ms);
-    settleBracketWinnersIn(tournament, ms);
+    settleBracketWinnersIn(tournament, ms, classId);
   }
 
   const roundOf = (m: BracketMatch) => bracketMatchRound(m);
@@ -3531,11 +3610,11 @@ export function singleEliminationPlacementRows(
   if (rounds.length === 0) return null;
   const maxRound = Math.max(...rounds);
 
-  const fm = resolveBracketFinalMatch(ms, tournament);
+  const fm = resolveBracketFinalMatch(ms, tournament, classId);
   if (!fm || bracketMatchRound(fm) !== maxRound) return null;
 
-  const finalWinner = placementBracketWinner(tournament, fm);
-  const runnerUp = finalWinner ? runnerUpFromFinal(tournament, fm, finalWinner) : undefined;
+  const finalWinner = placementBracketWinner(tournament, fm, classId);
+  const runnerUp = finalWinner ? runnerUpFromFinal(tournament, fm, finalWinner, classId) : undefined;
   if (!finalWinner || !runnerUp) return null;
 
   /**
@@ -3555,10 +3634,12 @@ export function singleEliminationPlacementRows(
   places.set(runnerUp, 2);
 
   for (let r = depthRound - 1; r >= 1; r--) {
-    const roundMs = ms.filter((m) => roundOf(m) === r && placementBracketWinner(tournament, m)).sort(compareBracketMatchId);
+    const roundMs = ms
+      .filter((m) => roundOf(m) === r && placementBracketWinner(tournament, m, classId))
+      .sort(compareBracketMatchId);
     const rows: Array<{ loser: PlayerId; wp: number }> = [];
     for (const m of roundMs) {
-      const w = placementBracketWinner(tournament, m);
+      const w = placementBracketWinner(tournament, m, classId);
       if (!w) continue;
       const loser = w === m.seedA ? m.seedB : m.seedA;
       if (!loser || places.has(loser)) continue;

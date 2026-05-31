@@ -49,12 +49,12 @@ const FEEDER_GAP = 1.5;
 const FONT = 7;
 const FONT_VS = 6;
 
-function gamesWonForSlot(t: Tournament, bm: BracketMatch, side: 'a' | 'b'): string | null {
+function gamesWonForSlot(t: Tournament, bm: BracketMatch, side: 'a' | 'b', classId?: string): string | null {
   const w = bm.winner;
   if (!w || isBracketStructuralEmptyAdvanceWinner(w)) return null;
   const pid = side === 'a' ? bm.seedA : bm.seedB;
   if (!pid) return null;
-  const pm = t.matches[bracketPlayerMatchId(bm.id)];
+  const pm = t.matches[bracketPlayerMatchId(bm.id, classId)];
   if (!pm || pm.groupId || pm.scores.length === 0) return null;
   const asA = pm.playerA === pid;
   const asB = pm.playerB === pid;
@@ -145,6 +145,7 @@ function layoutSubtree(
   wing: 'left' | 'right',
   labelA: (m: BracketMatch, side: 'a' | 'b') => string,
   labelB: (m: BracketMatch, side: 'a' | 'b') => string,
+  classId?: string,
 ): SubtreeLayout {
   const mkBox = (m: BracketMatch, x: number, y: number, isFinal: boolean): BracketPdfBox => ({
     x,
@@ -155,8 +156,8 @@ function layoutSubtree(
     labelB: labelB(m, 'b'),
     outcomeA: bracketSlotOutcome(m, 'a'),
     outcomeB: bracketSlotOutcome(m, 'b'),
-    gamesA: gamesWonForSlot(t, m, 'a'),
-    gamesB: gamesWonForSlot(t, m, 'b'),
+    gamesA: gamesWonForSlot(t, m, 'a', classId),
+    gamesB: gamesWonForSlot(t, m, 'b', classId),
     isFinal,
     done: Boolean(m.winner),
     hidden: isBracketByeWalkoverMatch(m),
@@ -172,8 +173,8 @@ function layoutSubtree(
     };
   }
 
-  const L = layoutSubtree(t, node.left, wing, labelA, labelB);
-  const R = layoutSubtree(t, node.right, wing, labelA, labelB);
+  const L = layoutSubtree(t, node.left, wing, labelA, labelB, classId);
+  const R = layoutSubtree(t, node.right, wing, labelA, labelB, classId);
   const feedersW = Math.max(L.width, R.width);
   const feedersH = L.height + FEEDER_GAP + R.height;
   const totalH = Math.max(feedersH, BOX_H);
@@ -241,6 +242,7 @@ function layoutStream(
   root: BracketBNode,
   labelA: (m: BracketMatch, side: 'a' | 'b') => string,
   labelB: (m: BracketMatch, side: 'a' | 'b') => string,
+  classId?: string,
 ): BracketStreamPdfLayout {
   const mkBox = (m: BracketMatch, x: number, y: number, isFinal: boolean): BracketPdfBox => ({
     x,
@@ -251,8 +253,8 @@ function layoutStream(
     labelB: labelB(m, 'b'),
     outcomeA: bracketSlotOutcome(m, 'a'),
     outcomeB: bracketSlotOutcome(m, 'b'),
-    gamesA: gamesWonForSlot(t, m, 'a'),
-    gamesB: gamesWonForSlot(t, m, 'b'),
+    gamesA: gamesWonForSlot(t, m, 'a', classId),
+    gamesB: gamesWonForSlot(t, m, 'b', classId),
     isFinal,
     done: Boolean(m.winner),
     hidden: isBracketByeWalkoverMatch(m),
@@ -267,8 +269,8 @@ function layoutStream(
     };
   }
 
-  const left = layoutSubtree(t, root.left, 'left', labelA, labelB);
-  const right = layoutSubtree(t, root.right, 'right', labelA, labelB);
+  const left = layoutSubtree(t, root.left, 'left', labelA, labelB, classId);
+  const right = layoutSubtree(t, root.right, 'right', labelA, labelB, classId);
   const streamH = Math.max(left.height, right.height, BOX_H);
   const leftY = (streamH - left.height) / 2;
   const rightY = (streamH - right.height) / 2;
@@ -306,6 +308,7 @@ export function bracketStreamPdfLayout(
   t: Tournament,
   matches: BracketMatch[],
   slotLabel: (m: BracketMatch, side: 'a' | 'b') => string,
+  classId?: string,
 ): BracketStreamPdfLayout | null {
   const cols = displayBracketColumns(matches);
   const slotCount = inferBracketSlotCountFromRoundOne(matches);
@@ -316,5 +319,5 @@ export function bracketStreamPdfLayout(
   const treeCols = cols.slice(-treeDepth);
   const root = bracketTreeFromColumns(treeCols);
   if (!root) return null;
-  return layoutStream(t, root, slotLabel, slotLabel);
+  return layoutStream(t, root, slotLabel, slotLabel, classId);
 }

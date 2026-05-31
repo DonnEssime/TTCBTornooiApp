@@ -24,7 +24,7 @@
     if (!match.winner) return null;
     const pid = s === 'a' ? match.seedA : match.seedB;
     if (!pid) return null;
-    const pm = t.matches[bracketPlayerMatchId(match.id)];
+    const pm = t.matches[bracketPlayerMatchId(match.id, bracketClassId)];
     if (!pm || pm.groupId || pm.scores.length === 0) return null;
     const asA = pm.playerA === pid;
     const asB = pm.playerB === pid;
