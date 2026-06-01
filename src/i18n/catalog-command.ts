@@ -120,6 +120,10 @@ export const commandCatalog = {
     'Cannot add or remove a competition class while players exist.',
     'Kan geen wedstrijdreeks toevoegen of verwijderen zolang er spelers zijn.',
   ),
+  'command.addClassOnlyInMultiClassTournament': t(
+    'Add competition class is only available when the tournament already has two or more classes.',
+    'Reeks toevoegen is alleen beschikbaar wanneer het tornooi al twee of meer reeksen heeft.',
+  ),
   'command.flagsObjectRequired': t('flags object required', 'flags-object is verplicht'),
   'command.useSetClassGroupsFromClassTab': t(
     'Use SetClassGroups from each class tab when multiple competition classes are defined',

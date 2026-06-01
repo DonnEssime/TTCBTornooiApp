@@ -395,6 +395,10 @@
   let deleteConfirmPhrase = $state('');
   let deleteTournamentBusy = $state(false);
   let deleteTournamentError = $state<string | null>(null);
+
+  let addClassModalOpen = $state(false);
+  let addClassDraftName = $state('');
+  let addClassError = $state<string | null>(null);
   const deleteConfirmOk = $derived(
     deleteConfirmPhrase === 'I understand' || deleteConfirmPhrase === 'Ik begrijp het',
   );
@@ -2979,6 +2983,8 @@
       }
       case 'SetTournamentClasses':
         return msg('ui.summary.setCompetitionClasses', { count: String(cmd.payload.classes.length) });
+      case 'AddTournamentClass':
+        return msg('ui.summary.addedCompetitionClass', { name: String(cmd.payload.name).trim() });
       case 'SetPlayerClassFlags':
         return msg('ui.summary.updatedClassFlags', { name: pn(cmd.payload.playerId) });
       case 'SetRoundLock':
@@ -3106,6 +3112,45 @@
       showError(r.reason ?? 'Could not update class flags');
     }
     pull();
+  }
+
+  function openAddClassModal(): void {
+    addClassDraftName = '';
+    addClassError = null;
+    addClassModalOpen = true;
+  }
+
+  function cancelAddClassModal(): void {
+    addClassModalOpen = false;
+    addClassDraftName = '';
+    addClassError = null;
+  }
+
+  function confirmAddCompetitionClass(): void {
+    const name = addClassDraftName.trim();
+    if (!name) {
+      addClassError = msgText('command.classNeedsDisplayName');
+      return;
+    }
+    const s = getActiveSession();
+    if (!s) return;
+    clearStatus();
+    addClassError = null;
+    const beforeIds = new Set(s.controller.getTournament().classDefinitions.map((c) => c.id));
+    const cmdId = `cmd-add-class-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
+    const r = s.controller.addTournamentClass(name, [], cmdId);
+    if (!r.success) {
+      showCommandError(r, 'ui.fallback.addCompetitionClass');
+      return;
+    }
+    pull();
+    const t = getActiveSession()?.controller.getTournament();
+    const newDef = t?.classDefinitions.find((c) => !beforeIds.has(c.id));
+    const newId = newDef?.id ?? t?.classDefinitions[t.classDefinitions.length - 1]?.id;
+    if (newId) {
+      patchActiveSession({ nav: { kind: 'multi', screen: { classId: newId, inner: 'groups' } } });
+    }
+    cancelAddClassModal();
   }
 
   pull();
@@ -3470,6 +3515,15 @@
                 {c.name}
               </button>
             {/each}
+            <button
+              type="button"
+              class="inner-tab inner-tab-add-class"
+              aria-label={msgText('ui.classes.addAria')}
+              title={msgText('ui.classes.addAria')}
+              onclick={openAddClassModal}
+            >
+              <Msg key="ui.classes.add" />
+            </button>
           {:else}
             {#each singleTrackRestTabs as tab (tab.id)}
               <button
@@ -4363,6 +4417,59 @@
             <div class="load-fill-indeterminate"></div>
           </div>
         {/if}
+      </div>
+    </div>
+  {/if}
+
+  {#if addClassModalOpen}
+    <div class="modal-root">
+      <button
+        type="button"
+        class="modal-scrim"
+        aria-label={msgText('ui.classes.addModalCancel')}
+        onclick={() => cancelAddClassModal()}
+      ></button>
+      <div
+        class="modal-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-class-title"
+        tabindex="-1"
+      >
+        <header class="modal-head">
+          <h3 id="add-class-title" class="modal-title"><Msg key="ui.classes.addModalTitle" /></h3>
+          <button type="button" class="btn subtle small-inline" onclick={() => cancelAddClassModal()}>
+            <Msg key="ui.classes.addModalCancel" />
+          </button>
+        </header>
+        <label class="field-label" for="add-class-name-input">
+          <Msg key="ui.classes.addModalNameLabel" />
+        </label>
+        <input
+          id="add-class-name-input"
+          type="text"
+          class="grow"
+          bind:value={addClassDraftName}
+          autocomplete="off"
+          spellcheck={false}
+          onkeydown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              confirmAddCompetitionClass();
+            }
+          }}
+        />
+        {#if addClassError}
+          <p class="modal-error">{addClassError}</p>
+        {/if}
+        <div class="row modal-actions">
+          <button type="button" class="btn" onclick={() => cancelAddClassModal()}>
+            <Msg key="ui.classes.addModalCancel" />
+          </button>
+          <button type="button" class="btn primary" onclick={() => confirmAddCompetitionClass()}>
+            <Msg key="ui.classes.addModalConfirm" />
+          </button>
+        </div>
       </div>
     </div>
   {/if}
@@ -5304,6 +5411,11 @@
   .inner-tab:hover {
     color: #334155;
     background: rgb(255 255 255 / 50%);
+  }
+
+  .inner-tab.inner-tab-add-class {
+    min-width: 2.25rem;
+    font-weight: 600;
   }
 
   .inner-tab.active {

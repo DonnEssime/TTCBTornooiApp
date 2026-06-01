@@ -613,6 +613,140 @@ describe('CommandRunner dependency-aware undo', () => {
     expect(runner.getTournament().classDefinitions).toEqual([]);
   });
 
+  function seedMultiClassWithPlayers(runner: CommandRunner): void {
+    runner.execute({
+      id: 'tc-mc',
+      type: 'SetTournamentClasses',
+      dependsOn: [],
+      payload: {
+        classes: [
+          { id: 'jun', name: 'Junior' },
+          { id: 'sen', name: 'Senior' },
+        ],
+      },
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    runner.execute({
+      id: 'p1',
+      type: 'CreatePlayer',
+      dependsOn: ['tc-mc'],
+      payload: { playerId: 'p1', name: 'A', handicap: 0 },
+      timestamp: '2026-01-01T00:00:01.000Z',
+    });
+    runner.execute({
+      id: 'p2',
+      type: 'CreatePlayer',
+      dependsOn: ['tc-mc'],
+      payload: { playerId: 'p2', name: 'B', handicap: 0 },
+      timestamp: '2026-01-01T00:00:02.000Z',
+    });
+    runner.execute({
+      id: 'f1',
+      type: 'SetPlayerClassFlags',
+      dependsOn: ['p1'],
+      payload: { playerId: 'p1', flags: { jun: true, sen: false } },
+      timestamp: '2026-01-01T00:00:03.000Z',
+    });
+    runner.execute({
+      id: 'f2',
+      type: 'SetPlayerClassFlags',
+      dependsOn: ['p2'],
+      payload: { playerId: 'p2', flags: { jun: false, sen: true } },
+      timestamp: '2026-01-01T00:00:04.000Z',
+    });
+  }
+
+  it('AddTournamentClass appends class with all players opted out', () => {
+    const runner = new CommandRunner();
+    seedMultiClassWithPlayers(runner);
+    const r = runner.execute({
+      id: 'add-vet',
+      type: 'AddTournamentClass',
+      dependsOn: ['tc-mc', 'p1', 'p2', 'f1', 'f2'],
+      payload: { name: 'Veteran', id: 'vet' },
+      timestamp: '2026-01-01T00:00:05.000Z',
+    });
+    expect(r.success).toBe(true);
+    const t = runner.getTournament();
+    expect(t.classDefinitions).toHaveLength(3);
+    expect(t.classDefinitions[2]).toEqual({ id: 'vet', name: 'Veteran' });
+    expect(t.playerClassFlags.p1?.vet).toBe(false);
+    expect(t.playerClassFlags.p2?.vet).toBe(false);
+    expect(t.classTournaments.vet).toBeDefined();
+    expect(t.classTournaments.vet!.seedings).toEqual([]);
+    expect(t.classTournaments.vet!.groups).toEqual({});
+    expect(t.classTournaments.vet!.bracketMatches).toEqual([]);
+  });
+
+  it('AddTournamentClass rejects when tournament is not multiclass', () => {
+    const runner = new CommandRunner();
+    const rEmpty = runner.execute({
+      id: 'add0',
+      type: 'AddTournamentClass',
+      dependsOn: [],
+      payload: { name: 'X' },
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    expect(rEmpty.success).toBe(false);
+    expect(rEmpty.reason).toBe('command.addClassOnlyInMultiClassTournament');
+
+    const runnerSingle = new CommandRunner();
+    runnerSingle.execute({
+      id: 'p1',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'p1', name: 'A', handicap: 0 },
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    const rSingle = runnerSingle.execute({
+      id: 'add1',
+      type: 'AddTournamentClass',
+      dependsOn: ['p1'],
+      payload: { name: 'C' },
+      timestamp: '2026-01-01T00:00:01.000Z',
+    });
+    expect(rSingle.success).toBe(false);
+    expect(rSingle.reason).toBe('command.addClassOnlyInMultiClassTournament');
+  });
+
+  it('AddTournamentClass rejects empty display name', () => {
+    const runner = new CommandRunner();
+    seedMultiClassWithPlayers(runner);
+    const r = runner.execute({
+      id: 'add-blank',
+      type: 'AddTournamentClass',
+      dependsOn: ['tc-mc'],
+      payload: { name: '   ' },
+      timestamp: '2026-01-01T00:00:05.000Z',
+    });
+    expect(r.success).toBe(false);
+    expect(r.reason).toBe('command.classNeedsDisplayName');
+    expect(runner.getTournament().classDefinitions).toHaveLength(2);
+  });
+
+  it('CreatePlayer after AddTournamentClass initializes new class flag to false', () => {
+    const runner = new CommandRunner();
+    seedMultiClassWithPlayers(runner);
+    runner.execute({
+      id: 'add-vet',
+      type: 'AddTournamentClass',
+      dependsOn: ['tc-mc', 'p1', 'p2'],
+      payload: { name: 'Veteran', id: 'vet' },
+      timestamp: '2026-01-01T00:00:05.000Z',
+    });
+    runner.execute({
+      id: 'p3',
+      type: 'CreatePlayer',
+      dependsOn: ['add-vet'],
+      payload: { playerId: 'p3', name: 'C', handicap: 0 },
+      timestamp: '2026-01-01T00:00:06.000Z',
+    });
+    const t = runner.getTournament();
+    expect(t.playerClassFlags.p3?.jun).toBe(false);
+    expect(t.playerClassFlags.p3?.sen).toBe(false);
+    expect(t.playerClassFlags.p3?.vet).toBe(false);
+  });
+
   it('SetGroups defines global groups and rejects when multiple classes are active', () => {
     const runner = new CommandRunner();
     runner.execute({

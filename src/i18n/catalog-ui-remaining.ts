@@ -56,6 +56,12 @@ export const uiRemainingCatalog = {
     'Use no competition classes for a single-class tournament, or define at least two classes.',
     '',
   ),
+  'ui.classes.add': t('+', '+'),
+  'ui.classes.addAria': t('Add competition class', 'Reeks toevoegen'),
+  'ui.classes.addModalTitle': t('Add competition class', 'Reeks toevoegen'),
+  'ui.classes.addModalNameLabel': t('Class name', 'Naam reeks'),
+  'ui.classes.addModalConfirm': t('Add class', 'Reeks toevoegen'),
+  'ui.classes.addModalCancel': t('Cancel', 'Annuleren'),
   'ui.group.allSeededIncluded': t(
     'All {{count}} seeded players are included, in seeding order.',
     'Alle {{count}} geseede spelers zijn opgenomen, in seedingvolgorde.',

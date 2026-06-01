@@ -17,6 +17,7 @@ import {
   SetHandicapConfigCommand,
   SetMiscConfigCommand,
   SetTournamentClassesCommand,
+  AddTournamentClassCommand,
   SetPlayerClassFlagsCommand,
   SetGroupsCommand,
   type SetPlayerGroupCommand,
@@ -287,6 +288,25 @@ export class TournamentController {
     };
     const result = this.runner.execute(command);
     this.view?.renderMessage(`SetTournamentClasses: ${JSON.stringify(result)}`);
+    this.view?.renderTournament(this.getTournament());
+    return result;
+  }
+
+  addTournamentClass(
+    name: string,
+    dependsOn: string[] = [],
+    commandId?: string,
+    id?: string,
+  ): CommandResult {
+    const command: AddTournamentClassCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'AddTournamentClass',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: { name, ...(id !== undefined && id !== '' ? { id } : {}) },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`AddTournamentClass: ${JSON.stringify(result)}`);
     this.view?.renderTournament(this.getTournament());
     return result;
   }

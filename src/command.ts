@@ -78,6 +78,7 @@ export type CommandType =
   | 'SetHandicapConfig'
   | 'SetMiscConfig'
   | 'SetTournamentClasses'
+  | 'AddTournamentClass'
   | 'SetPlayerClassFlags'
   | 'SetGroups'
   | 'SetPlayerGroup'
@@ -169,6 +170,11 @@ export interface SetMiscConfigCommand extends CommandBase {
 export interface SetTournamentClassesCommand extends CommandBase {
   type: 'SetTournamentClasses';
   payload: { classes: Array<{ id?: string; name: string }> };
+}
+
+export interface AddTournamentClassCommand extends CommandBase {
+  type: 'AddTournamentClass';
+  payload: { name: string; id?: string };
 }
 
 export interface SetPlayerClassFlagsCommand extends CommandBase {
@@ -287,6 +293,7 @@ export type Command =
   | SetHandicapConfigCommand
   | SetMiscConfigCommand
   | SetTournamentClassesCommand
+  | AddTournamentClassCommand
   | SetPlayerClassFlagsCommand
   | SetGroupsCommand
   | SetPlayerGroupCommand
@@ -994,6 +1001,32 @@ export class CommandRunner {
               tournament.playerClassFlags[pid][def.id] = false;
             }
           }
+        }
+        recomputeClassTournamentSlices(tournament);
+        return { success: true };
+      }
+      case 'AddTournamentClass': {
+        if (!tournamentUsesClassTabs(tournament)) {
+          return commandFail('command.addClassOnlyInMultiClassTournament');
+        }
+        const name = String(command.payload.name ?? '').trim();
+        if (!name) {
+          return commandFail('command.classNeedsDisplayName');
+        }
+        let id = String(command.payload.id ?? '').trim();
+        if (!id) {
+          id = newTournamentClassId();
+        }
+        const existingIds = new Set(tournament.classDefinitions.map((c) => c.id));
+        if (existingIds.has(id)) {
+          return commandFail('command.duplicateClassId');
+        }
+        tournament.classDefinitions.push({ id, name });
+        for (const pid of Object.keys(tournament.players)) {
+          if (!tournament.playerClassFlags[pid]) {
+            tournament.playerClassFlags[pid] = {};
+          }
+          tournament.playerClassFlags[pid][id] = false;
         }
         recomputeClassTournamentSlices(tournament);
         return { success: true };
