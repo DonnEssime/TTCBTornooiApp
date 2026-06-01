@@ -33,6 +33,7 @@ import {
   type UndoCommand,
 } from './command';
 import { Tournament, type BracketSeedingMode, type HandicapConfig, type MiscConfig } from './model';
+import { listCompetitionTracks } from './competition-track';
 import {
   parseCommandLogLines,
   replayCommandsFromJsonLines,
@@ -44,6 +45,21 @@ import { TournamentView } from './view';
 
 export interface ControllerOptions {
   debug?: boolean;
+}
+
+function tournamentHasAnyBracket(tournament: Tournament): boolean {
+  return listCompetitionTracks(tournament).some((tr) => tr.bracketMatches.length > 0);
+}
+
+/** Resolve a round-1 {@link CreateMatch} dependency on {@link GenerateBracket} (any command id). */
+function findGenerateBracketDependencyId(createMatch: CreateMatchCommand, hist: Command[]): string | undefined {
+  const byId = new Map(hist.map((c) => [c.id, c]));
+  for (const depId of createMatch.dependsOn) {
+    if (byId.get(depId)?.type === 'GenerateBracket') {
+      return depId;
+    }
+  }
+  return undefined;
 }
 
 function sortHistory(commands: Command[]): Command[] {
@@ -675,7 +691,7 @@ export class TournamentController {
     const result = this.runner.execute(command);
     this.view?.renderMessage(`Undo ${targetCommandId}: ${JSON.stringify(result)}`);
     this.view?.renderTournament(this.getTournament());
-    if (result.success && this.getTournament().bracketMatches.length > 0) {
+    if (result.success && tournamentHasAnyBracket(this.getTournament())) {
       this.view?.renderBracket(this.getTournament());
     }
     return result;
@@ -690,33 +706,30 @@ export class TournamentController {
       if (!this.runner.canUndo(c.id)) continue;
 
       if (c.type === 'CreateMatch') {
-        const genId = c.dependsOn.find((d) => typeof d === 'string' && d.startsWith('cmd-gen'));
+        const genId = findGenerateBracketDependencyId(c, hist);
         if (genId) {
-          const genCmd = hist.find((x) => x.id === genId);
-          if (genCmd?.type === 'GenerateBracket') {
-            let r: CommandResult = { success: true };
-            let firstUndo = true;
-            while (true) {
-              const h = sortHistory(this.runner.getHistory());
-              let removedOne = false;
-              for (let j = h.length - 1; j >= 0; j--) {
-                const x = h[j];
-                if (x.type === 'Undo') continue;
-                if (!this.runner.canUndo(x.id)) continue;
-                if (x.type !== 'CreateMatch' || !x.dependsOn.includes(genId)) break;
-                r = this.undo(x.id, firstUndo ? commandId : undefined);
-                firstUndo = false;
-                if (!r.success) return r;
-                removedOne = true;
-                break;
-              }
-              if (!removedOne) break;
+          let r: CommandResult = { success: true };
+          let firstUndo = true;
+          while (true) {
+            const h = sortHistory(this.runner.getHistory());
+            let removedOne = false;
+            for (let j = h.length - 1; j >= 0; j--) {
+              const x = h[j];
+              if (x.type === 'Undo') continue;
+              if (!this.runner.canUndo(x.id)) continue;
+              if (x.type !== 'CreateMatch' || !x.dependsOn.includes(genId)) break;
+              r = this.undo(x.id, firstUndo ? commandId : undefined);
+              firstUndo = false;
+              if (!r.success) return r;
+              removedOne = true;
+              break;
             }
-            if (this.runner.canUndo(genId)) {
-              r = this.undo(genId, firstUndo ? commandId : undefined);
-            }
-            return r;
+            if (!removedOne) break;
           }
+          if (this.runner.canUndo(genId)) {
+            r = this.undo(genId, firstUndo ? commandId : undefined);
+          }
+          return r;
         }
       }
 
@@ -730,7 +743,7 @@ export class TournamentController {
     const result = this.runner.redoPop();
     this.view?.renderMessage(`Redo: ${JSON.stringify(result)}`);
     this.view?.renderTournament(this.getTournament());
-    if (result.success && this.getTournament().bracketMatches.length > 0) {
+    if (result.success && tournamentHasAnyBracket(this.getTournament())) {
       this.view?.renderBracket(this.getTournament());
     }
     return result;

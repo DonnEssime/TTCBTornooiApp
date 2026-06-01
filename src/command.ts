@@ -341,10 +341,19 @@ function deletePlayerScheduledGroupMatches(tournament: Tournament, playerId: str
   tournament.tableAssignments = tournament.tableAssignments.filter((a) => !set.has(a.matchId));
 }
 
-function playerHasAnyRecordedGroupMatch(tournament: Tournament, playerId: string): boolean {
+function playerHasAnyRecordedGroupMatch(
+  tournament: Tournament,
+  playerId: string,
+  classId: string | undefined,
+): boolean {
   for (const m of Object.values(tournament.matches)) {
     if (!m?.groupId) continue;
     if (m.playerA !== playerId && m.playerB !== playerId) continue;
+    if (classId !== undefined) {
+      if (m.classId !== classId) continue;
+    } else if (m.classId) {
+      continue;
+    }
     if (m.scores.length > 0) return true;
     if (m.status !== 'scheduled') return true;
   }
@@ -1065,7 +1074,7 @@ export class CommandRunner {
         }
 
         if (currentGroupId !== null && targetGroupId === null) {
-          if (playerHasAnyRecordedGroupMatch(tournament, pid)) {
+          if (playerHasAnyRecordedGroupMatch(tournament, pid, trackClassId)) {
             return commandFail('command.cannotLeaveGroupAlreadyPlayed');
           }
         }
@@ -1162,6 +1171,13 @@ export class CommandRunner {
           return commandFail(trackResolved.key);
         }
         const trackClassId = trackResolved.classId;
+        const existingBracket = getCompetitionTrack(tournament, trackClassId).bracketMatches;
+        if (existingBracket.length > 0) {
+          const clearErr = clearBracketFromTournament(tournament, trackClassId);
+          if (clearErr) {
+            return commandFail(clearErr.key, clearErr.params);
+          }
+        }
         const seedings = trackSeedingsForBracket(tournament, trackClassId);
         try {
           const bm = generateBracket(seedings, tournament, {
