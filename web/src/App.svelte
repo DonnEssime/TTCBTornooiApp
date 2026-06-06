@@ -42,6 +42,7 @@
     normalizeHandicapConfig,
     normalizeMiscConfig,
     formatPlayerDisplayLabel,
+    sortPlayerIdsByName,
     DEFAULT_MISC_CONFIG,
     randomPlayerHandicapValue,
     randomDebugPlayerMiscValue,
@@ -3103,6 +3104,13 @@
     return s.nav.screen === 'players';
   });
 
+  const playersTabPlayerIds = $derived.by(() => {
+    const s = getActiveSession();
+    if (!s) return [];
+    void getLocale();
+    return sortPlayerIdsByName(tournament, s.playerOrder, getLocale());
+  });
+
   const multiClassScreen = $derived.by((): { classId: string; inner: ClassInnerTab } | null => {
     const s = getActiveSession();
     if (!s || s.nav.kind !== 'multi') return null;
@@ -3662,7 +3670,7 @@
                 </div>
               {/if}
               <ol class="seed-list">
-                {#each activeSess.playerOrder as pid (pid)}
+                {#each playersTabPlayerIds as pid (pid)}
                   <li class="player-row">
                     <div class="player-main">
                       <button

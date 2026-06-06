@@ -333,6 +333,19 @@ export function formatPlayerDisplayLabel(tournament: Tournament, playerId: Playe
   return out;
 }
 
+/** Sort player ids alphabetically by name (case-insensitive); does not mutate the input. */
+export function sortPlayerIdsByName(
+  tournament: Tournament,
+  playerIds: readonly PlayerId[],
+  locale: Locale = 'en',
+): PlayerId[] {
+  return [...playerIds].sort((a, b) => {
+    const na = tournament.players[a]?.name ?? a;
+    const nb = tournament.players[b]?.name ?? b;
+    return na.localeCompare(nb, locale, { sensitivity: 'base' });
+  });
+}
+
 const DEBUG_PLAYER_MISC_VALUES = [
   'TT Borgerhout',
   'Eendracht Aalst',

@@ -3,6 +3,7 @@ import { CommandRunner } from '../src/command';
 import {
   DEFAULT_MISC_CONFIG,
   formatPlayerDisplayLabel,
+  sortPlayerIdsByName,
   isMiscActive,
   isPlayerDisplayIdentityTaken,
   normalizeMiscConfig,
@@ -85,6 +86,26 @@ describe('Misc (per-player club) configuration', () => {
     expect(r.success).toBe(false);
     expect(r.reason).toBe('command.playerNameAlreadyExists');
     expect(runner.getTournament().players['p1']?.misc).toBe('');
+  });
+
+  it('sortPlayerIdsByName orders by player name regardless of input order', () => {
+    const runner = new CommandRunner();
+    for (const [id, name] of [
+      ['p3', 'Charlie'],
+      ['p1', 'Alice'],
+      ['p2', 'Bob'],
+    ] as const) {
+      runner.execute({
+        id: `c-${id}`,
+        type: 'CreatePlayer',
+        dependsOn: [],
+        payload: { playerId: id, name, handicap: 0 },
+        timestamp: ts,
+      });
+    }
+    const t = runner.getTournament();
+    expect(sortPlayerIdsByName(t, ['p3', 'p1', 'p2'])).toEqual(['p1', 'p2', 'p3']);
+    expect(sortPlayerIdsByName(t, ['p2', 'p3', 'p1'])).toEqual(['p1', 'p2', 'p3']);
   });
 
   it('formatPlayerDisplayLabel appends handicap and misc in separate parentheses', () => {
