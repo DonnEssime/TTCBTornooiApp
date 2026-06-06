@@ -115,6 +115,56 @@ describe('Single team-vs-team match (not a team tournament)', () => {
     expect(runner.getTournament().teamMatches['teamMatch1']?.status).toBe('scheduled');
   });
 
+  it('rejects illegal team scores at the command layer', () => {
+    const runner = new CommandRunner();
+    const ts = '2025-01-01T00:00:00.000Z';
+    runner.execute({
+      id: 'p1',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'a1', name: 'A', handicap: 0 },
+      timestamp: ts,
+    });
+    runner.execute({
+      id: 'p2',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'b1', name: 'B', handicap: 0 },
+      timestamp: ts,
+    });
+    runner.execute({
+      id: 't1',
+      type: 'CreateTeam',
+      dependsOn: ['p1'],
+      payload: { teamId: 'teamA', name: 'A', memberIds: ['a1'] },
+      timestamp: ts,
+    });
+    runner.execute({
+      id: 't2',
+      type: 'CreateTeam',
+      dependsOn: ['p2'],
+      payload: { teamId: 'teamB', name: 'B', memberIds: ['b1'] },
+      timestamp: ts,
+    });
+    runner.execute({
+      id: 'tm1',
+      type: 'CreateTeamMatch',
+      dependsOn: ['t1', 't2'],
+      payload: { matchId: 'm1', teamA: 'teamA', teamB: 'teamB' },
+      timestamp: ts,
+    });
+    const bad = runner.execute({
+      id: 'ts1',
+      type: 'EnterTeamScore',
+      dependsOn: ['tm1'],
+      payload: { matchId: 'm1', scores: [{ playerA: 11, playerB: 10 }] },
+      timestamp: ts,
+    });
+    expect(bad.success).toBe(false);
+    expect(bad.reason).toBe('command.invalidScores');
+    expect(runner.getTournament().teamMatches.m1?.status).toBe('scheduled');
+  });
+
   it('rejects a second team vs team match in the same tournament', () => {
     const runner = new CommandRunner();
     const p1: CreatePlayerCommand = {

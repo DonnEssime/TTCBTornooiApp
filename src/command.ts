@@ -39,6 +39,7 @@ import {
   settleBracketWinnersIn,
   syncBracketMatchPlayerRows,
   teamMatchWinner,
+  isTeamMatchScoreLegal,
   isPlayerDisplayIdentityTaken,
   isMiscActive,
   normalizeMiscConfig,
@@ -835,6 +836,13 @@ export class CommandRunner {
         const teamMatch = tournament.teamMatches[matchId];
         if (!teamMatch) {
           return commandFail('command.teamMatchNotFound');
+        }
+        const draft = { ...teamMatch, scores, status: 'finished' as const };
+        if (!isTeamMatchScoreLegal(draft, tournament)) {
+          return {
+            success: false,
+            reason: 'command.invalidScores',
+          };
         }
         teamMatch.scores = scores;
         teamMatch.status = 'finished';
