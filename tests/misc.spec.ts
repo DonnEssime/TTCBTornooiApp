@@ -4,6 +4,7 @@ import {
   DEFAULT_MISC_CONFIG,
   formatPlayerDisplayLabel,
   sortPlayerIdsByName,
+  sortPlayerIdsByRecentFirst,
   isMiscActive,
   isPlayerDisplayIdentityTaken,
   normalizeMiscConfig,
@@ -86,6 +87,12 @@ describe('Misc (per-player club) configuration', () => {
     expect(r.success).toBe(false);
     expect(r.reason).toBe('command.playerNameAlreadyExists');
     expect(runner.getTournament().players['p1']?.misc).toBe('');
+  });
+
+  it('sortPlayerIdsByRecentFirst reverses add order without mutating input', () => {
+    const input = ['p1', 'p2', 'p3'] as const;
+    expect(sortPlayerIdsByRecentFirst(input)).toEqual(['p3', 'p2', 'p1']);
+    expect(input).toEqual(['p1', 'p2', 'p3']);
   });
 
   it('sortPlayerIdsByName orders by player name regardless of input order', () => {

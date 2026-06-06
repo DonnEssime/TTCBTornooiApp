@@ -43,6 +43,7 @@
     normalizeMiscConfig,
     formatPlayerDisplayLabel,
     sortPlayerIdsByName,
+    sortPlayerIdsByRecentFirst,
     DEFAULT_MISC_CONFIG,
     randomPlayerHandicapValue,
     randomDebugPlayerMiscValue,
@@ -158,6 +159,25 @@
   }
 
   type ScoreRow = { a: string; b: string };
+
+  type PlayersTabSortMode = 'recent' | 'alphabetical';
+  const PLAYERS_TAB_SORT_KEY = 'ttc.playersTabSort';
+
+  function loadPlayersTabSort(): PlayersTabSortMode {
+    if (typeof localStorage === 'undefined') return 'recent';
+    const stored = localStorage.getItem(PLAYERS_TAB_SORT_KEY);
+    return stored === 'alphabetical' ? 'alphabetical' : 'recent';
+  }
+
+  /** Players tab list order; persisted in localStorage (default: most recent first). */
+  let playersTabSort = $state<PlayersTabSortMode>(loadPlayersTabSort());
+
+  function setPlayersTabSort(next: PlayersTabSortMode): void {
+    playersTabSort = next;
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(PLAYERS_TAB_SORT_KEY, next);
+    }
+  }
 
   /** Top workspace tab: `'settings'` or a tournament session id. */
   let workspaceTab = $state<string>('settings');
@@ -2463,7 +2483,8 @@
     }
     patchActiveSession({ playerOrder: newOrder, lastSeedingCommandId: seedCmdId });
     const defs = c.getTournament().classDefinitions;
-    if (defs.length > 0) {
+    // Single-class: opt in automatically. Multi-class: leave unassigned until the user picks classes.
+    if (defs.length === 1) {
       const firstClassId = defs[0]!.id;
       const classCmdId = `cmd-pcf-${id}-${firstClassId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 8)}`;
       const rClass = c.setPlayerClassFlags(id, { [firstClassId]: true }, [`cmd-${id}`], classCmdId);
@@ -3142,8 +3163,12 @@
   const playersTabPlayerIds = $derived.by(() => {
     const s = getActiveSession();
     if (!s) return [];
-    void getLocale();
-    return sortPlayerIdsByName(tournament, s.playerOrder, getLocale());
+    const ids = s.playerOrder;
+    if (playersTabSort === 'alphabetical') {
+      void getLocale();
+      return sortPlayerIdsByName(tournament, ids, getLocale());
+    }
+    return sortPlayerIdsByRecentFirst(ids);
   });
 
   const multiClassScreen = $derived.by((): { classId: string; inner: ClassInnerTab } | null => {
@@ -3704,6 +3729,21 @@
                   <button type="button" class="btn subtle" onclick={debugFillPlayers}><Msg key="ui.players.debugFill" /></button>
                 </div>
               {/if}
+              <div class="players-sort-row">
+                <label class="players-sort-label">
+                  <span class="muted small"><Msg key="ui.players.sortLabel" /></span>
+                  <select
+                    class="players-sort-select"
+                    aria-label={msgText('ui.players.sortLabel')}
+                    value={playersTabSort}
+                    onchange={(e) =>
+                      setPlayersTabSort((e.currentTarget as HTMLSelectElement).value as PlayersTabSortMode)}
+                  >
+                    <option value="recent"><Msg key="ui.players.sort.recent" /></option>
+                    <option value="alphabetical"><Msg key="ui.players.sort.alphabetical" /></option>
+                  </select>
+                </label>
+              </div>
               <ol class="seed-list">
                 {#each playersTabPlayerIds as pid (pid)}
                   <li class="player-row">
@@ -5692,6 +5732,28 @@
   .seed-list {
     margin: 0.5rem 0;
     padding-left: 1.25rem;
+  }
+
+  .players-sort-row {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 0.65rem;
+  }
+
+  .players-sort-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .players-sort-select {
+    font: inherit;
+    font-size: 0.78rem;
+    padding: 0.22rem 0.4rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    background: #fff;
+    color: #0f172a;
   }
 
   .seed-list li {

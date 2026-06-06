@@ -155,6 +155,9 @@ export const uiRemainingCatalog = {
   'ui.bracket.classNoBracketYet': t('No knockout bracket for this class yet.', 'Nog geen afvallingstabel voor deze reeks.'),
   'ui.players.hashToAdd': t('# to add', '# toe te voegen'),
   'ui.players.debugFill': t('[DEBUG] Fill players', '[DEBUG] Spelers invullen'),
+  'ui.players.sortLabel': t('Sort by', 'Sorteren op'),
+  'ui.players.sort.recent': t('Most recent first', 'Meest recent eerst'),
+  'ui.players.sort.alphabetical': t('Name (A–Z)', 'Naam (A–Z)'),
   'ui.toast.playerGroupChanged': t('Updated group for {{name}}.', 'Groep bijgewerkt voor {{name}}.'),
   'command.playerGroupMoveNotSupportedMultiClass': t(
     'Moving players between groups is not supported in multi-class tournaments yet.',

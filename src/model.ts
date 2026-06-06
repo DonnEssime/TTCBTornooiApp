@@ -346,6 +346,11 @@ export function sortPlayerIdsByName(
   });
 }
 
+/** Most recently added first (reverse of {@link Tournament} seeding/add order). Does not mutate the input. */
+export function sortPlayerIdsByRecentFirst(playerIds: readonly PlayerId[]): PlayerId[] {
+  return [...playerIds].reverse();
+}
+
 const DEBUG_PLAYER_MISC_VALUES = [
   'TT Borgerhout',
   'Eendracht Aalst',
