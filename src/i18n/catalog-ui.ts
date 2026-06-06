@@ -129,8 +129,11 @@ export const uiCatalog = {
   'ui.include_misc_for_players_after': t(' per player', ' per speler bij'),
   'ui.misc.defaultLabel': t('club', 'club'),
   'ui.increase_number_of_tables': t('Increase number of tables', 'Aantal tafels verhogen'),
-  'ui.internal_generated_illegal_scores': e('Internal: generated illegal scores.'),
-  'ui.internal_no_score_draft_for_this_match': e('Internal: no score draft for this match.'),
+  'ui.internal_generated_illegal_scores': t('Internal: generated illegal scores.', 'Intern: ongeldige scores gegenereerd.'),
+  'ui.internal_no_score_draft_for_this_match': t(
+    'Internal: no score draft for this match.',
+    'Intern: geen scoreconcept voor deze wedstrijd.',
+  ),
   'ui.knockout': t('Knockout', 'Afvalling'),
   'ui.knockout_bracket': t('Knockout bracket', 'Afvallingstabel'),
   'ui.knockout_bracket_removed_you_can_create_a_new_br': t(

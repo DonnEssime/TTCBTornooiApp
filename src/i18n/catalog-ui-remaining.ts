@@ -154,13 +154,15 @@ export const uiRemainingCatalog = {
   'ui.players.hashToAdd': t('# to add', '# toe te voegen'),
   'ui.players.debugFill': t('[DEBUG] Fill players', '[DEBUG] Spelers invullen'),
   'ui.toast.playerGroupChanged': t('Updated group for {{name}}.', 'Groep bijgewerkt voor {{name}}.'),
-  'command.playerGroupMoveNotSupportedMultiClass': e(
+  'command.playerGroupMoveNotSupportedMultiClass': t(
     'Moving players between groups is not supported in multi-class tournaments yet.',
+    'Spelers tussen groepen verplaatsen wordt in multi-reeks tornooien nog niet ondersteund.',
   ),
-  'command.groupIdRequired': e('Group id is required.'),
-  'command.groupNotFound': e('Group not found: {{groupId}}'),
-  'command.cannotLeaveGroupAlreadyPlayed': e(
+  'command.groupIdRequired': t('Group id is required.', 'Groeps-id is verplicht.'),
+  'command.groupNotFound': t('Group not found: {{groupId}}', 'Groep niet gevonden: {{groupId}}'),
+  'command.cannotLeaveGroupAlreadyPlayed': t(
     'This player has already played group matches and cannot be removed from the group.',
+    'Deze speler heeft al poulewedstrijden gespeeld en kan niet uit de groep worden gehaald.',
   ),
   'ui.load.loadingTournament': t('Loading “{{label}}”', '“{{label}}” laden'),
   'ui.load.replayingCommands': t('Replaying commands — {{done}} / {{total}}', 'Handelingen afspelen — {{done}} / {{total}}'),
@@ -275,7 +277,7 @@ export const uiRemainingCatalog = {
   'ui.aria.closeScoreDialog': t('Close score dialog', 'Scoredialoog sluiten'),
   'ui.placeholder.playerName': t('Name', 'Naam'),
   'ui.slot.empty': t('--empty--', '--leeg--'),
-  'ui.slot.bye': e('—'),
+  'ui.slot.bye': t('—', '—'),
   'ui.import.tournament': t('Import tournament', 'Tornooi importeren'),
   'ui.remove': t('Remove', 'Verwijderen'),
   'ui.results.classTitle': t('Results · {{name}}', 'Resultaten · {{name}}'),
@@ -316,5 +318,5 @@ export const uiRemainingCatalog = {
     'Er zijn slechts {{count}} ongebruikte debugnaam/namen beschikbaar; verlaag het aantal of hernoem/verwijder spelers.',
   ),
   'ui.playersCount': t('{{count}} players', '{{count}} spelers'),
-  'ui.playersCountShort': e('{{names}}'),
+  'ui.playersCountShort': t('{{names}}', '{{names}}'),
 } as const satisfies Record<string, MessageEntry>;

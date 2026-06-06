@@ -189,11 +189,11 @@ export const commandCatalog = {
   ),
   'command.classIdRequired': t(
     'classId is required for this command in a multi-class tournament',
-    '',
+    'classId is verplicht voor deze opdracht in een multi-reeks tornooi',
   ),
   'command.requireZeroOrTwoOrMoreClasses': t(
     'SetTournamentClasses requires at least one competition class',
-    '',
+    'SetTournamentClasses vereist minstens één reeks',
   ),
   'command.classIdMustNotBeSetSingleClass': t(
     'classId must not be set when the tournament does not use competition classes',
@@ -240,7 +240,7 @@ export const commandCatalog = {
     'Wedstrijd is niet aan een tafel toegewezen',
   ),
   'command.unknownCommandType': t('Unknown command type', 'Onbekend opdrachttype'),
-  'command.dynamicError': e('{{message}}'),
+  'command.dynamicError': t('{{message}}', '{{message}}'),
   'command.replayFailed': t('Replay failed', 'Opnieuw afspelen mislukt'),
   'command.invalidCommandFormat': t('invalid command format', 'ongeldig opdrachtformaat'),
 } as const satisfies Record<string, MessageEntry>;

@@ -7,6 +7,6 @@ describe('i18n coverage', () => {
     for (const key of missing) {
       console.warn(`[i18n] missing NL: ${key}`);
     }
-    expect(missing.length).toBeGreaterThanOrEqual(0);
+    expect(missing).toEqual([]);
   });
 });
