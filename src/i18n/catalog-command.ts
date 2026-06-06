@@ -113,16 +113,16 @@ export const commandCatalog = {
   ),
   'command.duplicateClassId': t('Duplicate class id', 'Dubbele reeks-ID'),
   'command.defineTwoClassesBeforePlayers': t(
-    'Define at least two competition classes before adding players.',
-    'Definieer minstens twee reeksen voordat je spelers toevoegt.',
+    'Define competition classes before adding players.',
+    'Definieer reeksen voordat je spelers toevoegt.',
   ),
   'command.cannotChangeClassesWhilePlayersExist': t(
     'Cannot add or remove a competition class while players exist.',
     'Kan geen wedstrijdreeks toevoegen of verwijderen zolang er spelers zijn.',
   ),
   'command.addClassOnlyInMultiClassTournament': t(
-    'Add competition class is only available when the tournament already has two or more classes.',
-    'Reeks toevoegen is alleen beschikbaar wanneer het tornooi al twee of meer reeksen heeft.',
+    'Add competition class is only available when the tournament uses competition classes.',
+    'Reeks toevoegen is alleen beschikbaar wanneer het tornooi reeksen gebruikt.',
   ),
   'command.flagsObjectRequired': t('flags object required', 'flags-object is verplicht'),
   'command.useSetClassGroupsFromClassTab': t(
@@ -192,12 +192,12 @@ export const commandCatalog = {
     '',
   ),
   'command.requireZeroOrTwoOrMoreClasses': t(
-    'Define zero competition classes (single-class mode) or two or more — exactly one class is not supported',
+    'SetTournamentClasses requires at least one competition class',
     '',
   ),
   'command.classIdMustNotBeSetSingleClass': t(
-    'classId must not be set when only one competition class is in use',
-    'classId mag niet worden ingesteld wanneer slechts één wedstrijdreeks in gebruik is',
+    'classId must not be set when the tournament does not use competition classes',
+    'classId mag niet worden ingesteld wanneer het tornooi geen reeksen gebruikt',
   ),
   'command.groupRoundRobinNotWithTeamMatch': t(
     'Group round robin is not available alongside a team vs team match',

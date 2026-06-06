@@ -77,6 +77,7 @@
   import PlayerName from './PlayerName.svelte';
   import PlayerMatchHistoryModal from './PlayerMatchHistoryModal.svelte';
   import TournamentOverview from './TournamentOverview.svelte';
+  import VersionFooter from './VersionFooter.svelte';
   import {
     deleteTournament,
     importTournamentJsonl,
@@ -2252,8 +2253,8 @@
           }))
           .filter((r) => r.name.length > 0)
       : [];
-    if (namedClasses.length === 1) {
-      showErrorKey('ui.classes.requireZeroOrTwoOrMore');
+    if (draftClassesEnabled && namedClasses.length === 0) {
+      showErrorKey('ui.classes.requireAtLeastOneWhenEnabled');
       return;
     }
     if (namedClasses.length > 0) {
@@ -3689,8 +3690,11 @@
                             <input
                               type="checkbox"
                               checked={tournament.playerClassFlags[pid]?.[def.id] ?? false}
-                              onchange={(e) =>
-                                togglePlayerClass(pid, def.id, (e.currentTarget as HTMLInputElement).checked)}
+                              onclick={(e) => {
+                                e.preventDefault();
+                                const current = tournament.playerClassFlags[pid]?.[def.id] ?? false;
+                                togglePlayerClass(pid, def.id, !current);
+                              }}
                             />
                             {def.name}
                           </label>
@@ -4669,6 +4673,8 @@
       onClose={closePlayerHistoryModal}
     />
   {/if}
+
+  <VersionFooter />
 </div>
 
 <style>

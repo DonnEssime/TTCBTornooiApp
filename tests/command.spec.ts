@@ -599,18 +599,19 @@ describe('CommandRunner dependency-aware undo', () => {
     expect(defs[0].id).not.toBe(defs[1].id);
   });
 
-  it('SetTournamentClasses rejects exactly one class', () => {
+  it('SetTournamentClasses accepts one class for multi-class track layout', () => {
     const runner = new CommandRunner();
     const r = runner.execute({
       id: 'tc1',
       type: 'SetTournamentClasses',
       dependsOn: [],
-      payload: { classes: [{ name: 'Only' }] },
+      payload: { classes: [{ id: 'jun', name: 'Junior' }] },
       timestamp: '2026-01-01T00:00:00.000Z',
     });
-    expect(r.success).toBe(false);
-    expect(r.reason).toBe('command.requireZeroOrTwoOrMoreClasses');
-    expect(runner.getTournament().classDefinitions).toEqual([]);
+    expect(r.success).toBe(true);
+    const t = runner.getTournament();
+    expect(t.classDefinitions).toEqual([{ id: 'jun', name: 'Junior' }]);
+    expect(t.classTournaments.jun).toBeDefined();
   });
 
   function seedMultiClassWithPlayers(runner: CommandRunner): void {
@@ -707,6 +708,26 @@ describe('CommandRunner dependency-aware undo', () => {
     });
     expect(rSingle.success).toBe(false);
     expect(rSingle.reason).toBe('command.addClassOnlyInMultiClassTournament');
+  });
+
+  it('AddTournamentClass appends a second class when one class is already defined', () => {
+    const runner = new CommandRunner();
+    runner.execute({
+      id: 'tc1',
+      type: 'SetTournamentClasses',
+      dependsOn: [],
+      payload: { classes: [{ id: 'jun', name: 'Junior' }] },
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    const r = runner.execute({
+      id: 'add-sen',
+      type: 'AddTournamentClass',
+      dependsOn: ['tc1'],
+      payload: { name: 'Senior', id: 'sen' },
+      timestamp: '2026-01-01T00:00:01.000Z',
+    });
+    expect(r.success).toBe(true);
+    expect(runner.getTournament().classDefinitions).toHaveLength(2);
   });
 
   it('AddTournamentClass rejects empty display name', () => {

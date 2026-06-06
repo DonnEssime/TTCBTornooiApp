@@ -392,9 +392,9 @@ export function recomputeClassTournamentSlices(t: Tournament): void {
   }
 }
 
-/** True when the tournament uses multiple class tabs (two or more definitions). */
+/** True when the tournament uses per-class tabs (competition classes enabled; one or more definitions). */
 export function tournamentUsesClassTabs(t: Tournament): boolean {
-  return t.classDefinitions.length >= 2;
+  return t.classDefinitions.length >= 1;
 }
 
 /** All unordered pairs for a round-robin (player ids sorted lexicographically per pair). */

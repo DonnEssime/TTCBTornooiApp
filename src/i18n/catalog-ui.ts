@@ -28,8 +28,8 @@ export const uiCatalog = {
   'ui.cancel': t('Cancel', 'Annuleren'),
   'ui.class_display_name': t('Class display name', 'Weergavenaam reeks'),
   'ui.class_groups_require_two_or_more_competition_cla': t(
-    'Class groups require two or more competition classes.',
-    'Reeksgroepen vereisen twee of meer reeksen.',
+    'Class groups require competition classes — use each class tab for groups.',
+    'Reeksgroepen vereisen reeksen — gebruik elk reekstabblad voor groepen.',
   ),
   'ui.class_track_sections': t('Class track sections', 'Reekssecties'),
   'ui.classification_based': t('Classification-based', 'Op classificatie gebaseerd'),

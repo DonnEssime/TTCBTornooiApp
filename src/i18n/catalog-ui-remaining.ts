@@ -52,9 +52,9 @@ export const uiRemainingCatalog = {
     'Afvallingstabel is actief voor deze reeks — groepsindeling is hier vergrendeld. Je kunt nog onafgewerkte poule-wedstrijden afronden via de matrix hieronder.',
   ),
   'ui.group.addPlayersFirst': t('Add players on the Players tab first.', 'Voeg eerst spelers toe op het tabblad Spelers.'),
-  'ui.classes.requireZeroOrTwoOrMore': t(
-    'Use no competition classes for a single-class tournament, or define at least two classes.',
-    '',
+  'ui.classes.requireAtLeastOneWhenEnabled': t(
+    'Enter at least one competition class name, or turn off competition classes for a single-class tournament.',
+    'Geef minstens één reeksnaam op, of schakel reeksen uit voor een tornooi zonder reeksen.',
   ),
   'ui.classes.add': t('+', '+'),
   'ui.classes.addAria': t('Add competition class', 'Reeks toevoegen'),

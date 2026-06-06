@@ -967,13 +967,9 @@ export class CommandRunner {
           idSet.add(c.id);
         }
 
-        if (normalized.length === 1) {
-          return commandFail('command.requireZeroOrTwoOrMoreClasses');
-        }
-
         const hasPlayers = Object.keys(tournament.players).length > 0;
-        const hadMulti = tournament.classDefinitions.length >= 2;
-        const willMulti = normalized.length >= 2;
+        const hadMulti = tournament.classDefinitions.length >= 1;
+        const willMulti = normalized.length >= 1;
 
         if (hasPlayers && !hadMulti && willMulti) {
           return {
