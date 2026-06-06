@@ -1020,6 +1020,7 @@ export class CommandRunner {
         let id = String(command.payload.id ?? '').trim();
         if (!id) {
           id = newTournamentClassId();
+          command.payload.id = id;
         }
         const existingIds = new Set(tournament.classDefinitions.map((c) => c.id));
         if (existingIds.has(id)) {

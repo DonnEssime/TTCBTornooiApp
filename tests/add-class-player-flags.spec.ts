@@ -33,4 +33,29 @@ describe('AddTournamentClass then assign existing players', () => {
     expect(t.playerClassFlags[playerId]?.vet).toBe(true);
     expect(t.classTournaments.vet?.seedings).toEqual([playerId]);
   });
+
+  it('opts an original player into a class added after single-class setup (wizard flow)', () => {
+    const c = new TournamentController();
+    expect(
+      c.setTournamentClasses([{ id: 'jun', name: 'Junior' }], [], 'cmd-classes-init'),
+    ).toEqual({ success: true });
+
+    const playerId = 'p-abc123';
+    expect(c.createPlayer(playerId, 'Alice', 0, '', `cmd-${playerId}`)).toEqual({ success: true });
+    expect(c.setSeedings([playerId], [`cmd-${playerId}`], 'cmd-seed-1')).toEqual({ success: true });
+    expect(
+      c.setPlayerClassFlags(playerId, { jun: true }, [`cmd-${playerId}`], 'cmd-pcf-jun'),
+    ).toEqual({ success: true });
+
+    expect(c.addTournamentClass('Senior', [], 'cmd-add-sen')).toEqual({ success: true });
+    const senId = c.getTournament().classDefinitions.find((d) => d.name === 'Senior')!.id;
+
+    expect(
+      c.setPlayerClassFlags(playerId, { [senId]: true }, [`cmd-${playerId}`], 'cmd-pcf-sen'),
+    ).toEqual({ success: true });
+
+    const t = c.getTournament();
+    expect(t.playerClassFlags[playerId]?.[senId]).toBe(true);
+    expect(t.classTournaments[senId]?.seedings).toEqual([playerId]);
+  });
 });

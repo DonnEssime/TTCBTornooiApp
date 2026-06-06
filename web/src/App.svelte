@@ -167,6 +167,9 @@
   let handicapDrafts = $state<Record<string, number>>({});
   let handicapFocusPid = $state<string | null>(null);
 
+  /** Per-player class checkboxes (synced from tournament in pull). */
+  let classFlagDrafts = $state<Record<string, Record<string, boolean>>>({});
+
   let tournament = $state<Tournament>(createTournament());
   const handicapEnabled = $derived(isHandicapActive(tournament));
   const miscEnabled = $derived(isMiscActive(tournament));
@@ -2146,6 +2149,17 @@
         if (!po.includes(k)) delete hd[k];
       }
       handicapDrafts = hd;
+
+      const cfd: Record<string, Record<string, boolean>> = {};
+      for (const pid of po) {
+        const row: Record<string, boolean> = {};
+        for (const def of t.classDefinitions) {
+          row[def.id] = Boolean(t.playerClassFlags[pid]?.[def.id]);
+        }
+        cfd[pid] = row;
+      }
+      classFlagDrafts = cfd;
+
       if (options.persist !== false) {
         void persistActiveSession();
       }
@@ -3689,12 +3703,8 @@
                           <label class="chk tight">
                             <input
                               type="checkbox"
-                              checked={tournament.playerClassFlags[pid]?.[def.id] ?? false}
-                              onclick={(e) => {
-                                e.preventDefault();
-                                const current = tournament.playerClassFlags[pid]?.[def.id] ?? false;
-                                togglePlayerClass(pid, def.id, !current);
-                              }}
+                              bind:checked={classFlagDrafts[pid][def.id]}
+                              onchange={() => togglePlayerClass(pid, def.id, classFlagDrafts[pid][def.id])}
                             />
                             {def.name}
                           </label>
