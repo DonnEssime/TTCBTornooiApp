@@ -116,6 +116,8 @@ export const uiSummaryCatalog = {
     'Laagst geklasseerde spelers geëlimineerd in {{round}} waar wedstrijden nog open stonden.',
   ),
   'ui.toast.handicapSet': t('Handicap for {{name}} set to {{next}}.', 'Handicap voor {{name}} ingesteld op {{next}}.'),
+  'ui.toast.playerNameUpdated': t('Renamed player to {{name}}.', 'Speler hernoemd naar {{name}}.'),
+  'ui.toast.playerMiscUpdated': t('Updated {{label}} for {{name}}.', '{{label}} bijgewerkt voor {{name}}.'),
   'ui.toast.pdfFailed': t('PDF export failed: {{reason}}', 'PDF-export mislukt: {{reason}}'),
   'ui.toast.importFailed': t('Import failed: {{reason}}', 'Importeren mislukt: {{reason}}'),
   'ui.toast.importSaveFailed': t(
@@ -193,6 +195,7 @@ export const uiSummaryCatalog = {
   'ui.fallback.removeBracket': t('Could not remove bracket', 'Afvallingstabel kon niet worden verwijderd'),
   'ui.fallback.elimination': t('Elimination failed', 'Eliminatie mislukt'),
   'ui.fallback.updateHandicap': t('Could not update handicap', 'Handicap kon niet worden bijgewerkt'),
+  'ui.fallback.updatePlayer': t('Could not update player', 'Speler kon niet worden bijgewerkt'),
   'ui.fallback.applyMiscSettings': t('Could not apply per-player field settings', 'Instellingen voor extra veld konden niet worden toegepast'),
   'ui.fallback.setRoundLock': t('SetRoundLock failed', 'Ronde vergrendelen mislukt'),
   'ui.fallback.stoppedScoring': t(

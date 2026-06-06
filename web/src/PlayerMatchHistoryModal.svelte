@@ -16,19 +16,86 @@
   let {
     tournament,
     playerId,
-    playerName,
+    handicapEnabled = false,
+    handicapBounds = { min: 0, max: 0 },
+    miscEnabled = false,
+    miscFieldLabel = '',
+    onUpdatePlayer,
     onSetGroupId,
     onClose,
   }: {
     tournament: Tournament;
     playerId: string;
-    playerName: string;
+    handicapEnabled?: boolean;
+    handicapBounds?: { min: number; max: number };
+    miscEnabled?: boolean;
+    miscFieldLabel?: string;
+    onUpdatePlayer: (updates: { name?: string; handicap?: number; misc?: string }) => void;
     onSetGroupId: (groupId: string | null, classId?: string) => void;
     onClose: () => void;
   } = $props();
 
   const locale = $derived(getLocale());
   const history = $derived(buildPlayerMatchHistory(tournament, playerId, msgText('ui.ov.mainDraw')));
+  const focalPlayerName = $derived(tournament.players[playerId]?.name ?? playerId);
+
+  let nameDraft = $state('');
+  let nameFocused = $state(false);
+  let handicapDraft = $state(0);
+  let handicapInputEl = $state<HTMLInputElement | null>(null);
+  let miscDraft = $state('');
+  let miscFocused = $state(false);
+
+  $effect(() => {
+    const p = tournament.players[playerId];
+    if (!p) return;
+    if (!nameFocused) nameDraft = p.name;
+    if (!miscFocused) miscDraft = p.misc ?? '';
+    const h = p.handicap ?? 0;
+    if (document.activeElement !== handicapInputEl) handicapDraft = h;
+  });
+
+  function commitName(): void {
+    nameFocused = false;
+    const trimmed = nameDraft.trim();
+    if (!trimmed) {
+      nameDraft = tournament.players[playerId]?.name ?? playerId;
+      return;
+    }
+    if (trimmed === (tournament.players[playerId]?.name ?? '')) return;
+    onUpdatePlayer({ name: trimmed });
+  }
+
+  function onNameKeydown(e: KeyboardEvent): void {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      (e.currentTarget as HTMLInputElement).blur();
+    }
+  }
+
+  function onHandicapInput(e: Event): void {
+    const raw = Number((e.currentTarget as HTMLInputElement).value);
+    onUpdatePlayer({ handicap: Number.isFinite(raw) ? raw : 0 });
+  }
+
+  function commitMisc(): void {
+    miscFocused = false;
+    const trimmed = miscDraft.trim();
+    if (!trimmed) {
+      miscDraft = tournament.players[playerId]?.misc ?? '';
+      if (miscEnabled) onUpdatePlayer({ misc: '' });
+      return;
+    }
+    if (trimmed === (tournament.players[playerId]?.misc ?? '').trim()) return;
+    onUpdatePlayer({ misc: trimmed });
+  }
+
+  function onMiscKeydown(e: KeyboardEvent): void {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      (e.currentTarget as HTMLInputElement).blur();
+    }
+  }
 
   function opponentName(opponentId: string): string {
     return tournament.players[opponentId]?.name ?? opponentId;
@@ -122,9 +189,65 @@
     tabindex="-1"
   >
     <header class="modal-head">
-      <h3 id="player-history-title" class="modal-title">{playerName}</h3>
+      <h3 id="player-history-title" class="modal-title"><Msg key="ui.players.detailsTitle" /></h3>
       <button type="button" class="btn subtle small-inline" onclick={onClose}><Msg key="ui.close" /></button>
     </header>
+
+    <section class="player-details-form" aria-label={msgText('ui.players.detailsTitle')}>
+      <label class="player-details-field">
+        <span class="player-details-label"><Msg key="ui.name" /></span>
+        <input
+          class="player-details-input"
+          type="text"
+          autocomplete="off"
+          bind:value={nameDraft}
+          onfocus={() => {
+            nameFocused = true;
+          }}
+          onblur={commitName}
+          onkeydown={onNameKeydown}
+        />
+      </label>
+      {#if handicapEnabled}
+        <label class="player-details-field">
+          <span class="player-details-label"><Msg key="ui.handicap" /></span>
+          <input
+            bind:this={handicapInputEl}
+            class="player-details-input player-details-handicap"
+            type="number"
+            min={handicapBounds.min}
+            max={handicapBounds.max}
+            step="1"
+            aria-label={msgText('ui.handicap.forPlayer', { name: focalPlayerName })}
+            title={msgText('ui.handicap.rangeTitle', {
+              min: String(handicapBounds.min),
+              max: String(handicapBounds.max),
+            })}
+            bind:value={handicapDraft}
+            oninput={onHandicapInput}
+          />
+        </label>
+      {/if}
+      {#if miscEnabled}
+        <label class="player-details-field">
+          <span class="player-details-label">{miscFieldLabel}</span>
+          <input
+            class="player-details-input"
+            type="text"
+            autocomplete="off"
+            maxlength="80"
+            placeholder={miscFieldLabel}
+            aria-label={msgText('ui.misc.forPlayer', { label: miscFieldLabel, name: focalPlayerName })}
+            bind:value={miscDraft}
+            onfocus={() => {
+              miscFocused = true;
+            }}
+            onblur={commitMisc}
+            onkeydown={onMiscKeydown}
+          />
+        </label>
+      {/if}
+    </section>
 
     {#if history.showNoMatchesAvailable}
       <p class="muted player-history-empty"><Msg key="ui.players.noMatchesAvailable" /></p>
@@ -172,7 +295,7 @@
                   class="player-history-focal"
                   class:player-history-slot--winner={focalOutcome === 'winner'}
                   class:player-history-slot--loser={focalOutcome === 'loser'}
-                >{playerName}</span>
+                >{focalPlayerName}</span>
                 {#if scoreText(line)}
                   <span
                     class="player-history-score"
@@ -218,7 +341,7 @@
                     class="player-history-focal"
                     class:player-history-slot--winner={focalOutcome === 'winner'}
                     class:player-history-slot--loser={focalOutcome === 'loser'}
-                  >{playerName}</span>
+                  >{focalPlayerName}</span>
                   {#if scoreText(line)}
                     <span
                       class="player-history-score"
@@ -297,6 +420,50 @@
   .player-history-empty {
     margin: 0.35rem 0 0;
     font-size: 0.92rem;
+  }
+
+  .player-details-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.65rem 1rem;
+    margin: 0.35rem 0 0.85rem;
+    padding-bottom: 0.85rem;
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  .player-details-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    flex: 1 1 10rem;
+    min-width: 0;
+  }
+
+  .player-details-label {
+    font-size: 0.72rem;
+    font-weight: 650;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #64748b;
+  }
+
+  .player-details-input {
+    font: inherit;
+    padding: 0.4rem 0.55rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    color: #0f172a;
+    background: #fff;
+  }
+
+  .player-details-input:focus {
+    outline: 2px solid rgb(15 76 129 / 35%);
+    border-color: #0f4c81;
+  }
+
+  .player-details-handicap {
+    width: 5rem;
+    text-align: center;
   }
 
   .player-history-section + .player-history-section {

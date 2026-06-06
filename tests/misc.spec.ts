@@ -135,6 +135,34 @@ describe('Misc (per-player club) configuration', () => {
     expect(formatPlayerDisplayLabel(t, 'p1')).toBe('Ann (4) (TT Borgerhout)');
   });
 
+  it('RenamePlayer can update misc without changing name', () => {
+    const runner = new CommandRunner();
+    runner.execute({
+      id: 'mc1',
+      type: 'SetMiscConfig',
+      dependsOn: [],
+      payload: { config: DEFAULT_MISC_CONFIG },
+      timestamp: ts,
+    });
+    runner.execute({
+      id: 'p1',
+      type: 'CreatePlayer',
+      dependsOn: ['mc1'],
+      payload: { playerId: 'p1', name: 'Ann', handicap: 0, misc: 'TT Borgerhout' },
+      timestamp: ts,
+    });
+    expect(
+      runner.execute({
+        id: 'r1',
+        type: 'RenamePlayer',
+        dependsOn: ['p1'],
+        payload: { playerId: 'p1', name: 'Ann', misc: 'Spinners' },
+        timestamp: ts,
+      }),
+    ).toEqual({ success: true });
+    expect(runner.getTournament().players['p1']?.misc).toBe('Spinners');
+  });
+
   it('normalizeMiscConfig defaults label to club', () => {
     expect(normalizeMiscConfig({})).toEqual({ label: 'club' });
     expect(normalizeMiscConfig({ label: '  Team  ' })).toEqual({ label: 'Team' });

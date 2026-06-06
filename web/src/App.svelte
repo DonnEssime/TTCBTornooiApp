@@ -164,10 +164,6 @@
   let sessions = $state<TournamentSession[]>([]);
   let activeSessionId = $state<string>('');
 
-  /** Draft handicap per player id (synced from tournament in pull when row not focused). */
-  let handicapDrafts = $state<Record<string, number>>({});
-  let handicapFocusPid = $state<string | null>(null);
-
   /** Per-player class checkboxes (synced from tournament in pull). */
   let classFlagDrafts = $state<Record<string, Record<string, boolean>>>({});
 
@@ -2137,20 +2133,6 @@
       }
 
       const po = sAfter.playerOrder;
-      const hd: Record<string, number> = { ...handicapDrafts };
-      for (const pid of po) {
-        const h = t.players[pid]?.handicap ?? 0;
-        if (handicapFocusPid !== pid) {
-          hd[pid] = h;
-        } else if (!(pid in hd)) {
-          hd[pid] = h;
-        }
-      }
-      for (const k of Object.keys(hd)) {
-        if (!po.includes(k)) delete hd[k];
-      }
-      handicapDrafts = hd;
-
       const cfd: Record<string, Record<string, boolean>> = {};
       for (const pid of po) {
         const row: Record<string, boolean> = {};
@@ -2655,26 +2637,79 @@
     pull();
   }
 
-  function commitPlayerHandicap(playerId: string): void {
+  function commitPlayerUpdate(
+    playerId: string,
+    updates: { name?: string; handicap?: number; misc?: string },
+  ): void {
     clearStatus();
     const s = getActiveSession();
     if (!s) return;
-    const cfg = tournament.handicapConfig;
-    if (!cfg) return;
     const c = s.controller;
     const p = c.getTournament().players[playerId];
     if (!p) return;
-    const raw = Number(handicapDrafts[playerId]);
-    const next = clampPlayerHandicapValue(cfg, Number.isFinite(raw) ? raw : 0);
-    if (next === p.handicap) return;
-    const cmdId = `cmd-hc-${playerId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
-    const r = c.renamePlayer(playerId, p.name, next, undefined, [`cmd-${playerId}`], cmdId);
+
+    const nextName = updates.name !== undefined ? updates.name.trim() : p.name;
+    if (!nextName) {
+      showWarnKey('ui.enter_a_player_name');
+      pull();
+      return;
+    }
+
+    let hcArg: number | undefined;
+    if (updates.handicap !== undefined) {
+      const cfg = tournament.handicapConfig;
+      if (!cfg) return;
+      hcArg = clampPlayerHandicapValue(cfg, Number.isFinite(updates.handicap) ? updates.handicap : 0);
+    }
+
+    let miscArg: string | undefined;
+    if (updates.misc !== undefined) {
+      const trimmed = updates.misc.trim();
+      if (miscEnabled && !trimmed) {
+        showWarnKey('command.playerMiscRequired', { label: miscFieldLabel });
+        pull();
+        return;
+      }
+      miscArg = trimmed;
+    }
+
+    const currentMisc = (p.misc ?? '').trim();
+    const nameChanged = nextName !== p.name;
+    const hcChanged = hcArg !== undefined && hcArg !== p.handicap;
+    const miscChanged = miscArg !== undefined && miscArg !== currentMisc;
+
+    if (!nameChanged && !hcChanged && !miscChanged) return;
+
+    const cmdId = `cmd-rp-${playerId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
+    const r = c.renamePlayer(
+      playerId,
+      nextName,
+      hcChanged ? hcArg : undefined,
+      miscChanged ? miscArg : undefined,
+      [`cmd-${playerId}`],
+      cmdId,
+    );
     if (!r.success) {
-      showCommandError(r, 'ui.fallback.updateHandicap');
-    } else {
-      showInfoKey('ui.toast.handicapSet', { name: p.name, next: String(next) });
+      showCommandError(
+        r,
+        updates.handicap !== undefined && updates.name === undefined && updates.misc === undefined
+          ? 'ui.fallback.updateHandicap'
+          : 'ui.fallback.updatePlayer',
+      );
+    } else if (nameChanged) {
+      showInfoKey('ui.toast.playerNameUpdated', { name: nextName });
+    } else if (hcChanged) {
+      showInfoKey('ui.toast.handicapSet', { name: p.name, next: String(hcArg) });
+    } else if (miscChanged) {
+      showInfoKey('ui.toast.playerMiscUpdated', { name: p.name, label: miscFieldLabel });
     }
     pull();
+  }
+
+  function commitPlayerUpdateFromModal(updates: { name?: string; handicap?: number; misc?: string }): void {
+    const pid = playerHistoryModalPid;
+    if (!pid) return;
+    commitPlayerUpdate(pid, updates);
   }
 
   function playerLabel(id: string | undefined): string {
@@ -3676,33 +3711,11 @@
                       <button
                         type="button"
                         class="name player-name-btn"
-                        aria-label={msgText('ui.players.openMatchHistory', { name: playerLabel(pid) })}
+                        aria-label={msgText('ui.players.openDetails', { name: playerLabel(pid) })}
                         onclick={() => openPlayerHistoryModal(pid)}
                       >
                         {playerLabel(pid)}
                       </button>
-                      {#if handicapEnabled}
-                        <span class="hc-wrap">
-                          <label class="hc-label" for={`hc-${pid}`}><Msg key="ui.handicap" /></label>
-                          <input
-                            id={`hc-${pid}`}
-                            class="hc-inline"
-                            type="number"
-                            min={handicapBounds.min}
-                            max={handicapBounds.max}
-                            step="1"
-                            aria-label={msgText('ui.handicap.forPlayer', { name: playerLabel(pid) })}
-                            bind:value={handicapDrafts[pid]}
-                            onfocus={() => {
-                              handicapFocusPid = pid;
-                            }}
-                            onblur={() => {
-                              commitPlayerHandicap(pid);
-                              handicapFocusPid = null;
-                            }}
-                          />
-                        </span>
-                      {/if}
                       <code class="pid">{pid}</code>
                     </div>
                     {#if tournament.classDefinitions.length > 0}
@@ -4686,7 +4699,11 @@
     <PlayerMatchHistoryModal
       {tournament}
       playerId={playerHistoryModalPid}
-      playerName={playerLabel(playerHistoryModalPid)}
+      {handicapEnabled}
+      {handicapBounds}
+      {miscEnabled}
+      {miscFieldLabel}
+      onUpdatePlayer={commitPlayerUpdateFromModal}
       onSetGroupId={setActivePlayerGroupFromModal}
       onClose={closePlayerHistoryModal}
     />
@@ -5751,21 +5768,6 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
     color: #64748b;
-  }
-
-  .hc-inline {
-    width: 3.75rem;
-    font: inherit;
-    padding: 0.25rem 0.35rem;
-    border: 1px solid #cbd5e1;
-    border-radius: 6px;
-    text-align: center;
-  }
-
-  .hc-inline:focus {
-    outline: none;
-    border-color: #16a34a;
-    box-shadow: 0 0 0 2px rgb(22 163 74 / 12%);
   }
 
   .player-main .pid {
