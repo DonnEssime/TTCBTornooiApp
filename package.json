@@ -10,6 +10,7 @@
     "web"
   ],
   "scripts": {
+    "postinstall": "node scripts/update-build-info.mjs && node scripts/install-git-hooks.mjs",
     "build": "tsup src/index.ts --format esm,cjs --dts",
     "test": "vitest",
     "test:watch": "vitest --watch",

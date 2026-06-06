@@ -7,7 +7,8 @@
     "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
-      "ttc-tornooiapp": ["../src/index.ts"]
+      "ttc-tornooiapp": ["../src/index.ts"],
+      "@build-info": ["./src/generated/build-info.default.json"]
     },
     "verbatimModuleSyntax": false,
     "isolatedModules": true,

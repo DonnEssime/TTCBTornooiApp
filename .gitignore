@@ -1,6 +1,9 @@
 # Vite / Svelte web app build output
 web/dist/
 
+# Generated at build/commit time (see scripts/update-build-info.mjs)
+web/src/generated/build-info.json
+
 # Node modules
 node_modules/
 
