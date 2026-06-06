@@ -267,7 +267,7 @@ describe('bipartition bracket leaf order', () => {
     expect(right[0]!.groupIndex).not.toBe(right[1]!.groupIndex);
   });
 
-  it('only gives round-1 byes to top in-group ranks, tiered (fails until bye placement is rank-aware)', () => {
+  it('only gives round-1 byes to top in-group ranks, tiered', () => {
     const t = createTournament();
     const seed = buildSevenGroupsOfThree(t);
     const places = inGroupPlaceByPlayer(t, seed, undefined);

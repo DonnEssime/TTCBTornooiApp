@@ -1,6 +1,20 @@
 import { describe, it, expect } from 'vitest';
 import { TournamentController } from '../src/controller';
 import { ConsoleTournamentView } from '../src/view';
+import { CommandRunner } from '../src/command';
+import { bracketPlayerMatchId, singleEliminationPlacementRows, settleBracketWinners } from '../src/model';
+
+const BO5_A = [
+  { playerA: 11, playerB: 9 },
+  { playerA: 11, playerB: 6 },
+  { playerA: 11, playerB: 5 },
+];
+const BO5_B = [
+  { playerA: 9, playerB: 11 },
+  { playerA: 11, playerB: 7 },
+  { playerA: 9, playerB: 11 },
+  { playerA: 6, playerB: 11 },
+];
 
 describe('End-to-end tournament flow', () => {
   it('should run a player bracket tournament with scores and undo', () => {
@@ -98,5 +112,86 @@ describe('End-to-end tournament flow', () => {
       success: false,
       reason: 'command.playerMatchesNotAllowedInTeamFixture',
     });
+  });
+
+  it('should run an 8-player bracket through to champion', () => {
+    const controller = new TournamentController();
+    const pids = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'] as const;
+    const winners: Record<string, string> = {
+      'p1-p8': 'p1',
+      'p4-p5': 'p4',
+      'p2-p7': 'p2',
+      'p3-p6': 'p3',
+    };
+    for (const p of pids) {
+      expect(controller.createPlayer(p, p, 0, '', `cp-${p}`)).toEqual({ success: true });
+    }
+    expect(controller.setSeedings([...pids], pids.map((id) => `cp-${id}`), 'seed')).toEqual({ success: true });
+    expect(controller.generateBracket(false, false, ['seed'], 'gen')).toEqual({ success: true });
+
+    let deps = ['gen', ...pids.map((p) => `cp-${p}`)];
+    let round = 1;
+    let bootstrapped = false;
+    while (round <= 4) {
+      const t = controller.getTournament();
+      const pending = t.bracketMatches.filter(
+        (bm) =>
+          bm.round === round &&
+          bm.seedA &&
+          bm.seedB &&
+          t.matches[bracketPlayerMatchId(bm.id)]?.status !== 'finished',
+      );
+      if (pending.length === 0) {
+        if (!t.bracketMatches.some((bm) => bm.round === round + 1)) break;
+        round++;
+        continue;
+      }
+      for (const bm of pending) {
+        const mid = bracketPlayerMatchId(bm.id);
+        const winner = winners[`${bm.seedA}-${bm.seedB}`] ?? bm.seedA!;
+        const scores = winner === bm.seedA ? BO5_A : BO5_B;
+        if (!bootstrapped) {
+          expect(controller.createMatch(mid, bm.seedA!, bm.seedB!, deps, `cm-${bm.id}`)).toEqual({ success: true });
+          bootstrapped = true;
+          deps = [...deps, `cm-${bm.id}`];
+        }
+        expect(controller.enterScore(mid, scores, deps, `sc-${bm.id}`)).toEqual({ success: true });
+        deps = [...deps, `sc-${bm.id}`];
+      }
+      settleBracketWinners(controller.getTournament());
+      round++;
+    }
+
+    const placements = singleEliminationPlacementRows(controller.getTournament().bracketMatches, controller.getTournament());
+    expect(placements?.[0]).toEqual({ place: 1, playerId: 'p1' });
+    expect(placements?.[1]).toEqual({ place: 2, playerId: 'p2' });
+  });
+
+  it('should complete group round-robin and generate knockout bracket', () => {
+    const runner = new CommandRunner();
+    const ts = '2026-06-06T12:00:00.000Z';
+    const exec = (cmd: Parameters<CommandRunner['execute']>[0]) => runner.execute({ ...cmd, timestamp: ts });
+    const pids = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'] as const;
+    for (const id of pids) {
+      exec({ id, type: 'CreatePlayer', dependsOn: [], payload: { playerId: id, name: id, handicap: 0 } });
+    }
+    exec({ id: 'seed', type: 'SetSeedings', dependsOn: [...pids], payload: { playerIds: [...pids] } });
+    exec({ id: 'sg', type: 'SetGroups', dependsOn: ['seed'], payload: { targetGroupSize: 4, playerIds: [...pids] } });
+    const groupMatches = Object.keys(runner.getTournament().matches).filter((k) => k.startsWith('gm-')).sort();
+    expect(groupMatches).toHaveLength(12);
+    let deps: string[] = ['sg', 'seed'];
+    for (let i = 0; i < groupMatches.length; i++) {
+      exec({ id: `gs${i}`, type: 'EnterScore', dependsOn: ['sg'], payload: { matchId: groupMatches[i]!, scores: BO5_A } });
+      deps.push(`gs${i}`);
+    }
+    expect(
+      exec({
+        id: 'gen',
+        type: 'GenerateBracket',
+        dependsOn: deps,
+        payload: { fillByes: true, cullToPowerOfTwo: false, bracketSeedingMode: 'closed_form' },
+      }),
+    ).toEqual({ success: true });
+    expect(runner.getTournament().bracketMatches.filter((m) => m.round === 1).length).toBeGreaterThanOrEqual(4);
   });
 });
