@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import { selectCompetitionClassTab, selectClassTrackTab } from './app';
 
 export async function goToGroupsTab(page: Page): Promise<void> {
   await page.getByTestId('tab-groups').click();
@@ -8,6 +9,17 @@ export async function createGroupsByPlayerCount(page: Page, count: number): Prom
   await goToGroupsTab(page);
   await page.locator('.group-create-num').first().fill(String(count));
   await page.getByTestId('groups-create-by-players').click();
+}
+
+export async function createClassGroupsByPlayerCount(
+  page: Page,
+  className: string,
+  targetSize: number,
+): Promise<void> {
+  await selectCompetitionClassTab(page, className);
+  await selectClassTrackTab(page, 'Group phase');
+  await page.locator('.group-create-num').first().fill(String(targetSize));
+  await page.getByRole('button', { name: 'Create by player count', exact: true }).click();
 }
 
 export async function enableDoubles(page: Page): Promise<void> {

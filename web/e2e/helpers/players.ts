@@ -33,3 +33,25 @@ export async function debugFillPlayers(page: Page, count: number): Promise<void>
   await page.getByTestId('debug-fill-count').fill(String(count));
   await page.getByTestId('debug-fill-btn').click();
 }
+
+export async function assignPlayerToGroup(
+  page: Page,
+  playerName: string,
+  groupId: string,
+  className?: string,
+): Promise<void> {
+  await openPlayerModal(page, playerName);
+  let select = page.locator('.player-history-group-select');
+  if (className) {
+    const titledSection = page.locator('.player-history-section').filter({
+      has: page.locator('.player-history-track-title', { hasText: className }),
+    });
+    if ((await titledSection.count()) > 0) {
+      select = titledSection.locator('.player-history-group-select');
+    } else {
+      select = page.locator('.player-history-section').first().locator('.player-history-group-select');
+    }
+  }
+  await select.selectOption(groupId);
+  await page.keyboard.press('Escape');
+}

@@ -7,7 +7,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CommandRunner } from '../../../src/command';
 import { exportCommandsAsJsonLines } from '../../../src/storage';
-import { bracketPlayerMatchId } from '../../../src/model';
+import {
+  bracketMatchRound,
+  bracketPlayerMatchId,
+  bracketSlotAwaitingPlay,
+} from '../../../src/model';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const outDir = path.join(__dirname, '../fixtures');
@@ -224,9 +228,149 @@ function buildTwoClassMidBracket(): CommandRunner {
   return r;
 }
 
+function roundOneMatches(r: CommandRunner, classId: string) {
+  return r
+    .getTournament()
+    .classTournaments[classId]!.bracketMatches.filter((m) => bracketMatchRound(m) === 1);
+}
+
+function createBracketMatchRows(r: CommandRunner, classId: string, dep: string): string {
+  let lastDep = dep;
+  let tick = 100;
+  for (const bm of roundOneMatches(r, classId)) {
+    if (!bm.seedA || !bm.seedB) continue;
+    const mid = bracketPlayerMatchId(bm.id, classId);
+    const pairId = `pair-${classId}-${bm.id}`;
+    r.execute({
+      id: pairId,
+      type: 'CreateMatch',
+      dependsOn: [lastDep],
+      payload: { matchId: mid, playerA: bm.seedA, playerB: bm.seedB, classId },
+      timestamp: iso(tick++),
+    });
+    lastDep = pairId;
+  }
+  return lastDep;
+}
+
+function playOutClassBracket(r: CommandRunner, classId: string, dep: string): void {
+  let lastDep = createBracketMatchRows(r, classId, dep);
+  const t = () => r.getTournament();
+  for (;;) {
+    const open = t()
+      .classTournaments[classId]!.bracketMatches.filter(
+        (bm) => bm.seedA && bm.seedB && bracketSlotAwaitingPlay(t(), bm, classId),
+      );
+    if (open.length === 0) break;
+    open.sort((a, b) => bracketMatchRound(a) - bracketMatchRound(b) || a.id.localeCompare(b.id));
+    const bm = open[0]!;
+    const mid = bracketPlayerMatchId(bm.id, classId);
+    const cmdId = `score-${classId}-${bm.id}`;
+    r.execute({
+      id: cmdId,
+      type: 'EnterScore',
+      dependsOn: [lastDep],
+      payload: { matchId: mid, scores: bo5 },
+      timestamp: iso(500),
+    });
+    lastDep = cmdId;
+  }
+}
+
+function buildMultiClassJunFinished(): CommandRunner {
+  const r = new CommandRunner();
+  let t = 0;
+  const ts = () => iso(t++);
+
+  r.execute({
+    id: 'tc',
+    type: 'SetTournamentClasses',
+    dependsOn: [],
+    payload: { classes: [{ id: 'jun', name: 'Junior' }, { id: 'sen', name: 'Senior' }] },
+    timestamp: ts(),
+  });
+
+  for (let i = 1; i <= 20; i++) {
+    const pid = `p${i}`;
+    r.execute({
+      id: `cmd-${pid}`,
+      type: 'CreatePlayer',
+      dependsOn: ['tc'],
+      payload: {
+        playerId: pid,
+        name: i <= 4 ? `J${i}` : i <= 8 ? `S${i - 4}` : `P${i}`,
+        handicap: 0,
+      },
+      timestamp: ts(),
+    });
+  }
+
+  const allPids = Array.from({ length: 20 }, (_, i) => `p${i + 1}`);
+  r.execute({
+    id: 'seed',
+    type: 'SetSeedings',
+    dependsOn: allPids.map((p) => `cmd-${p}`),
+    payload: { playerIds: allPids },
+    timestamp: ts(),
+  });
+
+  for (const [pid, flags] of [
+    ['p1', { jun: true, sen: false }],
+    ['p2', { jun: true, sen: false }],
+    ['p3', { jun: true, sen: false }],
+    ['p4', { jun: true, sen: false }],
+    ['p5', { jun: false, sen: true }],
+    ['p6', { jun: false, sen: true }],
+    ['p7', { jun: false, sen: true }],
+    ['p8', { jun: false, sen: true }],
+  ] as const) {
+    r.execute({
+      id: `f-${pid}`,
+      type: 'SetPlayerClassFlags',
+      dependsOn: ['seed'],
+      payload: { playerId: pid, flags },
+      timestamp: ts(),
+    });
+  }
+
+  r.execute({
+    id: 'sg-jun',
+    type: 'SetClassGroups',
+    dependsOn: ['seed', 'f-p1', 'f-p2', 'f-p3', 'f-p4'],
+    payload: { classId: 'jun', targetGroupSize: 4, playerIds: ['p1', 'p2', 'p3', 'p4'] },
+    timestamp: ts(),
+  });
+
+  const junGroupMatches = Object.keys(r.getTournament().matches).filter((k) => k.startsWith('gm-jun-'));
+  let deps: string[] = ['sg-jun'];
+  junGroupMatches.forEach((mid, i) => {
+    const id = `jun-gsc-${i}`;
+    r.execute({
+      id,
+      type: 'EnterScore',
+      dependsOn: deps,
+      payload: { matchId: mid, scores: bo5 },
+      timestamp: ts(),
+    });
+    deps = [...deps, id];
+  });
+
+  r.execute({
+    id: 'gen-jun',
+    type: 'GenerateBracket',
+    dependsOn: deps,
+    payload: { fillByes: true, cullToPowerOfTwo: false, classId: 'jun' },
+    timestamp: ts(),
+  });
+
+  playOutClassBracket(r, 'jun', 'gen-jun');
+  return r;
+}
+
 fs.mkdirSync(path.join(outDir, 'corrupt'), { recursive: true });
 write('round-locked-r1.jsonl', buildRoundLockedR1());
 write('group-phase-complete.jsonl', buildGroupPhaseComplete());
 write('doubles-8-players.jsonl', buildDoubles8());
 write('two-class-mid-bracket.jsonl', buildTwoClassMidBracket());
+write('multi-class-jun-finished.jsonl', buildMultiClassJunFinished());
 fs.writeFileSync(path.join(outDir, 'corrupt', 'invalid-format.jsonl'), 'not jsonl\n', 'utf8');
