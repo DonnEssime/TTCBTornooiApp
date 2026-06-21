@@ -5,6 +5,9 @@
     buildPlayerMatchHistory,
     displayLabelForGroup,
     getCompetitionTrack,
+    isDoublesTrack,
+    pairDisplayLabel,
+    pairForPlayer,
     type PlayerMatchHistoryLine,
     type PlayerMatchHistoryTrackSection,
   } from 'ttc-tornooiapp';
@@ -97,8 +100,31 @@
     }
   }
 
-  function opponentName(opponentId: string): string {
+  function opponentName(opponentId: string, classId?: string): string {
+    if (isDoublesTrack(tournament, classId) && (tournament.pairs?.[opponentId] || (classId && tournament.classTournaments[classId]?.pairs?.[opponentId]))) {
+      return pairDisplayLabel(tournament, opponentId, classId, getLocale());
+    }
     return tournament.players[opponentId]?.name ?? opponentId;
+  }
+
+  function focalBracketSeed(classId?: string): string {
+    const pair = isDoublesTrack(tournament, classId) ? pairForPlayer(tournament, classId, playerId) : undefined;
+    return pair?.id ?? playerId;
+  }
+
+  function findBracketMatch(
+    bracketMatches: BracketMatch[],
+    round: number,
+    opponentId: string,
+    classId?: string,
+  ): BracketMatch | undefined {
+    const focal = focalBracketSeed(classId);
+    return bracketMatches.find(
+      (bm) =>
+        bm.round === round &&
+        ((bm.seedA === focal && bm.seedB === opponentId) ||
+          (bm.seedA === opponentId && bm.seedB === focal)),
+    );
   }
 
   function scoreText(line: PlayerMatchHistoryLine): string | null {
@@ -114,25 +140,21 @@
     for (const m of Object.values(tournament.matches)) {
       if (m.groupId !== groupId) continue;
       if (classId ? m.classId !== classId : Boolean(m.classId)) continue;
+      if (m.pairA && m.pairB) {
+        const pair = pairForPlayer(tournament, classId, playerId);
+        if (!pair) continue;
+        const ok =
+          (m.pairA === pair.id && m.pairB === opponentId) ||
+          (m.pairA === opponentId && m.pairB === pair.id);
+        if (ok) return m;
+        continue;
+      }
       const ok =
         (m.playerA === playerId && m.playerB === opponentId) ||
         (m.playerA === opponentId && m.playerB === playerId);
       if (ok) return m;
     }
     return undefined;
-  }
-
-  function findBracketMatch(
-    bracketMatches: BracketMatch[],
-    round: number,
-    opponentId: string,
-  ): BracketMatch | undefined {
-    return bracketMatches.find(
-      (bm) =>
-        bm.round === round &&
-        ((bm.seedA === playerId && bm.seedB === opponentId) ||
-          (bm.seedA === opponentId && bm.seedB === playerId)),
-    );
   }
 
   function groupMatchOutcome(
@@ -151,10 +173,12 @@
     round: number,
     opponentId: string,
     pid: string,
+    classId?: string,
   ): BracketSlotOutcome | null {
-    const bm = findBracketMatch(bracketMatches, round, opponentId);
+    const bm = findBracketMatch(bracketMatches, round, opponentId, classId);
     if (!bm) return null;
-    const side = bm.seedA === pid ? 'a' : 'b';
+    const focal = focalBracketSeed(classId);
+    const side = bm.seedA === focal ? 'a' : 'b';
     return bracketSlotOutcome(bm, side);
   }
 
@@ -310,7 +334,7 @@
                   class="player-history-opponent"
                   class:player-history-slot--winner={opponentOutcome === 'winner'}
                   class:player-history-slot--loser={opponentOutcome === 'loser'}
-                >{opponentName(line.opponentId)}</span>
+                >{opponentName(line.opponentId, track.classId)}</span>
               </li>
             {/each}
           </ul>
@@ -330,12 +354,14 @@
                   section.round,
                   line.opponentId,
                   playerId,
+                  track.classId,
                 )}
                 {@const opponentOutcome = bracketMatchOutcome(
                   track.bracketMatches,
                   section.round,
                   line.opponentId,
                   line.opponentId,
+                  track.classId,
                 )}
                 <li class="player-history-line">
                   <span
@@ -356,7 +382,7 @@
                     class="player-history-opponent"
                     class:player-history-slot--winner={opponentOutcome === 'winner'}
                     class:player-history-slot--loser={opponentOutcome === 'loser'}
-                  >{opponentName(line.opponentId)}</span>
+                  >{opponentName(line.opponentId, track.classId)}</span>
                 </li>
               {/each}
             </ul>

@@ -67,6 +67,7 @@ export const uiRemainingCatalog = {
     'Alle {{count}} geseede spelers zijn opgenomen, in seedingvolgorde.',
   ),
   'ui.group.createByPlayerCount': t('Create by player count', 'Aanmaken op aantal spelers'),
+  'ui.group.createByParticipantCount': t('Create by participant count', 'Aanmaken op aantal deelnemers'),
   'ui.group.createByGroupCount': t('Create by group count', 'Aanmaken op aantal groepen'),
   'ui.group.doublesRandomPartners': t('Doubles (random partners)', 'Dubbelspel (willekeurige partners)'),
   'ui.group.doublesEvenCountRequired': t(

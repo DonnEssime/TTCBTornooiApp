@@ -56,6 +56,16 @@ function gamesWonForSlot(t: Tournament, bm: BracketMatch, side: 'a' | 'b', class
   if (!pid) return null;
   const pm = t.matches[bracketPlayerMatchId(bm.id, classId)];
   if (!pm || pm.groupId || pm.scores.length === 0) return null;
+  if (pm.pairA && pm.pairB && (pm.pairA === pid || pm.pairB === pid)) {
+    const focalIsA = pm.pairA === pid;
+    let n = 0;
+    for (const g of pm.scores) {
+      const gw = gameWinner(g);
+      if (gw === 'A' && focalIsA) n++;
+      if (gw === 'B' && !focalIsA) n++;
+    }
+    return String(n);
+  }
   const asA = pm.playerA === pid;
   const asB = pm.playerB === pid;
   if (!asA && !asB) return null;

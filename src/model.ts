@@ -356,6 +356,29 @@ export function formatPlayerDisplayLabel(tournament: Tournament, playerId: Playe
   return out;
 }
 
+/** Average pair handicap (rounded down) when handicap is active; otherwise 0. */
+export function pairHandicapValue(tournament: Tournament, pair: CompetitionPair): number {
+  if (!isHandicapActive(tournament)) return 0;
+  const h1 = tournament.players[pair.playerIds[0]]?.handicap ?? 0;
+  const h2 = tournament.players[pair.playerIds[1]]?.handicap ?? 0;
+  return Math.floor((h1 + h2) / 2);
+}
+
+/** Plain-text pair label with optional combined handicap suffix, matching {@link formatPlayerDisplayLabel}. */
+export function formatPairDisplayLabel(
+  tournament: Tournament,
+  pair: CompetitionPair,
+  locale: Locale = 'en',
+): string {
+  const n1 = tournament.players[pair.playerIds[0]]?.name ?? pair.playerIds[0];
+  const n2 = tournament.players[pair.playerIds[1]]?.name ?? pair.playerIds[1];
+  let out = txt('model.pairDisplayLabel', locale, { a: n1, b: n2 });
+  if (isHandicapActive(tournament)) {
+    out += ` (${pairHandicapValue(tournament, pair)})`;
+  }
+  return out;
+}
+
 /** Sort player ids alphabetically by name (case-insensitive); does not mutate the input. */
 export function sortPlayerIdsByName(
   tournament: Tournament,
@@ -462,20 +485,28 @@ export function partitionPlayerCountIntoGroupSizes(playerCount: number, targetSi
   return partitionPlayerCountIntoGroupCount(playerCount, g);
 }
 
-/** Players per group for closed-form bracket layouts (2×4, 4×4, 8×4, 16×4). */
+/** Participants per group for closed-form bracket layouts (2×4, 4×4, 8×4, 16×4) — players in singles, pairs in doubles. */
 export const CLOSED_FORM_PLAYERS_PER_GROUP = 4;
+
+/** @deprecated Alias for {@link CLOSED_FORM_PLAYERS_PER_GROUP}; means bracket participants per group. */
+export const CLOSED_FORM_PARTICIPANTS_PER_GROUP = CLOSED_FORM_PLAYERS_PER_GROUP;
 
 const CLOSED_FORM_GROUP_COUNT_OPTIONS = [2, 4, 8, 16] as const;
 
-/** Smallest supported closed-form group count (2, 4, 8, or 16) that fits `ceil(playerCount / 4)`. */
-export function closedFormGroupCountForPlayerCount(playerCount: number): number {
-  const n = Math.max(0, Math.floor(playerCount));
+/** Smallest supported closed-form group count (2, 4, 8, or 16) that fits `ceil(participantCount / 4)`. */
+export function closedFormGroupCountForParticipantCount(participantCount: number): number {
+  const n = Math.max(0, Math.floor(participantCount));
   if (n === 0) return CLOSED_FORM_GROUP_COUNT_OPTIONS[0];
-  const need = Math.ceil(n / CLOSED_FORM_PLAYERS_PER_GROUP);
+  const need = Math.ceil(n / CLOSED_FORM_PARTICIPANTS_PER_GROUP);
   for (const g of CLOSED_FORM_GROUP_COUNT_OPTIONS) {
     if (g >= need) return g;
   }
   return CLOSED_FORM_GROUP_COUNT_OPTIONS[CLOSED_FORM_GROUP_COUNT_OPTIONS.length - 1];
+}
+
+/** @deprecated Use {@link closedFormGroupCountForParticipantCount}; argument is participant count. */
+export function closedFormGroupCountForPlayerCount(playerCount: number): number {
+  return closedFormGroupCountForParticipantCount(playerCount);
 }
 
 /** Split `playerCount` across `groupCount` consecutive groups (first groups get +1 when remainder). */
@@ -1116,6 +1147,136 @@ export function findGroupForPairId(
   return Object.values(rec).find((g) => g.pairIds?.includes(pairId));
 }
 
+export function findGroupMatchBetweenPairs(
+  tournament: Tournament,
+  groupId: string,
+  classId: string | undefined,
+  pairA: string,
+  pairB: string,
+): Match | undefined {
+  for (const m of Object.values(tournament.matches)) {
+    if (m.groupId !== groupId) continue;
+    if (classId ? m.classId !== classId : Boolean(m.classId)) continue;
+    if (!m.pairA || !m.pairB) continue;
+    const ok =
+      (m.pairA === pairA && m.pairB === pairB) || (m.pairA === pairB && m.pairB === pairA);
+    if (ok) return m;
+  }
+  return undefined;
+}
+
+/** Bracket/group participant ids for one group (pair ids in doubles, player ids in singles). */
+export function groupParticipantIds(
+  tournament: Tournament,
+  g: GroupDefinition,
+  classId: string | undefined,
+): readonly PlayerId[] {
+  if (isDoublesTrackFormat(tournament, classId) && g.pairIds?.length) {
+    return g.pairIds;
+  }
+  return g.playerIds;
+}
+
+export function groupParticipantCount(
+  tournament: Tournament,
+  g: GroupDefinition,
+  classId: string | undefined,
+): number {
+  return groupParticipantIds(tournament, g, classId).length;
+}
+
+export function isTrackParticipantId(
+  tournament: Tournament,
+  id: PlayerId,
+  classId: string | undefined,
+): boolean {
+  if (trackPairsRecord(tournament, classId)[id]) return true;
+  return Boolean(tournament.players[id]);
+}
+
+export function findGroupForParticipant(
+  tournament: Tournament,
+  participantId: PlayerId,
+  classId: string | undefined,
+): GroupDefinition | undefined {
+  if (trackPairsRecord(tournament, classId)[participantId]) {
+    return findGroupForPairId(tournament, participantId, classId);
+  }
+  return findGroupForPlayer(tournament, participantId, classId);
+}
+
+export function unionGroupParticipantIds(
+  tournament: Tournament,
+  classId: string | undefined,
+): PlayerId[] {
+  const groups = sortGroupDefinitionsStable(groupRecordForBracketScope(tournament, classId));
+  const out: PlayerId[] = [];
+  const seen = new Set<PlayerId>();
+  for (const g of groups) {
+    for (const pid of groupParticipantIds(tournament, g, classId)) {
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      out.push(pid);
+    }
+  }
+  return out;
+}
+
+export type BracketSeedMatchSide = {
+  playerId: PlayerId;
+  pairId?: string;
+};
+
+/** Map a bracket seed (player or pair id) to match row player + optional pair fields. */
+export function bracketSeedToMatchSide(
+  tournament: Tournament,
+  seed: PlayerId,
+  classId: string | undefined,
+): BracketSeedMatchSide {
+  const pair = trackPairsRecord(tournament, classId)[seed];
+  if (pair) {
+    return { playerId: pair.playerIds[0]!, pairId: seed };
+  }
+  return { playerId: seed };
+}
+
+export function bracketSeedsMatchSides(
+  tournament: Tournament,
+  seedA: PlayerId,
+  seedB: PlayerId,
+  classId: string | undefined,
+): { playerA: PlayerId; playerB: PlayerId; pairA?: string; pairB?: string } {
+  const a = bracketSeedToMatchSide(tournament, seedA, classId);
+  const b = bracketSeedToMatchSide(tournament, seedB, classId);
+  return {
+    playerA: a.playerId,
+    playerB: b.playerId,
+    ...(a.pairId ? { pairA: a.pairId } : {}),
+    ...(b.pairId ? { pairB: b.pairId } : {}),
+  };
+}
+
+function bracketSeedHasForfeit(
+  tournament: Tournament,
+  seed: PlayerId,
+  classId: string | undefined,
+): boolean {
+  const pair = trackPairsRecord(tournament, classId)[seed];
+  if (pair) {
+    return pair.playerIds.some((pid) =>
+      playerForfeitAppliesToTrack(tournament.forfeits?.players?.[pid], 'bracket', classId),
+    );
+  }
+  return playerForfeitAppliesToTrack(tournament.forfeits?.players?.[seed], 'bracket', classId);
+}
+
+function bracketWinnerFromMatch(tournament: Tournament, match: Match): PlayerId | undefined {
+  if (!match.winner) return undefined;
+  const pairWinner = winningPairIdFromMatch(match);
+  if (pairWinner) return pairWinner;
+  return match.winner;
+}
+
 function sortGroupDefinitionsStable(groups: Record<string, GroupDefinition>): GroupDefinition[] {
   return Object.values(groups).sort((a, b) => {
     const na = Number(a.id);
@@ -1172,6 +1333,9 @@ export type BracketGroupLayoutScope = {
   maxGroupSize: number;
   minGroupSize: number;
   equalSized: boolean;
+  /** Total bracket participants in scope (pairs in doubles, players in singles). */
+  participantCount: number;
+  /** @deprecated Use {@link BracketGroupLayoutScope.participantCount}. */
   playerCount: number;
 };
 
@@ -1181,21 +1345,23 @@ function bracketGroupLayoutScopeFromGroupsOnly(
 ): BracketGroupLayoutScope | null {
   const groups = sortGroupDefinitionsStable(groupRecordForBracketScope(tournament, classId));
   if (groups.length === 0) return null;
-  const sizes = groups.map((g) => g.playerIds.length);
+  const sizes = groups.map((g) => groupParticipantCount(tournament, g, classId));
   const minGroupSize = Math.min(...sizes);
   const maxGroupSize = Math.max(...sizes);
   if (minGroupSize < 2) return null;
+  const participantCount = sizes.reduce((sum, sz) => sum + sz, 0);
   return {
     G: groups.length,
     maxGroupSize,
     minGroupSize,
     equalSized: sizes.every((sz) => sz === sizes[0]),
-    playerCount: sizes.reduce((sum, sz) => sum + sz, 0),
+    participantCount,
+    playerCount: participantCount,
   };
 }
 
 /**
- * Group grid metadata when `participantIds` is exactly the union of all group members (typical seedings).
+ * Group grid metadata when `participantIds` is exactly the union of all group participants (typical bracket seedings).
  */
 export function bracketGroupLayoutScope(
   tournament: Tournament,
@@ -1211,12 +1377,12 @@ export function bracketGroupLayoutScope(
   const groups = sortGroupDefinitionsStable(groupRecordForBracketScope(tournament, classId));
   const union = new Set<PlayerId>();
   for (const g of groups) {
-    for (const pid of g.playerIds) union.add(pid);
+    for (const pid of groupParticipantIds(tournament, g, classId)) union.add(pid);
   }
-  if (scope.playerCount !== participantIds.length || union.size !== participantIds.length) return null;
+  if (scope.participantCount !== participantIds.length || union.size !== participantIds.length) return null;
   if (![...union].every((id) => pset.has(id))) return null;
   for (const pid of participantIds) {
-    if (!findGroupForPlayer(tournament, pid, classId)) return null;
+    if (!findGroupForParticipant(tournament, pid, classId)) return null;
   }
   return scope;
 }
@@ -1467,7 +1633,7 @@ export function orderParticipantsForGroupBalancedBracket(
   /** Virtual **G_tgt × S_tgt** grid: real groups first (padded to `S_tgt`), then all-dummy groups. */
   const pidForVirtual = (gi: number, place: number): PlayerId => {
     if (gi < G) {
-      const groupSize = groups[gi]!.playerIds.length;
+      const groupSize = groupParticipantCount(tournament, groups[gi]!, classId);
       if (place <= groupSize) return pidForReal(gi, place);
       if (place <= S_tgt) return bracketLayoutDummyPadPid(groups[gi]!.id, place);
       throw new Error(`place ${place} out of range for padded group`);
@@ -2293,21 +2459,22 @@ function resolveBracketPartitionEntriesForBestEffort(
   const union = new Set<PlayerId>();
   let sumSizes = 0;
   for (const g of groups) {
-    sumSizes += g.playerIds.length;
-    for (const pid of g.playerIds) union.add(pid);
+    sumSizes += groupParticipantCount(tournament, g, classId);
+    for (const pid of groupParticipantIds(tournament, g, classId)) union.add(pid);
   }
   if (sumSizes !== P || union.size !== P || ![...union].every((id) => pset.has(id))) {
     return null;
   }
   for (const pid of participantIds) {
-    if (!findGroupForPlayer(tournament, pid, classId)) return null;
+    if (!findGroupForParticipant(tournament, pid, classId)) return null;
   }
 
   const entries: BracketPartitionEntry[] = [];
   for (let gi = 0; gi < groups.length; gi++) {
     const g = groups[gi]!;
     const rows = groupStandingsRowsForBracket(tournament, g, classId);
-    if (rows.length !== g.playerIds.length) return null;
+    const nParticipants = groupParticipantCount(tournament, g, classId);
+    if (rows.length !== nParticipants) return null;
     for (let place = 1; place <= rows.length; place++) {
       entries.push({ pid: rows[place - 1]!.pid, groupIndex: gi, place });
     }
@@ -2512,9 +2679,7 @@ export function formatBracketSlotPlayerLabel(
   if (pair) {
     const g = findGroupForPairId(tournament, playerId, classId);
     if (!g || groupAllMatchesFinished(tournament, g, classId)) {
-      const n1 = tournament.players[pair.playerIds[0]]?.name ?? pair.playerIds[0];
-      const n2 = tournament.players[pair.playerIds[1]]?.name ?? pair.playerIds[1];
-      return txt('model.pairDisplayLabel', locale, { a: n1, b: n2 });
+      return formatPairDisplayLabel(tournament, pair, locale);
     }
     const place = currentGroupPlace1Based(tournament, g, playerId, classId);
     return txt('model.bracketSlotPlaceLabel', locale, {
@@ -2598,7 +2763,9 @@ export function cullSeedingsByGroupPlacement(
 
   const remaining = new Set(seedings);
   let removed = 0;
-  const maxPlace = Math.max(...Object.values(groupsRecord).map((g) => g.playerIds.length));
+  const maxPlace = Math.max(
+    ...Object.values(groupsRecord).map((g) => groupParticipantCount(tournament, g, classId)),
+  );
 
   for (let placeNum = maxPlace; placeNum >= 2 && removed < toRemove; placeNum--) {
     const tier = [...remaining].filter((pid) => placement.get(pid)!.place === placeNum);
@@ -2649,9 +2816,10 @@ export function splitParticipantsTopFourPerGroup(
   const union = new Set<PlayerId>();
   let sumSizes = 0;
   for (const g of groups) {
-    if (g.playerIds.length < topN) return null;
-    sumSizes += g.playerIds.length;
-    for (const pid of g.playerIds) union.add(pid);
+    const n = groupParticipantCount(tournament, g, classId);
+    if (n < topN) return null;
+    sumSizes += n;
+    for (const pid of groupParticipantIds(tournament, g, classId)) union.add(pid);
   }
   if (sumSizes !== participantIds.length || union.size !== participantIds.length) return null;
 
@@ -2659,7 +2827,8 @@ export function splitParticipantsTopFourPerGroup(
   const culled: PlayerId[] = [];
   for (const g of groups) {
     const rows = groupStandingsRowsForBracket(tournament, g, classId);
-    if (rows.length !== g.playerIds.length) return null;
+    const nParticipants = groupParticipantCount(tournament, g, classId);
+    if (rows.length !== nParticipants) return null;
     for (let i = 0; i < rows.length; i++) {
       const pid = rows[i]!.pid;
       if (!pset.has(pid)) return null;
@@ -2686,19 +2855,21 @@ export function resolveClosedFormBracketSeedingKind(
   if (!isClosedFormGroupCount(G) || !isExactClosedFormBracketGrid(G, CLOSED_FORM_PLAYERS_PER_GROUP)) {
     return null;
   }
-  if (groups.some((g) => g.playerIds.length < CLOSED_FORM_PLAYERS_PER_GROUP)) return null;
+  if (groups.some((g) => groupParticipantCount(tournament, g, classId) < CLOSED_FORM_PLAYERS_PER_GROUP)) {
+    return null;
+  }
 
   const pset = new Set(participantIds);
   if (pset.size !== participantIds.length) return null;
 
   const union = new Set<PlayerId>();
   for (const g of groups) {
-    for (const pid of g.playerIds) union.add(pid);
+    for (const pid of groupParticipantIds(tournament, g, classId)) union.add(pid);
   }
   if (union.size !== participantIds.length || ![...union].every((id) => pset.has(id))) return null;
 
   for (const pid of participantIds) {
-    if (!findGroupForPlayer(tournament, pid, classId)) return null;
+    if (!findGroupForParticipant(tournament, pid, classId)) return null;
   }
 
   const split = splitParticipantsTopFourPerGroup(tournament, participantIds, classId);
@@ -3112,6 +3283,68 @@ function findMatchByPlayers(
   });
 }
 
+function findMatchByBracketSeeds(
+  tournament: Tournament,
+  seedA: string,
+  seedB: string,
+  classId?: string,
+): Match | undefined {
+  const sides = bracketSeedsMatchSides(tournament, seedA, seedB, classId);
+  return Object.values(tournament.matches).find((m) => {
+    if (m.groupId || !knockoutMatchHasDecisiveOutcome(m)) return false;
+    let same = false;
+    if (sides.pairA && sides.pairB && m.pairA && m.pairB) {
+      same =
+        (m.pairA === sides.pairA && m.pairB === sides.pairB) ||
+        (m.pairA === sides.pairB && m.pairB === sides.pairA);
+    }
+    if (!same) {
+      same =
+        (m.playerA === sides.playerA && m.playerB === sides.playerB) ||
+        (m.playerA === sides.playerB && m.playerB === sides.playerA);
+    }
+    if (!same) return false;
+    if (classId !== undefined) {
+      const inferred = inferBracketClassIdFromPlayerMatchId(tournament, m.id);
+      return (m.classId ?? inferred) === classId;
+    }
+    if (m.classId) return false;
+    return inferBracketClassIdFromPlayerMatchId(tournament, m.id) === undefined;
+  });
+}
+
+function bracketMatchForPlayerMatch(
+  tournament: Tournament,
+  match: Match,
+  bracketMatches: BracketMatch[],
+): BracketMatch | undefined {
+  if (match.id.startsWith('match-')) {
+    const parsed = parseBracketPlayerMatchId(tournament, match.id);
+    const bid = parsed?.bracketSlotId ?? match.id.slice('match-'.length);
+    const byId = bracketMatches.find((x) => x.id === bid);
+    if (byId) return byId;
+  }
+  for (const bm of bracketMatches) {
+    if (!bm.seedA || !bm.seedB) continue;
+    if (match.pairA && match.pairB) {
+      if (
+        (bm.seedA === match.pairA && bm.seedB === match.pairB) ||
+        (bm.seedA === match.pairB && bm.seedB === match.pairA)
+      ) {
+        return bm;
+      }
+    }
+    const sides = bracketSeedsMatchSides(tournament, bm.seedA, bm.seedB, match.classId);
+    if (
+      (match.playerA === sides.playerA && match.playerB === sides.playerB) ||
+      (match.playerA === sides.playerB && match.playerB === sides.playerA)
+    ) {
+      return bm;
+    }
+  }
+  return undefined;
+}
+
 /** Bracket slot id → canonical player match id used by the app and {@link ensureBracketPhasePlayerMatches}. */
 export function bracketPlayerMatchId(bracketMatchId: string, classId?: string): string {
   const cid = classId?.trim();
@@ -3300,24 +3533,14 @@ export function canMutateBracketPlayerMatch(
   lockedBracketRounds: number[],
 ): boolean {
   if (match.groupId) return true;
-  const round = findBracketRoundForPlayerPairingIn(bracketMatches, match.playerA, match.playerB);
+  const bm = bracketMatchForPlayerMatch(tournament, match, bracketMatches);
+  const round =
+    bm !== undefined
+      ? bracketMatchRound(bm)
+      : findBracketRoundForPlayerPairingIn(bracketMatches, match.playerA, match.playerB);
   if (round === undefined) return true;
   if (lockedBracketRounds.includes(round)) return false;
   const classId = match.classId ?? inferBracketClassIdFromPlayerMatchId(tournament, match.id);
-  let bm: BracketMatch | undefined;
-  if (match.id.startsWith('match-')) {
-    const parsed = parseBracketPlayerMatchId(tournament, match.id);
-    const bid = parsed?.bracketSlotId ?? match.id.slice('match-'.length);
-    bm = bracketMatches.find((x) => x.id === bid);
-  }
-  if (!bm) {
-    bm = bracketMatches.find(
-      (x) =>
-        x.seedA &&
-        x.seedB &&
-        ((x.seedA === match.playerA && x.seedB === match.playerB) || (x.seedA === match.playerB && x.seedB === match.playerA)),
-    );
-  }
   if (!bm) return true;
   return !bracketDownstreamMatchHasScores(tournament, bracketMatches, bm, classId);
 }
@@ -3357,9 +3580,19 @@ export function syncBracketMatchPlayerRows(
     if (!m || m.groupId) continue;
     const untouched = m.status === 'scheduled' && m.scores.length === 0;
     if (!untouched) continue;
-    if (m.playerA !== bm.seedA || m.playerB !== bm.seedB) {
-      m.playerA = bm.seedA;
-      m.playerB = bm.seedB;
+    const sides = bracketSeedsMatchSides(tournament, bm.seedA, bm.seedB, classId);
+    const needsUpdate =
+      m.playerA !== sides.playerA ||
+      m.playerB !== sides.playerB ||
+      m.pairA !== sides.pairA ||
+      m.pairB !== sides.pairB;
+    if (needsUpdate) {
+      m.playerA = sides.playerA;
+      m.playerB = sides.playerB;
+      if (sides.pairA) m.pairA = sides.pairA;
+      else delete m.pairA;
+      if (sides.pairB) m.pairB = sides.pairB;
+      else delete m.pairB;
     }
   }
 }
@@ -3383,7 +3616,13 @@ export function bracketRoundHasFinishedPlayerMatchIn(
 ): boolean {
   for (const m of Object.values(tournament.matches)) {
     if (m.groupId) continue;
-    const r = findBracketRoundForPlayerPairingIn(bracketMatches, m.playerA, m.playerB);
+    let r: number | undefined;
+    if (m.pairA && m.pairB) {
+      r = findBracketRoundForPlayerPairingIn(bracketMatches, m.pairA, m.pairB);
+    }
+    if (r === undefined) {
+      r = findBracketRoundForPlayerPairingIn(bracketMatches, m.playerA, m.playerB);
+    }
     if (
       r === round &&
       (m.status === 'finished' || m.status === 'eliminated' || m.status === 'forfeit' || m.scores.length > 0)
@@ -3422,8 +3661,7 @@ export function settleBracketWinnersIn(
     // the latter case the remaining player auto-advances (same as a bye).
     if (bm.seedA && !bm.seedB) {
       if (rBm === 1) {
-        const fa = tournament.forfeits?.players?.[bm.seedA];
-        bm.winner = playerForfeitAppliesToTrack(fa, 'bracket', classId) ? undefined : bm.seedA;
+        bm.winner = bracketSeedHasForfeit(tournament, bm.seedA, classId) ? undefined : bm.seedA;
       } else {
         const [, right] = bracketFeederPairForMatchIn(bracketMatches, bm);
         const structuralMissingB =
@@ -3431,8 +3669,7 @@ export function settleBracketWinnersIn(
           right!.winner !== undefined &&
           bracketWinnerToNextRoundSeed(right!.winner) === undefined;
         if (structuralMissingB) {
-          const fa = tournament.forfeits?.players?.[bm.seedA];
-          bm.winner = playerForfeitAppliesToTrack(fa, 'bracket', classId) ? undefined : bm.seedA;
+          bm.winner = bracketSeedHasForfeit(tournament, bm.seedA, classId) ? undefined : bm.seedA;
         } else {
           bm.winner = undefined;
         }
@@ -3441,8 +3678,7 @@ export function settleBracketWinnersIn(
     }
     if (!bm.seedA && bm.seedB) {
       if (rBm === 1) {
-        const fb = tournament.forfeits?.players?.[bm.seedB];
-        bm.winner = playerForfeitAppliesToTrack(fb, 'bracket', classId) ? undefined : bm.seedB;
+        bm.winner = bracketSeedHasForfeit(tournament, bm.seedB, classId) ? undefined : bm.seedB;
       } else {
         const [left] = bracketFeederPairForMatchIn(bracketMatches, bm);
         const structuralMissingA =
@@ -3450,8 +3686,7 @@ export function settleBracketWinnersIn(
           left!.winner !== undefined &&
           bracketWinnerToNextRoundSeed(left!.winner) === undefined;
         if (structuralMissingA) {
-          const fb = tournament.forfeits?.players?.[bm.seedB];
-          bm.winner = playerForfeitAppliesToTrack(fb, 'bracket', classId) ? undefined : bm.seedB;
+          bm.winner = bracketSeedHasForfeit(tournament, bm.seedB, classId) ? undefined : bm.seedB;
         } else {
           bm.winner = undefined;
         }
@@ -3461,10 +3696,8 @@ export function settleBracketWinnersIn(
 
     const seedA = bm.seedA!;
     const seedB = bm.seedB!;
-    const seedAforfeit = tournament.forfeits?.players?.[seedA];
-    const seedBforfeit = tournament.forfeits?.players?.[seedB];
-    const seedABracketForfeit = playerForfeitAppliesToTrack(seedAforfeit, 'bracket', classId);
-    const seedBBracketForfeit = playerForfeitAppliesToTrack(seedBforfeit, 'bracket', classId);
+    const seedABracketForfeit = bracketSeedHasForfeit(tournament, seedA, classId);
+    const seedBBracketForfeit = bracketSeedHasForfeit(tournament, seedB, classId);
 
     if (seedABracketForfeit && !seedBBracketForfeit) {
       bm.winner = seedB;
@@ -3484,10 +3717,10 @@ export function settleBracketWinnersIn(
     const match =
       direct && !direct.groupId && knockoutMatchHasDecisiveOutcome(direct)
         ? direct
-        : findMatchByPlayers(tournament, seedA, seedB, classId);
+        : findMatchByBracketSeeds(tournament, seedA, seedB, classId);
 
     if (match && !match.groupId && knockoutMatchHasDecisiveOutcome(match)) {
-      bm.winner = match.winner;
+      bm.winner = bracketWinnerFromMatch(tournament, match);
     }
   }
   return tournament;
@@ -3515,13 +3748,18 @@ export function ensureBracketPhasePlayerMatchesIn(
     if (!bm.seedA || !bm.seedB || bm.winner) continue;
     const mid = bracketPlayerMatchId(bm.id, classId);
     if (tournament.matches[mid]) continue;
-    if (!tournament.players[bm.seedA] || !tournament.players[bm.seedB]) continue;
+    if (!isTrackParticipantId(tournament, bm.seedA, classId) || !isTrackParticipantId(tournament, bm.seedB, classId)) {
+      continue;
+    }
+    const sides = bracketSeedsMatchSides(tournament, bm.seedA, bm.seedB, classId);
     tournament.matches[mid] = {
       id: mid,
-      playerA: bm.seedA,
-      playerB: bm.seedB,
+      playerA: sides.playerA,
+      playerB: sides.playerB,
       scores: [],
       status: 'scheduled',
+      ...(sides.pairA ? { pairA: sides.pairA } : {}),
+      ...(sides.pairB ? { pairB: sides.pairB } : {}),
       ...(classId ? { classId } : {}),
     };
   }
@@ -3532,12 +3770,12 @@ function bracketFinishRankMeta(
   pid: PlayerId,
   classId: string | undefined,
 ): { idx: number; groupSize: number } | null {
-  const g = findGroupForPlayer(tournament, pid, classId);
+  const g = findGroupForParticipant(tournament, pid, classId);
   if (!g) return null;
   const rows = groupStandingsRowsForBracket(tournament, g, classId);
   const idx = rows.findIndex((r) => r.pid === pid);
   if (idx < 0) return null;
-  return { idx, groupSize: g.playerIds.length };
+  return { idx, groupSize: groupParticipantCount(tournament, g, classId) };
 }
 
 function pickBracketEliminationLoser(
@@ -3562,7 +3800,9 @@ function bracketMatchOpenForElimination(
   const a = bm.seedA;
   const b = bm.seedB;
   if (!a || !b) return false;
-  if (!tournament.players[a] || !tournament.players[b]) return false;
+  if (!isTrackParticipantId(tournament, a, classId) || !isTrackParticipantId(tournament, b, classId)) {
+    return false;
+  }
 
   const mid = bracketPlayerMatchId(bm.id, classId);
   const existing = tournament.matches[mid];
@@ -3630,24 +3870,37 @@ export function eliminateLowestRankedPlayersInBracketRound(
 
     const loser = pickBracketEliminationLoser(a, ra, b, rb, `${salt}:${bm.id}`);
     const winner = loser === a ? b : a;
+    const sides = bracketSeedsMatchSides(tournament, a, b, classId);
 
     if (!existing) {
       tournament.matches[mid] = {
         id: mid,
-        playerA: a,
-        playerB: b,
+        playerA: sides.playerA,
+        playerB: sides.playerB,
         scores: [],
         status: 'scheduled',
+        ...(sides.pairA ? { pairA: sides.pairA } : {}),
+        ...(sides.pairB ? { pairB: sides.pairB } : {}),
         ...(classId ? { classId } : {}),
       };
     }
     const m = tournament.matches[mid]!;
     if (m.groupId) continue;
-    m.playerA = a;
-    m.playerB = b;
+    m.playerA = sides.playerA;
+    m.playerB = sides.playerB;
+    if (sides.pairA) m.pairA = sides.pairA;
+    else delete m.pairA;
+    if (sides.pairB) m.pairB = sides.pairB;
+    else delete m.pairB;
     m.scores = [];
     m.status = 'eliminated';
-    m.winner = winner;
+    m.winner = sides.pairA && sides.pairB ? (winner === a ? sides.playerA : sides.playerB) : winner;
+    if (sides.pairA && sides.pairB) {
+      m.winnerPairId = winner;
+    } else {
+      delete m.winnerPairId;
+    }
+    bm.winner = winner;
     changed++;
   }
 

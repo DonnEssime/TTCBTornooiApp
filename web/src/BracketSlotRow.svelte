@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { BracketMatch, Tournament } from 'ttc-tornooiapp';
-  import { bracketPlayerMatchId, gameWinner } from 'ttc-tornooiapp';
+  import { bracketPlayerMatchId, gameWinner, isTrackParticipantId } from 'ttc-tornooiapp';
   import { bracketSlotOutcome } from './bracketStream/slotOutcome';
   import PlayerName from './PlayerName.svelte';
 
@@ -26,6 +26,16 @@
     if (!pid) return null;
     const pm = t.matches[bracketPlayerMatchId(match.id, bracketClassId)];
     if (!pm || pm.groupId || pm.scores.length === 0) return null;
+    if (pm.pairA && pm.pairB && (pm.pairA === pid || pm.pairB === pid)) {
+      const focalIsA = pm.pairA === pid;
+      let n = 0;
+      for (const g of pm.scores) {
+        const w = gameWinner(g);
+        if (w === 'A' && focalIsA) n++;
+        if (w === 'B' && !focalIsA) n++;
+      }
+      return n;
+    }
     const asA = pm.playerA === pid;
     const asB = pm.playerB === pid;
     if (!asA && !asB) return null;
@@ -40,7 +50,9 @@
 
   const outcome = $derived(bracketSlotOutcome(bm, side));
   const games = $derived(gamesWonForBracketSlot(tournament, bm, side));
-  const showPlayerName = $derived(Boolean(playerId && tournament.players[playerId]));
+  const showPlayerName = $derived(
+    Boolean(playerId && (tournament.players[playerId] || isTrackParticipantId(tournament, playerId, bracketClassId))),
+  );
 </script>
 
 <div

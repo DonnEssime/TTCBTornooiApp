@@ -3,6 +3,7 @@ import {
   tournamentUsesClassTabs,
   trackTitle,
 } from './competition-track';
+import { isDoublesTrack, pairForPlayer } from './doubles-track';
 import {
   type BracketMatch,
   type GroupDefinition,
@@ -11,7 +12,9 @@ import {
   type Tournament,
   bracketPlayerMatchId,
   findGroupForPlayer,
+  findGroupMatchBetweenPairs,
   gameWinner,
+  isTrackParticipantId,
   matchesOnTablesInAssignmentOrder,
 } from './model';
 import { isGroupMatchFinished } from './match-ordering';
@@ -138,9 +141,14 @@ function compareGroupHistoryLinesByPlayOrder(
   classId: string | undefined,
   a: PlayerMatchHistoryLine,
   b: PlayerMatchHistoryLine,
+  doublesPairId?: string,
 ): number {
-  const matchA = findGroupMatchBetweenPlayers(tournament, groupId, playerId, a.opponentId, classId);
-  const matchB = findGroupMatchBetweenPlayers(tournament, groupId, playerId, b.opponentId, classId);
+  const matchA = doublesPairId
+    ? findGroupMatchBetweenPairs(tournament, groupId, classId, doublesPairId, a.opponentId)
+    : findGroupMatchBetweenPlayers(tournament, groupId, playerId, a.opponentId, classId);
+  const matchB = doublesPairId
+    ? findGroupMatchBetweenPairs(tournament, groupId, classId, doublesPairId, b.opponentId)
+    : findGroupMatchBetweenPlayers(tournament, groupId, playerId, b.opponentId, classId);
   return compareGroupMatchPlayOrderKeys(
     groupMatchPlayOrderKey(tournament, matchA, a.opponentId),
     groupMatchPlayOrderKey(tournament, matchB, b.opponentId),
@@ -153,11 +161,18 @@ function bracketLinesForPlayer(
   playerId: PlayerId,
   classId?: string,
 ): PlayerMatchHistoryBracketSection[] {
+  const focalPair = isDoublesTrack(tournament, classId) ? pairForPlayer(tournament, classId, playerId) : undefined;
   const byRound = new Map<number, PlayerMatchHistoryLine[]>();
   for (const bm of bracketMatches) {
-    if (bm.seedA !== playerId && bm.seedB !== playerId) continue;
-    const opponentId = bm.seedA === playerId ? bm.seedB : bm.seedA;
-    if (!opponentId || !tournament.players[opponentId]) continue;
+    let opponentId: PlayerId | undefined;
+    if (focalPair) {
+      if (bm.seedA !== focalPair.id && bm.seedB !== focalPair.id) continue;
+      opponentId = bm.seedA === focalPair.id ? bm.seedB : bm.seedA;
+    } else {
+      if (bm.seedA !== playerId && bm.seedB !== playerId) continue;
+      opponentId = bm.seedA === playerId ? bm.seedB : bm.seedA;
+    }
+    if (!opponentId || !isTrackParticipantId(tournament, opponentId, classId)) continue;
     const pm = tournament.matches[bracketPlayerMatchId(bm.id, classId)];
     const score = pm && !pm.groupId ? matchDecidedGamesWon(pm, playerId) : null;
     const round = bm.round;
@@ -178,20 +193,42 @@ function buildTrackSection(
 ): PlayerMatchHistoryTrackSection {
   const track = getCompetitionTrack(tournament, classId);
   const group = findGroupForPlayer(tournament, playerId, classId);
-  const groupsExist = Object.keys(track.groups).length > 0;
+  const focalPair = isDoublesTrack(tournament, classId) ? pairForPlayer(tournament, classId, playerId) : undefined;
 
   let groupSection: PlayerMatchHistoryGroupSection | null = null;
   if (group) {
     const lines: PlayerMatchHistoryLine[] = [];
-    for (const opponentId of group.playerIds) {
-      if (opponentId === playerId) continue;
-      const match = findGroupMatchBetweenPlayers(tournament, group.id, playerId, opponentId, classId);
-      lines.push({
-        opponentId,
-        score: match ? matchDecidedGamesWon(match, playerId) : null,
-      });
+    if (focalPair && group.pairIds?.length) {
+      for (const oppPairId of group.pairIds) {
+        if (oppPairId === focalPair.id) continue;
+        const match = findGroupMatchBetweenPairs(tournament, group.id, classId, focalPair.id, oppPairId);
+        const rep = tournament.players[focalPair.playerIds[0]!]?.id ?? focalPair.playerIds[0]!;
+        lines.push({
+          opponentId: oppPairId,
+          score: match ? matchDecidedGamesWon(match, rep) : null,
+        });
+      }
+    } else {
+      for (const opponentId of group.playerIds) {
+        if (opponentId === playerId) continue;
+        const match = findGroupMatchBetweenPlayers(tournament, group.id, playerId, opponentId, classId);
+        lines.push({
+          opponentId,
+          score: match ? matchDecidedGamesWon(match, playerId) : null,
+        });
+      }
     }
-    lines.sort((a, b) => compareGroupHistoryLinesByPlayOrder(tournament, group.id, playerId, classId, a, b));
+    lines.sort((a, b) =>
+      compareGroupHistoryLinesByPlayOrder(
+        tournament,
+        group.id,
+        playerId,
+        classId,
+        a,
+        b,
+        focalPair?.id,
+      ),
+    );
     groupSection = { kind: 'group', group, lines };
   }
 

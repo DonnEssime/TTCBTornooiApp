@@ -221,6 +221,14 @@ export const uiCatalog = {
     'Target players per group for class',
     'Gewenst aantal spelers per groep voor reeks',
   ),
+  'ui.target_participants_per_group': t(
+    'Target participants (pairs) per group',
+    'Gewenst aantal deelnemers (koppels) per groep',
+  ),
+  'ui.target_participants_per_group_for_class': t(
+    'Target participants (pairs) per group for class',
+    'Gewenst aantal deelnemers (koppels) per groep voor reeks',
+  ),
   'ui.team_vs_team': t('Team vs team', 'Team tegen team'),
   'ui.this_tournament_has_multiple_competition_classes': t(
     'This tournament has multiple competition classes. Per-class bracket generation from each class tab will be added next; the global bracket control is disabled.',

@@ -24,6 +24,7 @@ import {
   clearTrackFormatAndPairs,
   formRandomPairs,
   pairsRecordFromList,
+  trackBracketParticipants,
 } from './doubles-track';
 import { groupPhaseCounts, type GroupProgressSnapshot } from './match-ordering';
 
@@ -202,8 +203,8 @@ export function setTrackGroups(
     if (hasSize) {
       const ts = Number((payload as { targetGroupSize: number }).targetGroupSize);
       const tInt = Math.floor(ts);
-      if (!Number.isFinite(ts) || tInt < 2 || tInt % 2 !== 0) {
-        return { key: 'command.doublesTargetGroupSizeEven' };
+      if (!Number.isFinite(ts) || tInt < 1) {
+        return { key: 'command.targetGroupSizePositive' };
       }
       groupDefs = buildNumberedGroupsFromPairOrder(shuffledPairs, tInt);
     } else {
@@ -276,7 +277,9 @@ export function setTrackGroups(
   }
 
   clearTrackGroupMatches(tournament, trackClassId);
-  clearTrackFormatAndPairs(tournament, trackClassId);
+  if (format !== 'doubles-random-partners') {
+    clearTrackFormatAndPairs(tournament, trackClassId);
+  }
 
   const rec: Record<string, GroupDefinition> = {};
   const gidSeen = new Set<string>();
@@ -322,6 +325,27 @@ export function setTrackGroups(
   });
   if (err) {
     return err;
+  }
+  if (format === 'doubles-random-partners') {
+    const pairsRec: Record<string, CompetitionPair> = {};
+    for (const g of Object.values(rec)) {
+      for (const pairId of g.pairIds ?? []) {
+        if (pairsRec[pairId]) continue;
+        const m = /^pair-(.+)-(.+)$/.exec(pairId);
+        if (!m) {
+          return { key: 'command.unknownPlayerInGroup', params: { id: g.id, pid: pairId } };
+        }
+        const a = m[1]!;
+        const b = m[2]!;
+        if (!tournament.players[a] || !tournament.players[b]) {
+          return { key: 'command.unknownPlayerInGroup', params: { id: g.id, pid: pairId } };
+        }
+        pairsRec[pairId] = { id: pairId, playerIds: [a, b] };
+      }
+    }
+    applyTrackFormatAndPairs(tournament, trackClassId, 'doubles-random-partners', pairsRec);
+    addGroupDoublesRoundRobinMatches(tournament, rec, pairsRec, trackClassId);
+    return true;
   }
   addGroupRoundRobinMatches(tournament, rec, trackClassId);
   return true;
@@ -576,13 +600,9 @@ export function mutateCompetitionTrack(
   return undefined;
 }
 
-/** Seedings used for bracket generation on this track. */
+/** Bracket participant ids for this track (pair ids in doubles, player ids in singles). */
 export function trackSeedingsForBracket(t: Tournament, classId?: string): string[] {
-  const track = getCompetitionTrack(t, classId);
-  if (tournamentUsesClassTabs(t)) {
-    return [...track.seedings];
-  }
-  return [...t.seedings];
+  return trackBracketParticipants(t, classId);
 }
 
 /** Ensure class slices are up to date before track reads (after flag/seed changes). */

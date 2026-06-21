@@ -48,7 +48,7 @@ describe('doubles SetGroups', () => {
       type: 'SetGroups',
       dependsOn: ids,
       payload: {
-        targetGroupSize: 8,
+        targetGroupSize: 4,
         playerIds: ids,
         format: 'doubles-random-partners',
       },
@@ -66,6 +66,29 @@ describe('doubles SetGroups', () => {
     for (const m of gm) {
       expect(m.pairA).toBeTruthy();
       expect(m.pairB).toBeTruthy();
+    }
+  });
+
+  it('targetGroupSize is pairs per group, not players', () => {
+    const runner = new CommandRunner();
+    const ids = seedPlayers(runner, 16);
+    const r = runner.execute({
+      id: 'sgz',
+      type: 'SetGroups',
+      dependsOn: ids,
+      payload: {
+        targetGroupSize: 4,
+        playerIds: ids,
+        format: 'doubles-random-partners',
+      },
+      timestamp: ts,
+    });
+    expect(r.success).toBe(true);
+    const groups = Object.values(runner.getTournament().groups);
+    expect(groups.length).toBe(2);
+    for (const g of groups) {
+      expect(g.pairIds?.length).toBe(4);
+      expect(g.playerIds.length).toBe(8);
     }
   });
 

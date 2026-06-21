@@ -28,6 +28,7 @@
     canMutateBracketPlayerMatch,
     canMutateExistingGroupPhaseMatchScores,
     clampPlayerHandicapValue,
+    closedFormGroupCountForParticipantCount,
     closedFormGroupCountForPlayerCount,
     CLOSED_FORM_PLAYERS_PER_GROUP,
     defaultBracketSeedingModeForTournament,
@@ -62,8 +63,8 @@
     isDoublesTrack,
     getTrackFormat,
     getTrackPairs,
+    trackBracketParticipants,
     pairDisplayLabel,
-    pairHandicapValue,
     pairById,
     matchSideLabels,
     groupStandingsRowsForBracket,
@@ -206,8 +207,11 @@
     tournament.handicapConfig ? handicapValueBounds(tournament.handicapConfig) : { min: 0, max: 0 },
   );
   const globalGroupPlayerCount = $derived(eligibleGlobalGroupPlayerIds(tournament).length);
+  const globalGroupParticipantCount = $derived(
+    trackParticipantCountForGroups(tournament, undefined, globalGroupPlayerCount),
+  );
   const suggestedGlobalGroupTargetCount = $derived(
-    closedFormGroupCountForPlayerCount(globalGroupPlayerCount),
+    closedFormGroupCountForParticipantCount(globalGroupParticipantCount),
   );
 
   /** Baseline player counts for group-target auto-sync (reset on session switch). */
@@ -237,8 +241,11 @@
     const prevCount = prevGlobalGroupPlayerCount;
     if (playerCount === prevCount) return;
 
-    const prevSuggested = closedFormGroupCountForPlayerCount(prevCount);
-    const nextSuggested = closedFormGroupCountForPlayerCount(playerCount);
+    const participantCount = trackParticipantCountForGroups(tournament, undefined, playerCount);
+    const prevSuggested = closedFormGroupCountForParticipantCount(
+      trackParticipantCountForGroups(tournament, undefined, prevCount),
+    );
+    const nextSuggested = closedFormGroupCountForParticipantCount(participantCount);
     prevGlobalGroupPlayerCount = playerCount;
 
     if (s.groupTargetCount === prevSuggested && nextSuggested !== s.groupTargetCount) {
@@ -273,8 +280,12 @@
       const prevCount = prevClassGroupPlayerCountByClassId[cid]!;
       if (playerCount === prevCount) continue;
 
-      const prevSuggested = closedFormGroupCountForPlayerCount(prevCount);
-      const nextSuggested = closedFormGroupCountForPlayerCount(playerCount);
+      const prevSuggested = closedFormGroupCountForParticipantCount(
+        trackParticipantCountForGroups(tournament, cid, prevCount),
+      );
+      const nextSuggested = closedFormGroupCountForParticipantCount(
+        trackParticipantCountForGroups(tournament, cid, playerCount),
+      );
       prevClassGroupPlayerCountByClassId[cid] = playerCount;
 
       const stored = s.classGroupTargetCountByClassId[cid];
@@ -295,7 +306,7 @@
     if (tournament.bracketMatches.length > 0) return;
     bracketSeedingChoice = defaultBracketSeedingModeForTournament(
       tournament,
-      eligibleGlobalGroupPlayerIds(tournament),
+      trackBracketParticipants(tournament, undefined),
       undefined,
     );
   });
@@ -590,7 +601,9 @@
           ? t0.classDefinitions.map((d) => ({ id: d.id, name: d.name }))
           : [{ id: newCompetitionClassId(), name: '' }],
       groupTargetSize: CLOSED_FORM_PLAYERS_PER_GROUP,
-      groupTargetCount: closedFormGroupCountForPlayerCount(playerOrder.length),
+      groupTargetCount: closedFormGroupCountForParticipantCount(
+        trackParticipantCountForGroups(t0, undefined, playerOrder.length),
+      ),
       classGroupTargetSizeByClassId: {},
       classGroupTargetCountByClassId: {},
       doublesRandomPartnersByTrack: buildDoublesTrackDraftsFromTournament(t0),
@@ -1205,7 +1218,8 @@
   function classGroupTargetCount(classId: string): number {
     const s = getActiveSession();
     const n = tournament.classTournaments[classId]?.seedings.length ?? 0;
-    const suggested = closedFormGroupCountForPlayerCount(n);
+    const participantN = trackParticipantCountForGroups(tournament, classId, n);
+    const suggested = closedFormGroupCountForParticipantCount(participantN);
     if (!s) return suggested;
     const v = s.classGroupTargetCountByClassId[classId];
     return typeof v === 'number' && v >= 1 ? v : suggested;
@@ -2166,6 +2180,19 @@
     return s.lastGenerateBracketCommandId;
   }
 
+  function trackParticipantCountForGroups(
+    t: Tournament,
+    classId: string | undefined,
+    playerCount: number,
+  ): number {
+    if (isDoublesTrack(t, classId)) {
+      const pairs = Object.keys(getTrackPairs(t, classId));
+      if (pairs.length > 0) return pairs.length;
+      return Math.floor(playerCount / 2);
+    }
+    return playerCount;
+  }
+
   function eligibleTrackGroupPlayerIds(t: Tournament, classId: string | undefined): string[] {
     if (classId) {
       return [...getCompetitionTrack(t, classId).seedings];
@@ -2446,7 +2473,7 @@
       nav,
       classEditorRows: classEditorRowsForSession,
       groupTargetSize: CLOSED_FORM_PLAYERS_PER_GROUP,
-      groupTargetCount: closedFormGroupCountForPlayerCount(0),
+      groupTargetCount: closedFormGroupCountForParticipantCount(0),
       lastSetGroupsCommandId: '',
       classGroupTargetSizeByClassId: {},
       classGroupTargetCountByClassId: {},
@@ -2650,8 +2677,8 @@
       showWarnKey('ui.create_groups_group_phase_before_generating_the_');
       return;
     }
-    const trackSeedings = track.seedings;
-    if (trackSeedings.length === 0 || s.playerOrder.length === 0) {
+    const trackSeedings = trackBracketParticipants(t, classId);
+    if (trackSeedings.length === 0) {
       showWarnKey('ui.add_at_least_one_player_first');
       return;
     }
@@ -3985,7 +4012,7 @@
                   {#if globalGroupPlayerCount === 0}
                     <Msg key="ui.group.addPlayersFirst" />
                   {:else}
-                    <Msg key="ui.group.allSeededIncluded" params={{ count: String(globalGroupPlayerCount) }} />
+                    <Msg key="ui.group.allSeededIncluded" params={{ count: String(doublesEnabledForTrack(undefined) ? globalGroupParticipantCount : globalGroupPlayerCount) }} />
                   {/if}
                 </p>
                 <label class="group-doubles-option">
@@ -4010,7 +4037,7 @@
                     step="1"
                     disabled={tournament.bracketMatches.length > 0}
                     value={activeSess?.groupTargetSize ?? CLOSED_FORM_PLAYERS_PER_GROUP}
-                    aria-label={msgText('ui.target_players_per_group')}
+                    aria-label={msgText(doublesEnabledForTrack(undefined) ? 'ui.target_participants_per_group' : 'ui.target_players_per_group')}
                     oninput={(e) => {
                       const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));
                       patchActiveSession({ groupTargetSize: v });
@@ -4023,7 +4050,7 @@
                     disabled={tournament.bracketMatches.length > 0 || globalGroupPlayerCount === 0 || (doublesEnabledForTrack(undefined) && globalGroupPlayerCount % 2 !== 0)}
                     onclick={createGlobalGroupsByPlayerCount}
                   >
-                    <Msg key="ui.group.createByPlayerCount" />
+                    <Msg key={doublesEnabledForTrack(undefined) ? 'ui.group.createByParticipantCount' : 'ui.group.createByPlayerCount'} />
                   </button>
                   <div class="group-create-gap" aria-hidden="true"></div>
                   <input
@@ -4207,7 +4234,7 @@
             </section>
           {:else if !useClassTabs && singleTrackInner === 'bracket'}
             {@const bracketTrack = getCompetitionTrack(tournament, undefined)}
-            {@const bracketTrackSeedingIds = eligibleTrackGroupPlayerIds(tournament, undefined)}
+            {@const bracketTrackSeedingIds = trackBracketParticipants(tournament, undefined)}
             {@const bracketTrackClosedForm = resolveClosedFormBracketSeedingKind(
               tournament,
               bracketTrackSeedingIds,
@@ -4271,7 +4298,7 @@
                 <BracketStreamView
                   cols={previewBracketColumns(
                     tournament,
-                    tournament.seedings,
+                    trackBracketParticipants(tournament, undefined),
                     activeSess.tournamentName,
                     tournament.bracketMatches,
                   )}
@@ -4349,7 +4376,11 @@
                         class:placement-after-podium={row.place === 3}
                       >
                         <span class="placement-num">{row.place}.</span>
-                        <PlayerName {tournament} playerId={row.playerId} />
+                        {#if isDoublesTrack(tournament, undefined)}
+                          {formatBracketSlotPlayerLabel(tournament, row.playerId, undefined, getLocale())}
+                        {:else}
+                          <PlayerName {tournament} playerId={row.playerId} />
+                        {/if}
                       </li>
                     {/each}
                   </ol>
@@ -4375,6 +4406,7 @@
                 {/if}
                 {#if Object.keys(slice.groups).length === 0}
                   {@const classGroupPlayerCount = slice.seedings.length}
+                  {@const classGroupParticipantCount = trackParticipantCountForGroups(tournament, cid, classGroupPlayerCount)}
                   <p class="muted small">
                     <Msg key="ui.group.classPlayersHint" tag="p" class="muted small" />
                   </p>
@@ -4382,7 +4414,7 @@
                     {#if classGroupPlayerCount === 0}
                       <Msg key="ui.group.noPlayersInClass" />
                     {:else}
-                      <Msg key="ui.group.allInClassIncluded" params={{ count: String(classGroupPlayerCount) }} />
+                      <Msg key="ui.group.allInClassIncluded" params={{ count: String(doublesEnabledForTrack(cid) ? classGroupParticipantCount : classGroupPlayerCount) }} />
                     {/if}
                   </p>
                   <label class="group-doubles-option">
@@ -4406,7 +4438,7 @@
                       step="1"
                       disabled={slice.bracketMatches.length > 0}
                       value={classGroupTargetSize(cid)}
-                      aria-label={msgText('ui.target_players_per_group_for_class')}
+                      aria-label={msgText(doublesEnabledForTrack(cid) ? 'ui.target_participants_per_group_for_class' : 'ui.target_players_per_group_for_class')}
                       oninput={(e) => {
                         const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));
                         const s = getActiveSession();
@@ -4422,7 +4454,7 @@
                       disabled={slice.bracketMatches.length > 0 || classGroupPlayerCount === 0 || (doublesEnabledForTrack(cid) && classGroupPlayerCount % 2 !== 0)}
                       onclick={() => createClassGroupsByPlayerCount(cid)}
                     >
-                      <Msg key="ui.group.createByPlayerCount" />
+                      <Msg key={doublesEnabledForTrack(cid) ? 'ui.group.createByParticipantCount' : 'ui.group.createByPlayerCount'} />
                     </button>
                     <div class="group-create-gap" aria-hidden="true"></div>
                     <input
@@ -4608,7 +4640,7 @@
 
               </section>
             {:else if cin === 'bracket'}
-              {@const classBracketSeedingIds = eligibleTrackGroupPlayerIds(tournament, cid)}
+              {@const classBracketSeedingIds = trackBracketParticipants(tournament, cid)}
               {@const classBracketClosedForm = resolveClosedFormBracketSeedingKind(
                 tournament,
                 classBracketSeedingIds,
@@ -4753,7 +4785,11 @@
                           class:placement-after-podium={row.place === 3}
                         >
                           <span class="placement-num">{row.place}.</span>
-                          <PlayerName {tournament} playerId={row.playerId} />
+                          {#if isDoublesTrack(tournament, cid)}
+                            {formatBracketSlotPlayerLabel(tournament, row.playerId, cid, getLocale())}
+                          {:else}
+                            <PlayerName {tournament} playerId={row.playerId} classId={cid} />
+                          {/if}
                         </li>
                       {/each}
                     </ol>
@@ -5018,14 +5054,6 @@
               <li><PlayerName {tournament} playerId={pid} classId={pairDetailModalClassId} tag="strong" /></li>
             {/each}
           </ul>
-          {#if isHandicapActive(tournament)}
-            <p class="muted small">
-              <Msg
-                key="ui.pair.combinedHandicap"
-                params={{ value: String(pairHandicapValue(tournament, pair)) }}
-              />
-            </p>
-          {/if}
         </div>
       </div>
     {/if}

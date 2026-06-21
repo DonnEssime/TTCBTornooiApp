@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { BracketMatch, Tournament } from 'ttc-tornooiapp';
-  import { bracketKnockoutRoundLabel, bracketMatchRound, getCompetitionTrack } from 'ttc-tornooiapp';
+  import { bracketKnockoutRoundLabel, bracketMatchRound, getCompetitionTrack, isTrackParticipantId } from 'ttc-tornooiapp';
   import { getLocale } from './i18n/locale.svelte';
   import BracketSlotRow from './BracketSlotRow.svelte';
   import BracketSubtree from './BracketSubtree.svelte';
@@ -50,7 +50,7 @@
 
   function slotPlayerId(m: BracketMatch, side: 'a' | 'b'): string | undefined {
     const id = side === 'a' ? m.seedA : m.seedB;
-    return id && tournament.players[id] ? id : undefined;
+    return id && isTrackParticipantId(tournament, id, bracketClassId) ? id : undefined;
   }
 
   function activate(m: BracketMatch): void {

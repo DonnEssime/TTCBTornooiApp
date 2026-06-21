@@ -3,9 +3,9 @@ import { txt } from './i18n';
 import type { CompetitionPair, GroupDefinition, Match, PlayerId, Tournament, TrackFormat } from './model';
 import {
   displayLabelForGroup,
+  formatPairDisplayLabel,
   groupAllMatchesFinished,
   groupStandingsRowsForBracketDoubles,
-  isHandicapActive,
   partitionPlayerCountIntoGroupCount,
   partitionPlayerCountIntoGroupSizes,
   shuffleDeterministic,
@@ -67,13 +67,6 @@ export function pairById(
   return getTrackPairs(t, classId)[pairId];
 }
 
-export function pairHandicapValue(t: Tournament, pair: CompetitionPair): number {
-  if (!isHandicapActive(t)) return 0;
-  const h1 = t.players[pair.playerIds[0]]?.handicap ?? 0;
-  const h2 = t.players[pair.playerIds[1]]?.handicap ?? 0;
-  return Math.floor((h1 + h2) / 2);
-}
-
 export function pairDisplayLabel(
   t: Tournament,
   pairId: string,
@@ -82,9 +75,7 @@ export function pairDisplayLabel(
 ): string {
   const pair = pairById(t, classId, pairId);
   if (!pair) return pairId;
-  const n1 = t.players[pair.playerIds[0]]?.name ?? pair.playerIds[0];
-  const n2 = t.players[pair.playerIds[1]]?.name ?? pair.playerIds[1];
-  return txt('model.pairDisplayLabel', locale, { a: n1, b: n2 });
+  return formatPairDisplayLabel(t, pair, locale);
 }
 
 export function allPlayersInMatch(t: Tournament, m: Match, classId?: string): PlayerId[] {
@@ -138,14 +129,14 @@ function buildNumberedGroupsFromPairSizes(pairs: CompetitionPair[], sizesInPairs
   return out;
 }
 
-/** Distribute pairs into numbered groups; targetSize is players per group (must be even). */
+/** Distribute pairs into numbered groups; targetSize is pairs (participants) per group. */
 export function buildNumberedGroupsFromPairOrder(
   pairs: CompetitionPair[],
-  targetSizeInPlayers: number,
+  targetSizeInPairs: number,
 ): GroupDefinition[] {
   const n = pairs.length;
   if (n === 0) return [];
-  const pairsPerGroup = Math.max(1, Math.floor(targetSizeInPlayers / 2));
+  const pairsPerGroup = Math.max(1, Math.floor(targetSizeInPairs));
   const sizesInPairs = partitionPlayerCountIntoGroupSizes(n, pairsPerGroup);
   return buildNumberedGroupsFromPairSizes(pairs, sizesInPairs);
 }

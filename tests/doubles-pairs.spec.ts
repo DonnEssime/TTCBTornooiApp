@@ -3,10 +3,9 @@ import {
   formRandomPairs,
   getTrackFormat,
   getTrackPairs,
-  pairHandicapValue,
   pairDisplayLabel,
 } from '../src/doubles-track';
-import { createTournament, isHandicapActive, normalizeHandicapConfig } from '../src/model';
+import { createTournament, isHandicapActive, normalizeHandicapConfig, pairHandicapValue } from '../src/model';
 
 describe('formRandomPairs', () => {
   it('is deterministic for the same seed', () => {
@@ -42,13 +41,22 @@ describe('pairHandicapValue', () => {
 });
 
 describe('pairDisplayLabel', () => {
-  it('shows compact names without handicap', () => {
+  it('shows compact names without handicap when inactive', () => {
+    const t = createTournament();
+    t.players['a'] = { id: 'a', name: 'Alice', handicap: 5 };
+    t.players['b'] = { id: 'b', name: 'Bob', handicap: 3 };
+    t.pairs = { 'pair-a-b': { id: 'pair-a-b', playerIds: ['a', 'b'] } };
+    expect(pairDisplayLabel(t, 'pair-a-b', undefined)).toBe('Alice / Bob');
+  });
+
+  it('appends combined handicap when active', () => {
     const t = createTournament();
     t.handicapConfig = normalizeHandicapConfig({ system: 'numerical', minValue: 0, maxValue: 9 });
     t.players['a'] = { id: 'a', name: 'Alice', handicap: 5 };
     t.players['b'] = { id: 'b', name: 'Bob', handicap: 3 };
     t.pairs = { 'pair-a-b': { id: 'pair-a-b', playerIds: ['a', 'b'] } };
-    expect(pairDisplayLabel(t, 'pair-a-b', undefined)).toBe('Alice / Bob');
+    expect(isHandicapActive(t)).toBe(true);
+    expect(pairDisplayLabel(t, 'pair-a-b', undefined)).toBe('Alice / Bob (4)');
   });
 });
 

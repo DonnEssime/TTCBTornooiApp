@@ -41,7 +41,10 @@ function sortGroups(groups: Record<string, GroupDefinition>): GroupDefinition[] 
     return a.id.localeCompare(b.id);
   });
 }
-function playerName(t: Tournament, pid: string): string {
+function playerName(t: Tournament, pid: string, classId?: string, locale: Locale = 'en'): string {
+  if (isDoublesTrack(t, classId) && (t.pairs?.[pid] || (classId && t.classTournaments[classId]?.pairs?.[pid]))) {
+    return pairDisplayLabel(t, pid, classId, locale);
+  }
   return formatPlayerDisplayLabel(t, pid);
 }
 function groupStandingsWl(
@@ -269,6 +272,8 @@ function addPlacementList(
   t: Tournament,
   rows: BracketPlacementRow[],
   pageKind: { kind: PageKind },
+  classId?: string,
+  locale: Locale = 'en',
 ): number {
   if (rows.length === 0) return y;
   y = nextY(doc, y, 12, pageKind);
@@ -280,7 +285,7 @@ function addPlacementList(
     y = nextY(doc, y, isFirst ? 7 : 6, pageKind);
     doc.setFont('helvetica', isFirst ? 'bold' : 'normal');
     doc.setFontSize(isFirst ? 11 : 10);
-    doc.text(`${row.place}. ${playerName(t, row.playerId)}`, PAGE_MARGIN + 4, y);
+    doc.text(`${row.place}. ${playerName(t, row.playerId, classId, locale)}`, PAGE_MARGIN + 4, y);
     y += isFirst ? 6 : 5;
     if (row.place === 3) {
       y += 5;
@@ -373,7 +378,7 @@ function appendTracksToPdf(
           classScoped,
         );
         y = sectionHeading(doc, y, resultsTitle, 13, pageKind);
-        y = addPlacementList(doc, y, tournament, placements, pageKind);
+        y = addPlacementList(doc, y, tournament, placements, pageKind, trackClassId, locale);
         if (hasMoreTracks) {
           addPortraitPage(doc);
           pageKind.kind = 'portrait';
