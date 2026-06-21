@@ -68,6 +68,13 @@ export const uiRemainingCatalog = {
   ),
   'ui.group.createByPlayerCount': t('Create by player count', 'Aanmaken op aantal spelers'),
   'ui.group.createByGroupCount': t('Create by group count', 'Aanmaken op aantal groepen'),
+  'ui.group.doublesRandomPartners': t('Doubles (random partners)', 'Dubbelspel (willekeurige partners)'),
+  'ui.group.doublesEvenCountRequired': t(
+    'Doubles requires an even number of players on this track.',
+    'Dubbelspel vereist een even aantal spelers op dit onderdeel.',
+  ),
+  'ui.pair.detailTitle': t('Pair', 'Koppel'),
+  'ui.pair.combinedHandicap': t('Combined handicap: {{value}}', 'Gecombineerde handicap: {{value}}'),
   'ui.group.clearGroups': t('Clear groups', 'Groepen wissen'),
   'ui.group.debugSimulateMatches': t('[DEBUG] Simulate matches', '[DEBUG] Wedstrijden simuleren'),
   'ui.group.finishGroupPhaseFirst': t(

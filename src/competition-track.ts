@@ -1,11 +1,13 @@
 import type {
   BracketMatch,
+  CompetitionPair,
   GroupDefinition,
   Match,
-  ModelReason,
   PlayerId,
   Tournament,
+  TrackFormat,
 } from './model';
+import type { ModelReason } from './i18n';
 import {
   buildNumberedGroupsFromPlayerOrder,
   buildNumberedGroupsFromPlayerOrderByGroupCount,
@@ -15,12 +17,22 @@ import {
   shuffleDeterministic,
   tournamentUsesClassTabs,
 } from './model';
+import {
+  applyTrackFormatAndPairs,
+  buildNumberedGroupsFromPairOrder,
+  buildNumberedGroupsFromPairOrderByGroupCount,
+  clearTrackFormatAndPairs,
+  formRandomPairs,
+  pairsRecordFromList,
+} from './doubles-track';
 import { groupPhaseCounts, type GroupProgressSnapshot } from './match-ordering';
 
+export type TrackGroupsFormat = { format?: TrackFormat };
+
 export type TrackGroupsPayload =
-  | { groups: Array<{ id: string; label?: string; playerIds: string[] }> }
-  | { targetGroupSize: number; playerIds: string[] }
-  | { targetGroupCount: number; playerIds: string[] };
+  | ({ groups: Array<{ id: string; label?: string; playerIds: string[]; pairIds?: string[] }> } & TrackGroupsFormat)
+  | ({ targetGroupSize: number; playerIds: string[] } & TrackGroupsFormat)
+  | ({ targetGroupCount: number; playerIds: string[] } & TrackGroupsFormat);
 
 export type SetTrackGroupsMessages = {
   passOneOf: string;
@@ -55,6 +67,66 @@ export function addGroupRoundRobinMatches(
   }
 }
 
+export function groupDoublesMatchIdForPair(
+  groupId: string,
+  pairA: string,
+  pairB: string,
+  classId?: string,
+): string {
+  const sorted = [pairA, pairB].sort((x, y) => x.localeCompare(y));
+  return classId
+    ? `gm-${classId}-${groupId}-${sorted[0]}-${sorted[1]}`
+    : `gm-${groupId}-${sorted[0]}-${sorted[1]}`;
+}
+
+/** Create scheduled pair-vs-pair round-robin matches for each doubles group. */
+export function addGroupDoublesRoundRobinMatches(
+  tournament: Tournament,
+  groupsRecord: Record<string, GroupDefinition>,
+  pairsRecord: Record<string, CompetitionPair>,
+  classId?: string,
+): void {
+  for (const g of Object.values(groupsRecord)) {
+    const pairIds = g.pairIds ?? [];
+    for (const [pairAId, pairBId] of roundRobinPairs(pairIds)) {
+      const mid = groupDoublesMatchIdForPair(g.id, pairAId, pairBId, classId);
+      if (tournament.matches[mid]) continue;
+      const pairA = pairsRecord[pairAId];
+      const pairB = pairsRecord[pairBId];
+      if (!pairA || !pairB) continue;
+      tournament.matches[mid] = {
+        id: mid,
+        playerA: pairA.playerIds[0],
+        playerB: pairB.playerIds[0],
+        pairA: pairAId,
+        pairB: pairBId,
+        scores: [],
+        status: 'scheduled',
+        groupId: g.id,
+        ...(classId ? { classId } : {}),
+      };
+    }
+  }
+}
+
+function payloadFormat(payload: TrackGroupsPayload): TrackFormat {
+  return payload.format === 'doubles-random-partners' ? 'doubles-random-partners' : 'singles';
+}
+
+function clearTrackGroupMatches(tournament: Tournament, trackClassId: string | undefined): void {
+  for (const mid of Object.keys(tournament.matches)) {
+    const m = tournament.matches[mid];
+    if (!m?.groupId) continue;
+    if (trackClassId) {
+      if (m.classId === trackClassId) {
+        delete tournament.matches[mid];
+      }
+    } else if (!m.classId) {
+      delete tournament.matches[mid];
+    }
+  }
+}
+
 /**
  * Define groups on a competition track and materialize round-robin match rows.
  * Returns `true` on success or a failure key for {@link commandFail}.
@@ -75,6 +147,7 @@ export function setTrackGroups(
   if (tournamentUsesClassTabs(tournament) && trackClassId && !tournament.classTournaments[trackClassId]) {
     return { key: 'command.classSliceNotFound' };
   }
+  const format = payloadFormat(payload);
   const eligible = trackClassId ? new Set(track.seedings) : null;
 
   const hasGroups = 'groups' in payload && payload.groups !== undefined;
@@ -84,8 +157,76 @@ export function setTrackGroups(
     return { key: messages.passOneOf };
   }
 
+  if (hasGroups && Array.isArray(payload.groups) && payload.groups.length === 0) {
+    clearTrackGroupMatches(tournament, trackClassId);
+    clearTrackFormatAndPairs(tournament, trackClassId);
+    const err = mutateCompetitionTrack(tournament, trackClassId, (tr) => {
+      tr.groups = {};
+    });
+    if (err) return err;
+    return true;
+  }
+
   let shuffleGroupMemberOrder = false;
-  let groups: Array<{ id: string; label?: string; playerIds: string[] }>;
+  let groups: Array<{ id: string; label?: string; playerIds: string[]; pairIds?: string[] }>;
+
+  if (format === 'doubles-random-partners' && (hasSize || hasCount)) {
+    shuffleGroupMemberOrder = true;
+    const rawList = (payload as { playerIds: unknown }).playerIds;
+    if (!Array.isArray(rawList)) {
+      return { key: 'command.playerIdsMustBeArray' };
+    }
+    const ordered: string[] = [];
+    const seenPid = new Set<string>();
+    for (const x of rawList) {
+      const pid = String(x ?? '').trim();
+      if (!pid || seenPid.has(pid)) continue;
+      if (eligible) {
+        if (!eligible.has(pid)) {
+          return { key: 'command.playerNotInClassSeedingList', params: { pid } };
+        }
+      } else if (!tournament.players[pid]) {
+        return { key: 'command.unknownPlayer', params: { pid } };
+      }
+      seenPid.add(pid);
+      ordered.push(pid);
+    }
+    if (ordered.length % 2 !== 0) {
+      return { key: 'command.doublesRequiresEvenPlayerCount' };
+    }
+    clearTrackGroupMatches(tournament, trackClassId);
+    const pairs = formRandomPairs(ordered, `${commandId}:pairs`);
+    const pairsRec = pairsRecordFromList(pairs);
+    const shuffledPairs = shuffleDeterministic(pairs, `${commandId}:pair-order`);
+    let groupDefs: GroupDefinition[];
+    if (hasSize) {
+      const ts = Number((payload as { targetGroupSize: number }).targetGroupSize);
+      const tInt = Math.floor(ts);
+      if (!Number.isFinite(ts) || tInt < 2 || tInt % 2 !== 0) {
+        return { key: 'command.doublesTargetGroupSizeEven' };
+      }
+      groupDefs = buildNumberedGroupsFromPairOrder(shuffledPairs, tInt);
+    } else {
+      const tc = Number((payload as { targetGroupCount: number }).targetGroupCount);
+      const gInt = Math.floor(tc);
+      if (!Number.isFinite(tc) || gInt < 1) {
+        return { key: 'command.targetGroupCountPositive' };
+      }
+      groupDefs = buildNumberedGroupsFromPairOrderByGroupCount(shuffledPairs, gInt);
+    }
+    const rec: Record<string, GroupDefinition> = {};
+    for (const g of groupDefs) {
+      rec[g.id] = g;
+    }
+    applyTrackFormatAndPairs(tournament, trackClassId, 'doubles-random-partners', pairsRec);
+    const err = mutateCompetitionTrack(tournament, trackClassId, (tr) => {
+      tr.groups = rec;
+    });
+    if (err) return err;
+    addGroupDoublesRoundRobinMatches(tournament, rec, pairsRec, trackClassId);
+    return true;
+  }
+
   if (hasSize || hasCount) {
     shuffleGroupMemberOrder = true;
     const rawList = (payload as { playerIds: unknown }).playerIds;
@@ -129,22 +270,13 @@ export function setTrackGroups(
     if (!Array.isArray(arr)) {
       return { key: 'command.groupsMustBeArray' };
     }
-    groups = arr as Array<{ id: string; label?: string; playerIds: string[] }>;
+    groups = arr as Array<{ id: string; label?: string; playerIds: string[]; pairIds?: string[] }>;
   } else {
     return { key: messages.requiresOneOf };
   }
 
-  for (const mid of Object.keys(tournament.matches)) {
-    const m = tournament.matches[mid];
-    if (!m?.groupId) continue;
-    if (trackClassId) {
-      if (m.classId === trackClassId) {
-        delete tournament.matches[mid];
-      }
-    } else if (!m.classId) {
-      delete tournament.matches[mid];
-    }
-  }
+  clearTrackGroupMatches(tournament, trackClassId);
+  clearTrackFormatAndPairs(tournament, trackClassId);
 
   const rec: Record<string, GroupDefinition> = {};
   const gidSeen = new Set<string>();
@@ -178,6 +310,7 @@ export function setTrackGroups(
     rec[id] = {
       id,
       ...(label ? { label } : {}),
+      ...(raw.pairIds?.length ? { pairIds: [...raw.pairIds] } : {}),
       playerIds: shuffleGroupMemberOrder
         ? shuffleDeterministic(playerIds, `${shufflePrefix}${id}`)
         : [...playerIds],

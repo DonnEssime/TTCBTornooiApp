@@ -14,6 +14,9 @@ import {
   formatPlayerDisplayLabel,
   gameWinner,
   groupNumberedTitle,
+  groupStandingsRowsForBracket,
+  isDoublesTrack,
+  pairDisplayLabel,
 } from 'ttc-tornooiapp';
 import { drawBracketStreamOnPdf } from './bracketStream/pdfDraw';
 import { bracketStreamPdfLayout } from './bracketStream/pdfLayout';
@@ -167,6 +170,48 @@ function addGroupMatrix(
   pageKind: { kind: PageKind },
   classId?: string,
 ): number {
+  if (isDoublesTrack(t, classId)) {
+    const pairIds = [...(g.pairIds ?? [])];
+    const rows = groupStandingsRowsForBracket(t, g, classId);
+    const wl = Object.fromEntries(rows.map((r) => [r.pid, { w: r.w, l: r.l }]));
+    const head = [
+      txt('ui.pair.detailTitle', locale),
+      ...pairIds.map((pid) => pairDisplayLabel(t, pid, classId, locale)),
+      txt('ui.standings.win', locale),
+      txt('ui.standings.loss', locale),
+    ];
+    const body = pairIds.map((rowPid) => [
+      pairDisplayLabel(t, rowPid, classId, locale),
+      ...pairIds.map((colPid) => {
+        if (rowPid === colPid) return '·';
+        for (const m of Object.values(t.matches)) {
+          if (m.groupId !== g.id) continue;
+          if (classId ? m.classId !== classId : Boolean(m.classId)) continue;
+          const ok =
+            (m.pairA === rowPid && m.pairB === colPid) || (m.pairA === colPid && m.pairB === rowPid);
+          if (!ok) continue;
+          return matrixCellDigit(t, g, classId, m.playerA, m.playerB);
+        }
+        return '—';
+      }),
+      String(wl[rowPid]?.w ?? 0),
+      String(wl[rowPid]?.l ?? 0),
+    ]);
+    y = nextY(doc, y, 24, pageKind);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.text(groupNumberedTitle(g, locale), PAGE_MARGIN, y);
+    y += 6;
+    autoTable(doc, {
+      startY: y,
+      head: [head],
+      body,
+      margin: { left: PAGE_MARGIN, right: PAGE_MARGIN },
+      styles: { fontSize: 8, cellPadding: 1.5 },
+      headStyles: { fillColor: [51, 65, 85] },
+    });
+    return tableFinalY(doc) + SECTION_GAP;
+  }
   const pids = [...g.playerIds];
   const wl = groupStandingsWl(t, g, classId);
   const head = [

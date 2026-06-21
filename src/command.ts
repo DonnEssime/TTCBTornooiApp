@@ -1,4 +1,5 @@
 import {
+  addGroupDoublesRoundRobinMatches,
   addGroupRoundRobinMatches,
   applyBracketToTrack,
   getCompetitionTrack,
@@ -6,9 +7,9 @@ import {
   mutateCompetitionTrack,
   resolveTrackClassId,
   setTrackGroups,
-  trackSeedingsForBracket,
   tournamentUsesClassTabs,
 } from './competition-track';
+import { getTrackPairs, isDoublesTrack, trackBracketParticipants } from './doubles-track';
 import {
   Tournament,
   advanceBracketRoundIn,
@@ -24,6 +25,7 @@ import {
   type BracketMatch,
   type Match,
   type BracketSeedingMode,
+  type TrackFormat,
   inferBracketClassIdFromPlayerMatchId,
   isBracketRoundCompleteIn,
   isMatchScoreLegal,
@@ -115,7 +117,15 @@ export interface CreateTeamCommand extends CommandBase {
 
 export interface CreateMatchCommand extends CommandBase {
   type: 'CreateMatch';
-  payload: { matchId: string; playerA: string; playerB: string; groupId?: string; classId?: string };
+  payload: {
+    matchId: string;
+    playerA: string;
+    playerB: string;
+    groupId?: string;
+    classId?: string;
+    pairA?: string;
+    pairB?: string;
+  };
 }
 
 export interface CreateTeamMatchCommand extends CommandBase {
@@ -184,9 +194,9 @@ export interface SetPlayerClassFlagsCommand extends CommandBase {
 }
 
 export type SetGroupsPayload =
-  | { groups: Array<{ id: string; label?: string; playerIds: string[] }> }
-  | { targetGroupSize: number; playerIds: string[] }
-  | { targetGroupCount: number; playerIds: string[] };
+  | { groups: Array<{ id: string; label?: string; playerIds: string[] }>; format?: TrackFormat }
+  | { targetGroupSize: number; playerIds: string[]; format?: TrackFormat }
+  | { targetGroupCount: number; playerIds: string[]; format?: TrackFormat };
 
 export interface SetGroupsCommand extends CommandBase {
   type: 'SetGroups';
@@ -199,9 +209,9 @@ export interface SetPlayerGroupCommand extends CommandBase {
 }
 
 export type SetClassGroupsPayload =
-  | { groups: Array<{ id: string; label?: string; playerIds: string[] }> }
-  | { targetGroupSize: number; playerIds: string[] }
-  | { targetGroupCount: number; playerIds: string[] };
+  | { groups: Array<{ id: string; label?: string; playerIds: string[] }>; format?: TrackFormat }
+  | { targetGroupSize: number; playerIds: string[]; format?: TrackFormat }
+  | { targetGroupCount: number; playerIds: string[]; format?: TrackFormat };
 
 export interface SetClassGroupsCommand extends CommandBase {
   type: 'SetClassGroups';
@@ -676,7 +686,7 @@ export class CommandRunner {
         return { success: true };
       }
       case 'CreateMatch': {
-        const { matchId, playerA, playerB, groupId, classId } = command.payload;
+        const { matchId, playerA, playerB, groupId, classId, pairA, pairB } = command.payload;
         if (Object.keys(tournament.teamMatches).length > 0) {
           return commandFail('command.playerMatchesNotAllowedInTeamFixture');
         }
@@ -694,6 +704,8 @@ export class CommandRunner {
           status: 'scheduled',
           ...(groupId ? { groupId: String(groupId) } : {}),
           ...(classId ? { classId: String(classId) } : {}),
+          ...(pairA ? { pairA: String(pairA) } : {}),
+          ...(pairB ? { pairB: String(pairB) } : {}),
         };
         return { success: true };
       }
@@ -768,6 +780,9 @@ export class CommandRunner {
         match.scores = scores;
         match.status = 'finished';
         match.winner = playerMatchWinner(match);
+        if (match.pairA && match.pairB) {
+          match.winnerPairId = match.winner === match.playerA ? match.pairA : match.pairB;
+        }
         if (!tournament.matchFinishOrder.includes(matchId)) {
           tournament.matchFinishOrder.push(matchId);
         }
@@ -1090,6 +1105,9 @@ export class CommandRunner {
           return commandFail(trackResolved.key);
         }
         const trackClassId = trackResolved.classId;
+        if (isDoublesTrack(tournament, trackClassId)) {
+          return commandFail('command.movePlayerDisabledInDoubles');
+        }
         const pid = String(pidRaw ?? '').trim();
         if (!pid || !tournament.players[pid]) {
           return commandFail('command.playerNotFound');
@@ -1195,7 +1213,11 @@ export class CommandRunner {
         if (Object.keys(groupsRecord).length === 0) {
           return commandFail('command.defineGroupsBeforeRoundRobin');
         }
-        addGroupRoundRobinMatches(tournament, groupsRecord, cid);
+        if (isDoublesTrack(tournament, cid)) {
+          addGroupDoublesRoundRobinMatches(tournament, groupsRecord, getTrackPairs(tournament, cid), cid);
+        } else {
+          addGroupRoundRobinMatches(tournament, groupsRecord, cid);
+        }
         return { success: true };
       }
       case 'GenerateBracket': {
@@ -1216,7 +1238,7 @@ export class CommandRunner {
             return commandFail(clearErr.key, clearErr.params);
           }
         }
-        const seedings = trackSeedingsForBracket(tournament, trackClassId);
+        const seedings = trackBracketParticipants(tournament, trackClassId);
         try {
           const bm = generateBracket(seedings, tournament, {
             fillByes: true,

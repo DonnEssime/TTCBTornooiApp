@@ -59,6 +59,14 @@
     trackGroupMatches,
     tournamentUsesClassTabs,
     MAIN_TRACK_KEY,
+    isDoublesTrack,
+    getTrackFormat,
+    getTrackPairs,
+    pairDisplayLabel,
+    pairHandicapValue,
+    pairById,
+    matchSideLabels,
+    groupStandingsRowsForBracket,
     isGameScoreLegal,
     isMatchScoreLegal,
     isPlayerDisplayNameTaken,
@@ -80,6 +88,7 @@
   import PlayerMatchHistoryModal from './PlayerMatchHistoryModal.svelte';
   import TournamentOverview from './TournamentOverview.svelte';
   import VersionFooter from './VersionFooter.svelte';
+  import { installTestBridge, uninstallTestBridge } from './e2e/testBridge';
   import {
     deleteTournament,
     importTournamentJsonl,
@@ -154,6 +163,8 @@
     lastGenerateBracketCommandId: string;
     /** Latest `GenerateBracket` command id per class. */
     lastGenerateBracketCommandIdByClass: Record<string, string>;
+    /** Per-track doubles (random partners) checkbox when creating groups. Key `''` = main draw. */
+    doublesRandomPartnersByTrack: Record<string, boolean>;
     /** Planned flow; only `group-bracket` is implemented end-to-end. */
     tournamentFormat: TournamentFormat;
   }
@@ -582,6 +593,7 @@
       groupTargetCount: closedFormGroupCountForPlayerCount(playerOrder.length),
       classGroupTargetSizeByClassId: {},
       classGroupTargetCountByClassId: {},
+      doublesRandomPartnersByTrack: buildDoublesTrackDraftsFromTournament(t0),
       tournamentFormat: 'group-bracket',
     };
   }
@@ -779,6 +791,53 @@
   let scoreModalMatchId = $state<string | null>(null);
   let scoreModalHint = $state<string | null>(null);
   let playerHistoryModalPid = $state<string | null>(null);
+  let pairDetailModalPairId = $state<string | null>(null);
+  let pairDetailModalClassId = $state<string | undefined>(undefined);
+
+  function trackDraftKey(classId?: string): string {
+    return classId ?? MAIN_TRACK_KEY;
+  }
+
+  function buildDoublesTrackDraftsFromTournament(t: Tournament): Record<string, boolean> {
+    const out: Record<string, boolean> = {};
+    if (!tournamentUsesClassTabs(t)) {
+      out[MAIN_TRACK_KEY] = getTrackFormat(t, undefined) === 'doubles-random-partners';
+      return out;
+    }
+    for (const def of t.classDefinitions) {
+      out[def.id] = getTrackFormat(t, def.id) === 'doubles-random-partners';
+    }
+    return out;
+  }
+
+  function doublesEnabledForTrack(classId?: string): boolean {
+    const s = getActiveSession();
+    if (!s) return false;
+    return Boolean(s.doublesRandomPartnersByTrack[trackDraftKey(classId)]);
+  }
+
+  function setDoublesEnabledForTrack(classId: string | undefined, enabled: boolean): void {
+    const key = trackDraftKey(classId);
+    const s = getActiveSession();
+    if (!s) return;
+    patchActiveSession({
+      doublesRandomPartnersByTrack: { ...s.doublesRandomPartnersByTrack, [key]: enabled },
+    });
+  }
+
+  function groupFormatForTrack(classId?: string): 'singles' | 'doubles-random-partners' {
+    return doublesEnabledForTrack(classId) ? 'doubles-random-partners' : 'singles';
+  }
+
+  function openPairDetailModal(pairId: string, classId?: string): void {
+    pairDetailModalPairId = pairId;
+    pairDetailModalClassId = classId;
+  }
+
+  function closePairDetailModal(): void {
+    pairDetailModalPairId = null;
+    pairDetailModalClassId = undefined;
+  }
 
   function openPlayerHistoryModal(pid: string): void {
     playerHistoryModalPid = pid;
@@ -800,6 +859,10 @@
     }
     if (Object.keys(track.groups).length === 0) {
       showErrorKey('ui.group.addPlayersFirst');
+      return;
+    }
+    if (isDoublesTrack(tournament, classId)) {
+      showErrorKey('command.movePlayerDisabledInDoubles');
       return;
     }
     runUiBatch(() => {
@@ -1168,7 +1231,11 @@
     const deps: string[] = [...new Set(ordered)].map((id) => `cmd-${id}`);
     if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
     const cmdId = `cmd-setgroups-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
-    const r = c.setGroups({ ...payload, playerIds: ordered }, deps, cmdId);
+    const r = c.setGroups(
+      { ...payload, playerIds: ordered, format: groupFormatForTrack(undefined) },
+      deps,
+      cmdId,
+    );
     if (!r.success) {
       showCommandError(r, 'ui.fallback.createGroups');
       pull();
@@ -1242,7 +1309,12 @@
     const deps: string[] = [...new Set(ordered)].map((id) => `cmd-${id}`);
     if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
     const cmdId = `cmd-setcg-${classId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
-    const r = c.setClassGroups(classId, { ...payload, playerIds: ordered }, deps, cmdId);
+    const r = c.setClassGroups(
+      classId,
+      { ...payload, playerIds: ordered, format: groupFormatForTrack(classId) },
+      deps,
+      cmdId,
+    );
     if (!r.success) {
       showCommandError(r, 'ui.fallback.createClassGroups');
       pull();
@@ -1775,6 +1847,64 @@
     return undefined;
   }
 
+  function findGroupMatchBetweenPairs(
+    t: Tournament,
+    g: GroupDefinition,
+    classId: string | undefined,
+    rowPairId: string,
+    colPairId: string,
+  ): Match | undefined {
+    if (rowPairId === colPairId) return undefined;
+    for (const m of Object.values(t.matches)) {
+      if (m.groupId !== g.id) continue;
+      if (classId ? m.classId !== classId : Boolean(m.classId)) continue;
+      const ok =
+        (m.pairA === rowPairId && m.pairB === colPairId) ||
+        (m.pairA === colPairId && m.pairB === rowPairId);
+      if (ok) return m;
+    }
+    return undefined;
+  }
+
+  function groupMatrixPairOrder(g: GroupDefinition): string[] {
+    return [...(g.pairIds ?? [])];
+  }
+
+  function groupStandingsWlByPairId(
+    t: Tournament,
+    g: GroupDefinition,
+    classId: string | undefined,
+  ): Record<string, { w: number; l: number }> {
+    const m: Record<string, { w: number; l: number }> = {};
+    for (const row of groupStandingsRowsForBracket(t, g, classId)) {
+      m[row.pid] = { w: row.w, l: row.l };
+    }
+    return m;
+  }
+
+  function groupMatrixGamesWonDigitPairs(
+    t: Tournament,
+    g: GroupDefinition,
+    classId: string | undefined,
+    rowPairId: string,
+    colPairId: string,
+  ): string {
+    if (rowPairId === colPairId) return '';
+    const m = findGroupMatchBetweenPairs(t, g, classId, rowPairId, colPairId);
+    if (!m || m.scores.length === 0) return '';
+    let won = 0;
+    let anyDecided = false;
+    const rowIsA = m.pairA === rowPairId;
+    for (const gs of m.scores) {
+      const w = gameWinner(gs);
+      if (w === undefined) continue;
+      anyDecided = true;
+      if ((rowIsA && w === 'A') || (!rowIsA && w === 'B')) won++;
+    }
+    if (!anyDecided) return '';
+    return String(won);
+  }
+
   /** Games won by `rowPid` vs `colPid` from decided games only; empty string if none yet (show placeholder in UI). */
   function groupMatrixGamesWonDigit(
     t: Tournament,
@@ -1806,8 +1936,7 @@
   }
 
   function groupMatrixCellAriaLabel(t: Tournament, m: Match): string {
-    const a = playerLabel(m.playerA);
-    const b = playerLabel(m.playerB);
+    const { sideA: a, sideB: b } = matchSideLabels(t, m, m.classId);
     const params = { a, b };
     if (m.scores.length === 0 && m.status === 'scheduled') {
       return groupMatrixCellViewOnly(t, m)
@@ -2166,6 +2295,11 @@
       classFlagDrafts = cfd;
       tournament = t;
 
+      const doublesDrafts = buildDoublesTrackDraftsFromTournament(t);
+      if (JSON.stringify(doublesDrafts) !== JSON.stringify(sFinal.doublesRandomPartnersByTrack)) {
+        patchActiveSession({ doublesRandomPartnersByTrack: doublesDrafts });
+      }
+
       if (options.persist !== false) {
         void persistActiveSession();
       }
@@ -2319,6 +2453,7 @@
       lastSetClassGroupsCommandIdByClass: {},
       lastGenerateBracketCommandId: '',
       lastGenerateBracketCommandIdByClass: {},
+      doublesRandomPartnersByTrack: {},
       tournamentFormat: draftTournamentFormat,
     };
     activateSession(session);
@@ -2583,7 +2718,22 @@
         const a = bm.seedA!;
         const b = bm.seedB!;
         const createCmdId = `${genId}-pair-${bm.id}`;
-        const rM = c.createMatch(mid, a, b, [genId, `cmd-${a}`, `cmd-${b}`], createCmdId, classId);
+        const pairs = getTrackPairs(live, classId);
+        const pairA = pairs[a];
+        const pairB = pairs[b];
+        const rM =
+          pairA && pairB
+            ? c.createMatch(
+                mid,
+                pairA.playerIds[0],
+                pairB.playerIds[0],
+                [genId, `cmd-${a}`, `cmd-${b}`],
+                createCmdId,
+                classId,
+                a,
+                b,
+              )
+            : c.createMatch(mid, a, b, [genId, `cmd-${a}`, `cmd-${b}`], createCmdId, classId);
         if (!rM.success) {
           showError(rM.reason ?? 'createMatch failed');
           return;
@@ -3243,6 +3393,21 @@
 
   onMount(() => {
     void refreshRecentTournaments();
+    if (import.meta.env.VITE_E2E) {
+      installTestBridge({
+        getActiveSession: () => {
+          const s = getActiveSession();
+          if (!s) return undefined;
+          return {
+            tournamentName: s.tournamentName,
+            controller: s.controller,
+          };
+        },
+      });
+    }
+    return () => {
+      if (import.meta.env.VITE_E2E) uninstallTestBridge();
+    };
   });
 </script>
 
@@ -3278,6 +3443,7 @@
           <button
             type="button"
             class="session-close-btn"
+            data-testid="session-close"
             title={msgText('ui.close_tournament')}
             aria-label={msgText('ui.close_tournament') + ' ' + activeSess.tournamentName}
             onclick={() => void closeActiveSession()}
@@ -3308,6 +3474,7 @@
         class:status-banner--warn={status.kind === 'warn'}
         class:status-banner--error={status.kind === 'error'}
         role={status.kind === 'error' ? 'alert' : 'status'}
+        data-testid="status-banner"
       >
         {#if statusResolved}
           <span class:i18n-fallback={statusResolved.isFallback}>{statusResolved.text}</span>
@@ -3327,7 +3494,7 @@
             <div class="btn-row">
               <label class="file-btn">
                 <Msg key="ui.import.tournament" />
-                <input type="file" accept=".jsonl,.txt,application/json,text/plain" class="sr" onchange={onImportFile} />
+                <input type="file" accept=".jsonl,.txt,application/json,text/plain" class="sr" data-testid="import-jsonl" onchange={onImportFile} />
               </label>
             </div>
             {#if !storageAvailable}
@@ -3343,6 +3510,7 @@
                 <input
                   class="draft-tournament-name-input"
                   type="text"
+                  data-testid="wizard-name"
                   bind:value={draftTournamentName}
                   maxlength="120"
                   autocomplete="off"
@@ -3350,7 +3518,7 @@
               </label>
               <label class="field-block draft-tables-field">
                 <span class="field-label"><Msg key="ui.settings.tablesLabel" /></span>
-                <input type="number" min="1" max="32" step="1" bind:value={draftTableCount} />
+                <input type="number" min="1" max="32" step="1" data-testid="wizard-tables" bind:value={draftTableCount} />
               </label>
             </div>
 
@@ -3371,7 +3539,7 @@
             </fieldset>
 
             <label class="checkbox-line">
-              <input type="checkbox" bind:checked={draftHandicapEnabled} />
+              <input type="checkbox" data-testid="wizard-handicap" bind:checked={draftHandicapEnabled} />
               <span><Msg key="ui.include_handicap_for_players" /></span>
             </label>
 
@@ -3430,7 +3598,7 @@
             </div>
 
             <label class="checkbox-line">
-              <input type="checkbox" bind:checked={draftClassesEnabled} />
+              <input type="checkbox" data-testid="wizard-classes" bind:checked={draftClassesEnabled} />
               <span><Msg key="ui.use_competition_classes" /></span>
             </label>
 
@@ -3474,7 +3642,7 @@
             {/if}
 
             <div class="btn-row">
-              <button type="button" class="btn primary" onclick={createTournamentFromWizard}><Msg key="ui.create_tournament" /></button>
+              <button type="button" class="btn primary" data-testid="wizard-create" onclick={createTournamentFromWizard}><Msg key="ui.create_tournament" /></button>
             </div>
           </div>
 
@@ -3493,6 +3661,7 @@
                     <button
                       type="button"
                       class="recent-entry-btn"
+                      data-testid="recent-{entry.tournamentName}"
                       disabled={tournamentLoad !== null}
                       onclick={() => openStoredTournament(entry.fileId)}
                     >
@@ -3502,6 +3671,7 @@
                     <button
                       type="button"
                       class="recent-delete-btn"
+                      data-testid="recent-delete-{entry.tournamentName}"
                       title={msgText('ui.delete_saved_tournament')}
                       aria-label={msgText('ui.aria.deleteNamed', { name: entry.tournamentName })}
                       onclick={() => openDeleteTournamentModal(entry)}
@@ -3556,6 +3726,7 @@
               <button
                 type="button"
                 class="btn ghost title-export-btn"
+                data-testid="export-jsonl"
                 title={msgText('ui.download_command_log_jsonl')}
                 onclick={downloadJsonl}
               >
@@ -3564,6 +3735,7 @@
               <button
                 type="button"
                 class="btn ghost title-export-btn"
+                data-testid="export-pdf"
                 title={msgText('ui.download_groups_bracket_and_results_summary_pdf')}
                 onclick={() => exportTournamentPdf()}
               >
@@ -3577,6 +3749,7 @@
           <button
             type="button"
             class="inner-tab"
+            data-testid="tab-overview"
             class:active={showOverviewPanel}
             onclick={selectOverviewNav}
           >
@@ -3585,6 +3758,7 @@
           <button
             type="button"
             class="inner-tab"
+            data-testid="tab-players"
             class:active={showPlayersPanel}
             onclick={selectPlayersNav}
           >
@@ -3615,6 +3789,7 @@
               <button
                 type="button"
                 class="inner-tab"
+                data-testid="tab-{tab.id}"
                 class:active={singleTrackInner === tab.id}
                 onclick={() => selectSingleTrackTab(tab.id)}
               >
@@ -3640,6 +3815,7 @@
             <button
               type="button"
               class="btn ghost subtle class-track-export-btn"
+              data-testid="export-class-pdf"
               title={msgText('ui.export.classPdfTitle', { name: classPdfDef?.name ?? multiClassScreen.classId })}
               onclick={() => exportTournamentPdf(multiClassScreen.classId)}
             >
@@ -3681,7 +3857,7 @@
                   addPlayer();
                 }}
               >
-                <input class="grow" placeholder={msgText('ui.name')} bind:value={newName} autocomplete="off" />
+                <input class="grow" data-testid="player-name-input" placeholder={msgText('ui.name')} bind:value={newName} autocomplete="off" />
                 {#if miscEnabled}
                   <label class="hc-add-wrap" for="new-player-misc">
                     <span class="hc-label">{miscFieldLabel}</span>
@@ -3714,7 +3890,7 @@
                     />
                   </label>
                 {/if}
-                <button type="submit" class="btn primary"><Msg key="ui.add_player" /></button>
+                <button type="submit" class="btn primary" data-testid="player-add-btn"><Msg key="ui.add_player" /></button>
               </form>
               {#if DEBUG_UI}
                 <div class="row align-end gap-sm debug-fill-row">
@@ -3723,13 +3899,14 @@
                     <input
                       class="debug-fill-count"
                       type="text"
+                      data-testid="debug-fill-count"
                       inputmode="numeric"
                       autocomplete="off"
                       aria-label={msgText('ui.number_of_players_to_add_debug')}
                       bind:value={debugFillPlayerCount}
                     />
                   </label>
-                  <button type="button" class="btn subtle" onclick={debugFillPlayers}><Msg key="ui.players.debugFill" /></button>
+                  <button type="button" class="btn subtle" data-testid="debug-fill-btn" onclick={debugFillPlayers}><Msg key="ui.players.debugFill" /></button>
                 </div>
               {/if}
               <div class="players-sort-row">
@@ -3800,6 +3977,20 @@
                     <Msg key="ui.group.allSeededIncluded" params={{ count: String(globalGroupPlayerCount) }} />
                   {/if}
                 </p>
+                <label class="group-doubles-option">
+                  <input
+                    type="checkbox"
+                    data-testid="group-doubles"
+                    disabled={tournament.bracketMatches.length > 0}
+                    checked={doublesEnabledForTrack(undefined)}
+                    onchange={(e) =>
+                      setDoublesEnabledForTrack(undefined, (e.currentTarget as HTMLInputElement).checked)}
+                  />
+                  <Msg key="ui.group.doublesRandomPartners" />
+                </label>
+                {#if doublesEnabledForTrack(undefined) && globalGroupPlayerCount % 2 !== 0}
+                  <p class="muted small"><Msg key="ui.group.doublesEvenCountRequired" /></p>
+                {/if}
                 <div class="group-create-row">
                   <input
                     class="group-create-num"
@@ -3817,7 +4008,8 @@
                   <button
                     type="button"
                     class="btn primary"
-                    disabled={tournament.bracketMatches.length > 0 || globalGroupPlayerCount === 0}
+                    data-testid="groups-create-by-players"
+                    disabled={tournament.bracketMatches.length > 0 || globalGroupPlayerCount === 0 || (doublesEnabledForTrack(undefined) && globalGroupPlayerCount % 2 !== 0)}
                     onclick={createGlobalGroupsByPlayerCount}
                   >
                     <Msg key="ui.group.createByPlayerCount" />
@@ -3839,7 +4031,7 @@
                   <button
                     type="button"
                     class="btn primary"
-                    disabled={tournament.bracketMatches.length > 0 || globalGroupPlayerCount === 0}
+                    disabled={tournament.bracketMatches.length > 0 || globalGroupPlayerCount === 0 || (doublesEnabledForTrack(undefined) && globalGroupPlayerCount % 2 !== 0)}
                     onclick={createGlobalGroupsByGroupCount}
                   >
                     <Msg key="ui.group.createByGroupCount" />
@@ -3851,6 +4043,7 @@
                   <button
                     type="button"
                     class="btn danger-ghost"
+                    data-testid="groups-clear"
                     disabled={tournament.bracketMatches.length > 0}
                     onclick={clearGlobalGroups}
                   >
@@ -3859,13 +4052,86 @@
                 </div>
                 {#if DEBUG_UI}
                   <div class="row align-end">
-                    <button type="button" class="btn subtle" onclick={() => debugSimulateGroupMatches(undefined)}>
+                    <button type="button" class="btn subtle" data-testid="debug-simulate-group" onclick={() => debugSimulateGroupMatches(undefined)}>
                       <Msg key="ui.group.debugSimulateMatches" />
                     </button>
                   </div>
                 {/if}
                 <h3 class="h3"><Msg key="ui.groups" /></h3>
                 {#each sortGroupsForDisplay(tournament.groups) as g (g.id)}
+                  {#if isDoublesTrack(tournament, undefined)}
+                    {@const matrixPairIds = groupMatrixPairOrder(g)}
+                    {@const standingsWl = groupStandingsWlByPairId(tournament, g, undefined)}
+                    <article class="sub-card">
+                      <h4 class="h4">{groupDisplayLabel(g)}</h4>
+                      <div class="group-matrix-wrap">
+                        <table class="grid compact group-matrix-table">
+                          <thead>
+                            <tr>
+                              <th><Msg key="ui.pair.detailTitle" /></th>
+                              {#each matrixPairIds as colPairId (colPairId)}
+                                <th class="h2h-th">
+                                  <button
+                                    type="button"
+                                    class="pair-label-btn"
+                                    onclick={() => openPairDetailModal(colPairId, undefined)}
+                                  >
+                                    {pairDisplayLabel(tournament, colPairId, undefined)}
+                                  </button>
+                                </th>
+                              {/each}
+                              <th><Msg key="ui.standings.win" /></th>
+                              <th><Msg key="ui.standings.loss" /></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {#each matrixPairIds as rowPairId (rowPairId)}
+                              <tr>
+                                <td>
+                                  <button
+                                    type="button"
+                                    class="pair-label-btn"
+                                    onclick={() => openPairDetailModal(rowPairId, undefined)}
+                                  >
+                                    {pairDisplayLabel(tournament, rowPairId, undefined)}
+                                  </button>
+                                </td>
+                                {#each matrixPairIds as colPairId (colPairId)}
+                                  <td class="h2h-cell">
+                                    {#if rowPairId === colPairId}
+                                      <span class="matrix-diag" aria-hidden="true">·</span>
+                                    {:else}
+                                      {@const gm = findGroupMatchBetweenPairs(tournament, g, undefined, rowPairId, colPairId)}
+                                      {#if gm}
+                                        {@const wins = groupMatrixGamesWonDigitPairs(tournament, g, undefined, rowPairId, colPairId)}
+                                        <button
+                                          type="button"
+                                          class="group-matrix-cell-btn"
+                                          class:group-matrix-cell-readonly={groupMatrixCellViewOnly(tournament, gm)}
+                                          aria-label={groupMatrixCellAriaLabel(tournament, gm)}
+                                          onclick={() => openScoreModal(gm)}
+                                        >
+                                          {#if wins === ''}
+                                            <span class="group-matrix-placeholder">—</span>
+                                          {:else}
+                                            <span class="group-matrix-wins-digit">{wins}</span>
+                                          {/if}
+                                        </button>
+                                      {:else}
+                                        <span class="muted" title={msgText('ui.no_match')}>—</span>
+                                      {/if}
+                                    {/if}
+                                  </td>
+                                {/each}
+                                <td>{standingsWl[rowPairId]?.w ?? 0}</td>
+                                <td>{standingsWl[rowPairId]?.l ?? 0}</td>
+                              </tr>
+                            {/each}
+                          </tbody>
+                        </table>
+                      </div>
+                    </article>
+                  {:else}
                   {@const matrixPids = groupMatrixPlayerOrder(g)}
                   {@const standingsWl = groupStandingsWlByPid(tournament, g, undefined)}
                   <article class="sub-card">
@@ -3923,6 +4189,7 @@
                       </table>
                     </div>
                   </article>
+                  {/if}
                 {/each}
               {/if}
 
@@ -3969,6 +4236,7 @@
                   <button
                     type="button"
                     class="btn primary"
+                    data-testid="bracket-create"
                     disabled={bracketHeuristicSearch !== null ||
                       Object.keys(bracketTrack.groups).length === 0 ||
                       bracketTrackSeedingIds.length === 0}
@@ -3984,7 +4252,7 @@
 
               {#if bracketTrack.bracketMatches.length > 0}
                 <div class="row align-end bracket-remove-row" style="margin-bottom: 0.75rem;">
-                  <button type="button" class="btn danger-ghost" onclick={removeKnockoutBracket}>
+                  <button type="button" class="btn danger-ghost" data-testid="bracket-remove" onclick={removeKnockoutBracket}>
                     <Msg key="ui.bracket.removeBracket" />
                   </button>
                 </div>
@@ -4043,6 +4311,7 @@
                     <button
                       type="button"
                       class="btn subtle"
+                      data-testid="debug-simulate-bracket"
                       disabled={anyUnfinishedGroupPhaseMatch(tournament)}
                       title={debugSimulateBracketTitle()}
                       onclick={debugSimulateBracketPhaseMatches}
@@ -4105,6 +4374,19 @@
                       <Msg key="ui.group.allInClassIncluded" params={{ count: String(classGroupPlayerCount) }} />
                     {/if}
                   </p>
+                  <label class="group-doubles-option">
+                    <input
+                      type="checkbox"
+                      disabled={slice.bracketMatches.length > 0}
+                      checked={doublesEnabledForTrack(cid)}
+                      onchange={(e) =>
+                        setDoublesEnabledForTrack(cid, (e.currentTarget as HTMLInputElement).checked)}
+                    />
+                    <Msg key="ui.group.doublesRandomPartners" />
+                  </label>
+                  {#if doublesEnabledForTrack(cid) && classGroupPlayerCount % 2 !== 0}
+                    <p class="muted small"><Msg key="ui.group.doublesEvenCountRequired" /></p>
+                  {/if}
                   <div class="group-create-row">
                     <input
                       class="group-create-num"
@@ -4126,7 +4408,7 @@
                     <button
                       type="button"
                       class="btn primary"
-                      disabled={slice.bracketMatches.length > 0 || classGroupPlayerCount === 0}
+                      disabled={slice.bracketMatches.length > 0 || classGroupPlayerCount === 0 || (doublesEnabledForTrack(cid) && classGroupPlayerCount % 2 !== 0)}
                       onclick={() => createClassGroupsByPlayerCount(cid)}
                     >
                       <Msg key="ui.group.createByPlayerCount" />
@@ -4152,7 +4434,7 @@
                     <button
                       type="button"
                       class="btn primary"
-                      disabled={slice.bracketMatches.length > 0 || classGroupPlayerCount === 0}
+                      disabled={slice.bracketMatches.length > 0 || classGroupPlayerCount === 0 || (doublesEnabledForTrack(cid) && classGroupPlayerCount % 2 !== 0)}
                       onclick={() => createClassGroupsByGroupCount(cid)}
                     >
                       <Msg key="ui.group.createByGroupCount" />
@@ -4179,6 +4461,79 @@
                   {/if}
                   <h3 class="h3"><Msg key="ui.groups" /></h3>
                   {#each sortGroupsForDisplay(slice.groups) as g (g.id)}
+                    {#if isDoublesTrack(tournament, cid)}
+                      {@const matrixPairIds = groupMatrixPairOrder(g)}
+                      {@const standingsWl = groupStandingsWlByPairId(tournament, g, cid)}
+                      <article class="sub-card">
+                        <h4 class="h4">{groupDisplayLabel(g)}</h4>
+                        <div class="group-matrix-wrap">
+                          <table class="grid compact group-matrix-table">
+                            <thead>
+                              <tr>
+                                <th><Msg key="ui.pair.detailTitle" /></th>
+                                {#each matrixPairIds as colPairId (colPairId)}
+                                  <th class="h2h-th">
+                                    <button
+                                      type="button"
+                                      class="pair-label-btn"
+                                      onclick={() => openPairDetailModal(colPairId, cid)}
+                                    >
+                                      {pairDisplayLabel(tournament, colPairId, cid)}
+                                    </button>
+                                  </th>
+                                {/each}
+                                <th><Msg key="ui.standings.win" /></th>
+                                <th><Msg key="ui.standings.loss" /></th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {#each matrixPairIds as rowPairId (rowPairId)}
+                                <tr>
+                                  <td>
+                                    <button
+                                      type="button"
+                                      class="pair-label-btn"
+                                      onclick={() => openPairDetailModal(rowPairId, cid)}
+                                    >
+                                      {pairDisplayLabel(tournament, rowPairId, cid)}
+                                    </button>
+                                  </td>
+                                  {#each matrixPairIds as colPairId (colPairId)}
+                                    <td class="h2h-cell">
+                                      {#if rowPairId === colPairId}
+                                        <span class="matrix-diag" aria-hidden="true">·</span>
+                                      {:else}
+                                        {@const gm = findGroupMatchBetweenPairs(tournament, g, cid, rowPairId, colPairId)}
+                                        {#if gm}
+                                          {@const wins = groupMatrixGamesWonDigitPairs(tournament, g, cid, rowPairId, colPairId)}
+                                          <button
+                                            type="button"
+                                            class="group-matrix-cell-btn"
+                                            class:group-matrix-cell-readonly={groupMatrixCellViewOnly(tournament, gm)}
+                                            aria-label={groupMatrixCellAriaLabel(tournament, gm)}
+                                            onclick={() => openScoreModal(gm)}
+                                          >
+                                            {#if wins === ''}
+                                              <span class="group-matrix-placeholder">—</span>
+                                            {:else}
+                                              <span class="group-matrix-wins-digit">{wins}</span>
+                                            {/if}
+                                          </button>
+                                        {:else}
+                                          <span class="muted" title={msgText('ui.no_match')}>—</span>
+                                        {/if}
+                                      {/if}
+                                    </td>
+                                  {/each}
+                                  <td>{standingsWl[rowPairId]?.w ?? 0}</td>
+                                  <td>{standingsWl[rowPairId]?.l ?? 0}</td>
+                                </tr>
+                              {/each}
+                            </tbody>
+                          </table>
+                        </div>
+                      </article>
+                    {:else}
                     {@const matrixPids = groupMatrixPlayerOrder(g)}
                     {@const standingsWl = groupStandingsWlByPid(tournament, g, cid)}
                     <article class="sub-card">
@@ -4200,7 +4555,7 @@
                           <tbody>
                             {#each matrixPids as rowPid (rowPid)}
                               <tr>
-                                <td><PlayerName {tournament} playerId={rowPid} /></td>
+                                <td><PlayerName {tournament} playerId={rowPid} classId={cid} /></td>
                                 {#each matrixPids as colPid (colPid)}
                                   <td class="h2h-cell">
                                     {#if rowPid === colPid}
@@ -4236,6 +4591,7 @@
                         </table>
                       </div>
                     </article>
+                    {/if}
                   {/each}
                 {/if}
 
@@ -4281,6 +4637,7 @@
                     <button
                       type="button"
                       class="btn primary"
+                      data-testid="bracket-create"
                       disabled={bracketHeuristicSearch !== null ||
                         Object.keys(slice.groups).length === 0 ||
                         slice.seedings.length === 0}
@@ -4414,14 +4771,15 @@
 
   {#if activeSess}
     <footer class="tournament-footer app-dock-footer" aria-label="Tournament activity">
-      <p class="footer-last muted">
+      <p class="footer-last muted" data-testid="footer-last-command">
         <span class:i18n-fallback={lastCommandSummary.isFallback}>{lastCommandSummary.text}</span>
       </p>
       <div class="footer-actions">
-        <button type="button" class="btn ghost" onclick={doUndo} title={msgText('ui.append_undo_for_latest_undoable_step')}><Msg key="ui.undo" /></button>
+        <button type="button" class="btn ghost" data-testid="undo-btn" onclick={doUndo} title={msgText('ui.append_undo_for_latest_undoable_step')}><Msg key="ui.undo" /></button>
         <button
           type="button"
           class="btn ghost"
+          data-testid="redo-btn"
           onclick={doRedo}
           disabled={!activeSess.controller.canRedo()}
           title={msgText('ui.drop_last_undo_from_log')}
@@ -4595,6 +4953,7 @@
           id="delete-confirm-input"
           type="text"
           class="grow delete-confirm-input"
+          data-testid="delete-confirm-input"
           bind:value={deleteConfirmPhrase}
           autocomplete="off"
           spellcheck={false}
@@ -4615,6 +4974,7 @@
           <button
             type="button"
             class="btn danger-ghost"
+            data-testid="delete-confirm-btn"
             disabled={!deleteConfirmOk || deleteTournamentBusy}
             onclick={() => confirmDeleteTournament()}
           >
@@ -4625,10 +4985,46 @@
     </div>
   {/if}
 
+  {#if pairDetailModalPairId}
+    {@const pair = pairById(tournament, pairDetailModalClassId, pairDetailModalPairId)}
+    {#if pair}
+      <div class="modal-root">
+        <button
+          type="button"
+          class="modal-scrim"
+          aria-label={msgText('ui.close')}
+          onclick={() => closePairDetailModal()}
+        ></button>
+        <div class="modal-dialog" role="dialog" aria-modal="true" tabindex="-1">
+          <header class="modal-head">
+            <h3 class="modal-title">{pairDisplayLabel(tournament, pairDetailModalPairId, pairDetailModalClassId)}</h3>
+            <button type="button" class="btn subtle small-inline" onclick={() => closePairDetailModal()}>
+              <Msg key="ui.close" />
+            </button>
+          </header>
+          <ul class="plain-list pair-detail-list">
+            {#each pair.playerIds as pid (pid)}
+              <li><PlayerName {tournament} playerId={pid} classId={pairDetailModalClassId} tag="strong" /></li>
+            {/each}
+          </ul>
+          {#if isHandicapActive(tournament)}
+            <p class="muted small">
+              <Msg
+                key="ui.pair.combinedHandicap"
+                params={{ value: String(pairHandicapValue(tournament, pair)) }}
+              />
+            </p>
+          {/if}
+        </div>
+      </div>
+    {/if}
+  {/if}
+
   {#if scoreModalMatchId}
     {@const sm = tournament.matches[scoreModalMatchId]}
     {#if sm}
       {@const modalRows = scoreDrafts()[scoreModalMatchId] ?? defaultRows(MIN_GAME_ROWS)}
+      {@const scoreSides = matchSideLabels(tournament, sm, sm.classId)}
       <div class="modal-root">
         <button
           type="button"
@@ -4641,13 +5037,14 @@
           role="dialog"
           aria-modal="true"
           aria-labelledby="score-modal-title"
+          data-testid="score-modal"
           tabindex="-1"
         >
           <header class="modal-head">
             <h3 id="score-modal-title" class="modal-title">
               <Msg
                 key="ui.score.gamesTitle"
-                params={{ a: playerLabel(sm.playerA), b: playerLabel(sm.playerB) }}
+                params={{ a: scoreSides.sideA, b: scoreSides.sideB }}
               />
             </h3>
             <button type="button" class="btn subtle small-inline" onclick={() => cancelScoreModal()}><Msg key="ui.close" /></button>
@@ -4674,8 +5071,8 @@
             <thead>
               <tr>
                 <th>#</th>
-                <th>{playerLabel(sm.playerA)}</th>
-                <th>{playerLabel(sm.playerB)}</th>
+                <th>{scoreSides.sideA}</th>
+                <th>{scoreSides.sideB}</th>
               </tr>
             </thead>
             <tbody>
@@ -4686,6 +5083,7 @@
                     <input
                       type="number"
                       min="0"
+                      data-testid="score-g{gi + 1}-a"
                       disabled={!rowIndexEnabled(modalRows, gi) || !scoreModalCanEditGames()}
                       value={srow.a === '' ? '' : srow.a}
                       oninput={(e) =>
@@ -4696,6 +5094,7 @@
                     <input
                       type="number"
                       min="0"
+                      data-testid="score-g{gi + 1}-b"
                       disabled={!rowIndexEnabled(modalRows, gi) || !scoreModalCanEditGames()}
                       value={srow.b === '' ? '' : srow.b}
                       oninput={(e) =>
@@ -4713,11 +5112,12 @@
             <p class="modal-error">{scoreModalHint}</p>
           {/if}
           <div class="row modal-actions">
-            <button type="button" class="btn" onclick={() => cancelScoreModal()}><Msg key="ui.cancel" /></button>
+            <button type="button" class="btn" data-testid="score-cancel" onclick={() => cancelScoreModal()}><Msg key="ui.cancel" /></button>
             {#if DEBUG_UI}
               <button
                 type="button"
                 class="btn subtle"
+                data-testid="debug-simulate-score"
                 disabled={!scoreModalCanEditGames()}
                 onclick={() => debugSimulateOpenScoreModalMatch()}
               >
@@ -4725,13 +5125,14 @@
               </button>
             {/if}
             {#if scoreModalCanClearResult()}
-              <button type="button" class="btn danger-ghost" onclick={() => clearScoreModalBracketResult()}>
+              <button type="button" class="btn danger-ghost" data-testid="score-clear" onclick={() => clearScoreModalBracketResult()}>
                 <Msg key="ui.score.clearResult" />
               </button>
             {/if}
             <button
               type="button"
               class="btn primary"
+              data-testid="score-save"
               disabled={!scoreModalCanEditGames()}
               onclick={() => submitScores(sm)}
             >
@@ -5553,6 +5954,35 @@
     flex-wrap: wrap;
     align-items: flex-end;
     gap: 0.75rem;
+  }
+
+  .group-doubles-option {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0.5rem 0;
+    font-size: 0.9rem;
+  }
+
+  .pair-label-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+    text-decoration: underline;
+    text-decoration-color: transparent;
+  }
+
+  .pair-label-btn:hover {
+    text-decoration-color: currentColor;
+  }
+
+  .pair-detail-list {
+    margin: 0.5rem 0 0;
+    padding-left: 1.25rem;
   }
 
   .group-create-row {

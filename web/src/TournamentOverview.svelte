@@ -1,6 +1,14 @@
 <script lang="ts">
   import type { BracketMatch, GroupDefinition, Match, MatchNotesSegment, Tournament } from 'ttc-tornooiapp';
-  import { listCompetitionTracks, trackGroupMatches, trackDefinedGroupMatches, aggregateGroupPhaseCounts, trackTitle } from 'ttc-tornooiapp';
+  import {
+    allPlayersInMatch,
+    listCompetitionTracks,
+    matchSideLabels,
+    trackGroupMatches,
+    trackDefinedGroupMatches,
+    aggregateGroupPhaseCounts,
+    trackTitle,
+  } from 'ttc-tornooiapp';
   import {
     bracketKnockoutRoundParams,
     bracketMatchRound,
@@ -17,6 +25,7 @@
     matchNotesSegmentHasSlips,
     matchNotesSegmentLabel,
     matchPlayersResolvedForBracketPhaseList,
+    formatBracketSlotPlayerLabel,
     estimateScheduleWaves,
     matchesOnTablesInAssignmentOrder,
     minWavesAvoidBackToBackOrder,
@@ -111,12 +120,11 @@
   function readyMatchTableConstraint(
     t: Tournament,
     matchId: string,
-    playerA: string,
-    playerB: string,
+    m: Match,
   ): ReadyTableConstraint {
     const busyTables = new Map<string, string>();
     let hasBusyPlayer = false;
-    for (const playerId of [playerA, playerB]) {
+    for (const playerId of allPlayersInMatch(t, m, m.classId)) {
       const otherIds = inProgressMatchIdsForPlayer(t, playerId).filter((id) => id !== matchId);
       if (otherIds.length === 0) continue;
       hasBusyPlayer = true;
@@ -137,7 +145,7 @@
   function readyConstraintForMatchId(matchId: string): ReadyTableConstraint | null {
     const m = tournament.matches[matchId];
     if (!m) return null;
-    return readyMatchTableConstraint(tournament, matchId, m.playerA, m.playerB);
+    return readyMatchTableConstraint(tournament, matchId, m);
   }
 
   const draggingReadyConstraint = $derived.by((): ReadyTableConstraint | null => {
@@ -753,7 +761,8 @@
           {#each readyAllDisplay as entry (entry.key)}
             {#if entry.kind === 'group'}
               {@const m = entry.match}
-              {@const readyConstraint = readyMatchTableConstraint(tournament, m.id, m.playerA, m.playerB)}
+              {@const readyConstraint = readyMatchTableConstraint(tournament, m.id, m)}
+              {@const readySides = matchSideLabels(tournament, m, m.classId)}
               <li
                 class="ov-ready-item"
                 draggable="true"
@@ -764,9 +773,9 @@
               >
                 <button type="button" class="ov-ready-btn" onclick={() => onOpenGroupMatch(m)}>
                   <span class="ov-ready-pair"
-                    ><PlayerName {tournament} playerId={m.playerA} tag="strong" />
+                    ><strong>{readySides.sideA}</strong>
                     <Msg key="ui.ov.vs" tag="span" />
-                    <PlayerName {tournament} playerId={m.playerB} tag="strong" /></span
+                    <strong>{readySides.sideB}</strong></span
                   >
                   <span class="muted small ov-ready-meta">{readyGroupMatchMeta(tournament, m)}</span>
                 </button>
@@ -776,7 +785,7 @@
               {@const bracketMatch = tournament.matches[bracketMid]}
               {@const readyConstraint =
                 bracketMatch
-                  ? readyMatchTableConstraint(tournament, bracketMid, bracketMatch.playerA, bracketMatch.playerB)
+                  ? readyMatchTableConstraint(tournament, bracketMid, bracketMatch)
                   : { hasBusyPlayer: false, swapTargetTableId: null, incumbentMatchId: null }}
               <li
                 class="ov-ready-item"
@@ -789,9 +798,9 @@
               >
                 <button type="button" class="ov-ready-btn" onclick={() => onOpenBracketSlot(entry.bm)}>
                   <span class="ov-ready-pair"
-                    ><PlayerName {tournament} playerId={entry.bm.seedA!} tag="strong" />
+                    ><strong>{formatBracketSlotPlayerLabel(tournament, entry.bm.seedA!, bracketMatch?.classId)}</strong>
                     <Msg key="ui.ov.vs" tag="span" />
-                    <PlayerName {tournament} playerId={entry.bm.seedB!} tag="strong" /></span
+                    <strong>{formatBracketSlotPlayerLabel(tournament, entry.bm.seedB!, bracketMatch?.classId)}</strong></span
                   >
                   <span class="muted small ov-ready-meta">{entry.meta}</span>
                 </button>

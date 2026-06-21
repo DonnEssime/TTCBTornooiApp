@@ -1,4 +1,5 @@
 export * from './model';
+export * from './doubles-track';
 export * from './competition-track';
 export * from './match-notes';
 export * from './match-ordering';

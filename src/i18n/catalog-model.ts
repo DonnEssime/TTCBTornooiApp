@@ -42,6 +42,7 @@ export const modelCatalog = {
     '{{group}} {{placeWord}} {{place}}',
     '{{group}} {{placeWord}} {{place}}',
   ),
+  'model.pairDisplayLabel': t('{{a}} / {{b}}', '{{a}} / {{b}}'),
   'model.playerAlreadyOnTable': t(
     '{{name}} is already playing another match{{tablePart}}',
     '{{name}} speelt al een andere wedstrijd{{tablePart}}',

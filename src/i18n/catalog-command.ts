@@ -165,6 +165,18 @@ export const commandCatalog = {
     'Player {{pid}} cannot appear in more than one group',
     'Speler {{pid}} mag niet in meer dan één groep staan',
   ),
+  'command.doublesRequiresEvenPlayerCount': t(
+    'Doubles requires an even number of players on this track',
+    'Dubbelspel vereist een even aantal spelers op dit onderdeel',
+  ),
+  'command.doublesTargetGroupSizeEven': t(
+    'Doubles target players per group must be an even number of at least 2',
+    'Dubbelspel: streefaantal spelers per groep moet een even getal van minstens 2 zijn',
+  ),
+  'command.movePlayerDisabledInDoubles': t(
+    'Cannot move players between groups in doubles (fixed partner pairings)',
+    'Spelers verplaatsen tussen groepen is niet mogelijk bij dubbelspel (vaste koppels)',
+  ),
   'command.setClassGroupsOnlyWithMultipleClasses': t(
     'SetClassGroups is only used when multiple competition classes are defined',
     'SetClassGroups wordt alleen gebruikt wanneer meerdere reeksen zijn gedefinieerd',

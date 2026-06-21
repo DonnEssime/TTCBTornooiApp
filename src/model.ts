@@ -33,6 +33,12 @@ export interface Match {
   scores: GameScore[];
   status: MatchStatus;
   winner?: PlayerId;
+  /** Doubles: competition pair on side A (group/knockout). */
+  pairA?: string;
+  /** Doubles: competition pair on side B. */
+  pairB?: string;
+  /** Doubles: winning pair id when match is finished. */
+  winnerPairId?: string;
   /** Set for group-stage player matches (not bracket). */
   groupId?: string;
   /** Set for group-stage matches in a multi-class track. */
@@ -85,6 +91,15 @@ export interface GroupDefinition {
   /** Display name; falls back to id in the UI when missing. */
   label?: string;
   playerIds: PlayerId[];
+  /** Doubles: ordered pair ids in this group. */
+  pairIds?: string[];
+}
+
+export type TrackFormat = 'singles' | 'doubles-random-partners';
+
+export interface CompetitionPair {
+  id: string;
+  playerIds: [PlayerId, PlayerId];
 }
 
 /** User-defined competition track within one tournament (e.g. junior, handicapped). */
@@ -100,6 +115,10 @@ export interface ClassTournamentSlice {
   groups: Record<string, GroupDefinition>;
   bracketMatches: BracketMatch[];
   lockedBracketRounds: number[];
+  /** Doubles-with-random-partners when set at group creation. */
+  competitionFormat?: TrackFormat;
+  /** Fixed random partner pairings for this class track. */
+  pairs?: Record<string, CompetitionPair>;
 }
 
 export type ForfeitGroupMode = 'auto-win' | 'not-played';
@@ -232,6 +251,10 @@ export interface Tournament {
   tableAssignments: TableAssignment[];
   seedings: string[];
   groups: Record<string, GroupDefinition>;
+  /** Doubles-with-random-partners when set at group creation (main track). */
+  competitionFormat?: TrackFormat;
+  /** Fixed random partner pairings for the main track. */
+  pairs?: Record<string, CompetitionPair>;
   forfeits: ForfeitState;
   forfeitGroupMode?: ForfeitGroupMode;
   forfeitResults: ForfeitResults;
@@ -966,8 +989,8 @@ function seedPositions(size: number): number[] {
   return result;
 }
 
-/** Standings row for one group (W/L, then player id), best first — same rules as the web group table. */
-export function groupStandingsRowsForBracket(
+/** Standings row for one singles group (W/L, then player id), best first. */
+export function groupStandingsRowsForBracketSingles(
   tournament: Tournament,
   g: GroupDefinition,
   classId: string | undefined,
@@ -986,6 +1009,57 @@ export function groupStandingsRowsForBracket(
   return [...pids]
     .map((pid) => ({ pid, w: wins[pid] ?? 0, l: losses[pid] ?? 0 }))
     .sort((a, b) => b.w - a.w || a.l - b.l || a.pid.localeCompare(b.pid));
+}
+
+/** Doubles: resolve winning pair id from a finished match. */
+export function winningPairIdFromMatch(m: Match): string | undefined {
+  if (!m.pairA || !m.pairB) return undefined;
+  if (m.winnerPairId) return m.winnerPairId;
+  if (m.status !== 'finished' || !m.winner) return undefined;
+  if (m.winner === m.playerA) return m.pairA;
+  if (m.winner === m.playerB) return m.pairB;
+  return undefined;
+}
+
+/** Standings row for one doubles group (W/L per pair), best first. */
+export function groupStandingsRowsForBracketDoubles(
+  tournament: Tournament,
+  g: GroupDefinition,
+  classId: string | undefined,
+): Array<{ pid: PlayerId; w: number; l: number }> {
+  const pairIds = g.pairIds ?? [];
+  const wins: Record<string, number> = Object.fromEntries(pairIds.map((p) => [p, 0]));
+  const losses: Record<string, number> = Object.fromEntries(pairIds.map((p) => [p, 0]));
+  for (const m of Object.values(tournament.matches)) {
+    if (m.groupId !== g.id || m.status !== 'finished') continue;
+    if (classId ? m.classId !== classId : Boolean(m.classId)) continue;
+    const winnerPair = winningPairIdFromMatch(m);
+    if (!winnerPair || !m.pairA || !m.pairB) continue;
+    if (!pairIds.includes(m.pairA) || !pairIds.includes(m.pairB)) continue;
+    wins[winnerPair] = (wins[winnerPair] ?? 0) + 1;
+    const loserPair = winnerPair === m.pairA ? m.pairB : m.pairA;
+    losses[loserPair] = (losses[loserPair] ?? 0) + 1;
+  }
+  return [...pairIds]
+    .map((pid) => ({ pid, w: wins[pid] ?? 0, l: losses[pid] ?? 0 }))
+    .sort((a, b) => b.w - a.w || a.l - b.l || a.pid.localeCompare(b.pid));
+}
+
+function isDoublesTrackFormat(t: Tournament, classId: string | undefined): boolean {
+  const fmt = classId ? t.classTournaments[classId]?.competitionFormat : t.competitionFormat;
+  return fmt === 'doubles-random-partners';
+}
+
+/** Standings row for one group (W/L, then participant id), best first — singles or doubles. */
+export function groupStandingsRowsForBracket(
+  tournament: Tournament,
+  g: GroupDefinition,
+  classId: string | undefined,
+): Array<{ pid: PlayerId; w: number; l: number }> {
+  if (isDoublesTrackFormat(tournament, classId)) {
+    return groupStandingsRowsForBracketDoubles(tournament, g, classId);
+  }
+  return groupStandingsRowsForBracketSingles(tournament, g, classId);
 }
 
 /**
@@ -1027,6 +1101,19 @@ export function findGroupForPlayer(
 ): GroupDefinition | undefined {
   const rec = groupRecordForBracketScope(tournament, classId);
   return Object.values(rec).find((g) => g.playerIds.includes(playerId));
+}
+
+function trackPairsRecord(tournament: Tournament, classId: string | undefined): Record<string, CompetitionPair> {
+  return classId ? tournament.classTournaments[classId]?.pairs ?? {} : tournament.pairs ?? {};
+}
+
+export function findGroupForPairId(
+  tournament: Tournament,
+  pairId: string,
+  classId: string | undefined,
+): GroupDefinition | undefined {
+  const rec = groupRecordForBracketScope(tournament, classId);
+  return Object.values(rec).find((g) => g.pairIds?.includes(pairId));
 }
 
 function sortGroupDefinitionsStable(groups: Record<string, GroupDefinition>): GroupDefinition[] {
@@ -2389,6 +2476,11 @@ export function bracketPlayerIdentityResolvedForDisplay(
   playerId: PlayerId,
   classId: string | undefined,
 ): boolean {
+  if (trackPairsRecord(tournament, classId)[playerId]) {
+    const g = findGroupForPairId(tournament, playerId, classId);
+    if (!g) return true;
+    return groupAllMatchesFinished(tournament, g, classId);
+  }
   const g = findGroupForPlayer(tournament, playerId, classId);
   if (!g) return true;
   return groupAllMatchesFinished(tournament, g, classId);
@@ -2416,6 +2508,21 @@ export function formatBracketSlotPlayerLabel(
   classId: string | undefined,
   locale: Locale = 'en',
 ): string {
+  const pair = trackPairsRecord(tournament, classId)[playerId];
+  if (pair) {
+    const g = findGroupForPairId(tournament, playerId, classId);
+    if (!g || groupAllMatchesFinished(tournament, g, classId)) {
+      const n1 = tournament.players[pair.playerIds[0]]?.name ?? pair.playerIds[0];
+      const n2 = tournament.players[pair.playerIds[1]]?.name ?? pair.playerIds[1];
+      return txt('model.pairDisplayLabel', locale, { a: n1, b: n2 });
+    }
+    const place = currentGroupPlace1Based(tournament, g, playerId, classId);
+    return txt('model.bracketSlotPlaceLabel', locale, {
+      group: displayLabelForGroup(g, locale),
+      placeWord: txt('model.placeWord', locale),
+      place: String(place),
+    });
+  }
   const g = findGroupForPlayer(tournament, playerId, classId);
   if (!g || groupAllMatchesFinished(tournament, g, classId)) {
     return tournament.players[playerId]?.name ?? playerId;
@@ -2434,6 +2541,12 @@ export function matchPlayersResolvedForBracketPhaseList(
   match: Match,
   classId: string | undefined,
 ): boolean {
+  if (match.pairA && match.pairB) {
+    return (
+      bracketPlayerIdentityResolvedForDisplay(tournament, match.pairA, classId) &&
+      bracketPlayerIdentityResolvedForDisplay(tournament, match.pairB, classId)
+    );
+  }
   return (
     bracketPlayerIdentityResolvedForDisplay(tournament, match.playerA, classId) &&
     bracketPlayerIdentityResolvedForDisplay(tournament, match.playerB, classId)
@@ -2680,10 +2793,18 @@ export function generateBracket(
 
   let participants = [...seedings];
 
-  // Remove group-forfeited players from participants pre-bracket (player tournaments only).
+  // Remove group-forfeited players (or pairs with a forfeited member) from participants pre-bracket.
   if (tournament?.forfeits) {
     const trackClassId = opts.classId;
+    const pairsRec = trackPairsRecord(tournament, trackClassId);
     participants = participants.filter((p) => {
+      const pair = pairsRec[p];
+      if (pair) {
+        return !pair.playerIds.some((pid) => {
+          const playerForfeit = tournament.forfeits.players[pid];
+          return playerForfeitAppliesToTrack(playerForfeit, 'group', trackClassId);
+        });
+      }
       const playerForfeit = tournament.forfeits.players[p as PlayerId];
       if (playerForfeitAppliesToTrack(playerForfeit, 'group', trackClassId)) {
         return false;
