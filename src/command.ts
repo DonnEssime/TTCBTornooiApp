@@ -1250,6 +1250,13 @@ export class CommandRunner {
             ...(bracketSeedingMode !== undefined ? { bracketSeedingMode } : {}),
           });
           applyBracketToTrack(tournament, bm, trackClassId);
+          if (isDoublesTrack(tournament, trackClassId)) {
+            ensureBracketPhasePlayerMatchesIn(
+              tournament,
+              getCompetitionTrack(tournament, trackClassId).bracketMatches,
+              trackClassId,
+            );
+          }
         } catch (e) {
           return commandFailFromText(e instanceof Error ? e.message : String(e));
         }

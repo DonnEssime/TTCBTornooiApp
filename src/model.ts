@@ -1020,26 +1020,208 @@ function seedPositions(size: number): number[] {
   return result;
 }
 
-/** Standings row for one singles group (W/L, then player id), best first. */
+type GroupStandingsParticipantMode = 'player' | 'pair';
+
+function groupMatchesForStandings(
+  tournament: Tournament,
+  g: GroupDefinition,
+  classId: string | undefined,
+): Match[] {
+  const out: Match[] = [];
+  for (const m of Object.values(tournament.matches)) {
+    if (m.groupId !== g.id) continue;
+    if (classId ? m.classId !== classId : Boolean(m.classId)) continue;
+    out.push(m);
+  }
+  return out;
+}
+
+function participantSideInGroupMatch(
+  m: Match,
+  pid: PlayerId,
+  mode: GroupStandingsParticipantMode,
+): 'A' | 'B' | undefined {
+  if (mode === 'pair') {
+    if (m.pairA === pid) return 'A';
+    if (m.pairB === pid) return 'B';
+    return undefined;
+  }
+  if (m.playerA === pid) return 'A';
+  if (m.playerB === pid) return 'B';
+  return undefined;
+}
+
+function headToHeadWinnerInGroup(
+  matches: readonly Match[],
+  pidA: PlayerId,
+  pidB: PlayerId,
+  mode: GroupStandingsParticipantMode,
+): PlayerId | undefined {
+  for (const m of matches) {
+    const sideA = participantSideInGroupMatch(m, pidA, mode);
+    const sideB = participantSideInGroupMatch(m, pidB, mode);
+    if (!sideA || !sideB || sideA === sideB) continue;
+    if (m.status !== 'finished') continue;
+    if (mode === 'pair') {
+      const winnerPair = winningPairIdFromMatch(m);
+      if (winnerPair === pidA || winnerPair === pidB) return winnerPair;
+      continue;
+    }
+    if (m.winner === pidA || m.winner === pidB) return m.winner;
+  }
+  return undefined;
+}
+
+function setsAndPointsWonInGroup(
+  matches: readonly Match[],
+  pid: PlayerId,
+  mode: GroupStandingsParticipantMode,
+): { setsWon: number; pointsWon: number } {
+  let setsWon = 0;
+  let pointsWon = 0;
+  for (const m of matches) {
+    if (m.status !== 'finished') continue;
+    const side = participantSideInGroupMatch(m, pid, mode);
+    if (!side) continue;
+    for (const score of m.scores) {
+      const gw = gameWinner(score);
+      if (gw === side) setsWon++;
+      pointsWon += side === 'A' ? score.playerA : score.playerB;
+    }
+  }
+  return { setsWon, pointsWon };
+}
+
+function groupStandingsTierByMetric(
+  pids: readonly PlayerId[],
+  metric: (pid: PlayerId) => number,
+): PlayerId[][] {
+  const sorted = [...pids].sort((a, b) => metric(b) - metric(a));
+  const tiers: PlayerId[][] = [];
+  for (const pid of sorted) {
+    const value = metric(pid);
+    const last = tiers[tiers.length - 1];
+    if (last && metric(last[0]!) === value) {
+      last.push(pid);
+    } else {
+      tiers.push([pid]);
+    }
+  }
+  return tiers;
+}
+
+function groupStandingsTieBreakSalt(
+  g: GroupDefinition,
+  classId: string | undefined,
+  pids: readonly PlayerId[],
+): string {
+  const scope = classId ?? 'main';
+  return `${scope}:${g.id}:group-standings-tie:${[...pids].sort().join(',')}`;
+}
+
+/**
+ * Recursive group-phase tie-break among equal W/L records:
+ * head-to-head (pairs only), sets won, points won; random shuffle when still tied.
+ */
+function resolveGroupStandingsTieGroup(
+  pids: readonly PlayerId[],
+  matches: readonly Match[],
+  mode: GroupStandingsParticipantMode,
+  g: GroupDefinition,
+  classId: string | undefined,
+): PlayerId[] {
+  if (pids.length <= 1) return [...pids];
+
+  if (pids.length === 2) {
+    const winner = headToHeadWinnerInGroup(matches, pids[0]!, pids[1]!, mode);
+    if (winner) {
+      const loser = winner === pids[0] ? pids[1]! : pids[0]!;
+      return [winner, loser];
+    }
+  }
+
+  const setsTiers = groupStandingsTierByMetric(pids, (pid) => setsAndPointsWonInGroup(matches, pid, mode).setsWon);
+  if (setsTiers.length > 1) {
+    return setsTiers.flatMap((tier) => resolveGroupStandingsTieGroup(tier, matches, mode, g, classId));
+  }
+
+  const pointsTiers = groupStandingsTierByMetric(
+    pids,
+    (pid) => setsAndPointsWonInGroup(matches, pid, mode).pointsWon,
+  );
+  if (pointsTiers.length > 1) {
+    return pointsTiers.flatMap((tier) => resolveGroupStandingsTieGroup(tier, matches, mode, g, classId));
+  }
+
+  return shuffleDeterministic([...pids], groupStandingsTieBreakSalt(g, classId, pids));
+}
+
+function buildGroupStandingsRows(
+  participantIds: readonly PlayerId[],
+  matches: readonly Match[],
+  mode: GroupStandingsParticipantMode,
+  g: GroupDefinition,
+  classId: string | undefined,
+): Array<{ pid: PlayerId; w: number; l: number }> {
+  const wins: Record<string, number> = Object.fromEntries(participantIds.map((p) => [p, 0]));
+  const losses: Record<string, number> = Object.fromEntries(participantIds.map((p) => [p, 0]));
+
+  for (const m of matches) {
+    if (m.status !== 'finished') continue;
+    if (mode === 'pair') {
+      const winnerPair = winningPairIdFromMatch(m);
+      if (!winnerPair || !m.pairA || !m.pairB) continue;
+      if (!participantIds.includes(m.pairA) || !participantIds.includes(m.pairB)) continue;
+      wins[winnerPair] = (wins[winnerPair] ?? 0) + 1;
+      const loserPair = winnerPair === m.pairA ? m.pairB : m.pairA;
+      losses[loserPair] = (losses[loserPair] ?? 0) + 1;
+    } else {
+      if (!m.winner) continue;
+      if (!participantIds.includes(m.playerA) || !participantIds.includes(m.playerB)) continue;
+      wins[m.winner] = (wins[m.winner] ?? 0) + 1;
+      const loser = m.winner === m.playerA ? m.playerB : m.playerA;
+      losses[loser] = (losses[loser] ?? 0) + 1;
+    }
+  }
+
+  const records = participantIds.map((pid) => ({
+    pid,
+    w: wins[pid] ?? 0,
+    l: losses[pid] ?? 0,
+  }));
+  const wlTiers: Array<Array<{ pid: PlayerId; w: number; l: number }>> = [];
+  for (const rec of [...records].sort((a, b) => b.w - a.w || a.l - b.l)) {
+    const last = wlTiers[wlTiers.length - 1];
+    if (last && last[0]!.w === rec.w && last[0]!.l === rec.l) {
+      last.push(rec);
+    } else {
+      wlTiers.push([rec]);
+    }
+  }
+
+  const ordered: PlayerId[] = [];
+  for (const tier of wlTiers) {
+    ordered.push(
+      ...resolveGroupStandingsTieGroup(
+        tier.map((r) => r.pid),
+        matches,
+        mode,
+        g,
+        classId,
+      ),
+    );
+  }
+  return ordered.map((pid) => ({ pid, w: wins[pid] ?? 0, l: losses[pid] ?? 0 }));
+}
+
+/** Standings row for one singles group (W/L, then tie-break rules), best first. */
 export function groupStandingsRowsForBracketSingles(
   tournament: Tournament,
   g: GroupDefinition,
   classId: string | undefined,
 ): Array<{ pid: PlayerId; w: number; l: number }> {
-  const pids = g.playerIds;
-  const wins: Record<string, number> = Object.fromEntries(pids.map((p) => [p, 0]));
-  const losses: Record<string, number> = Object.fromEntries(pids.map((p) => [p, 0]));
-  for (const m of Object.values(tournament.matches)) {
-    if (m.groupId !== g.id || m.status !== 'finished' || !m.winner) continue;
-    if (classId ? m.classId !== classId : Boolean(m.classId)) continue;
-    if (!pids.includes(m.playerA) || !pids.includes(m.playerB)) continue;
-    wins[m.winner] = (wins[m.winner] ?? 0) + 1;
-    const loser = m.winner === m.playerA ? m.playerB : m.playerA;
-    losses[loser] = (losses[loser] ?? 0) + 1;
-  }
-  return [...pids]
-    .map((pid) => ({ pid, w: wins[pid] ?? 0, l: losses[pid] ?? 0 }))
-    .sort((a, b) => b.w - a.w || a.l - b.l || a.pid.localeCompare(b.pid));
+  const matches = groupMatchesForStandings(tournament, g, classId);
+  return buildGroupStandingsRows(g.playerIds, matches, 'player', g, classId);
 }
 
 /** Doubles: resolve winning pair id from a finished match. */
@@ -1052,28 +1234,15 @@ export function winningPairIdFromMatch(m: Match): string | undefined {
   return undefined;
 }
 
-/** Standings row for one doubles group (W/L per pair), best first. */
+/** Standings row for one doubles group (W/L per pair, then tie-break rules), best first. */
 export function groupStandingsRowsForBracketDoubles(
   tournament: Tournament,
   g: GroupDefinition,
   classId: string | undefined,
 ): Array<{ pid: PlayerId; w: number; l: number }> {
   const pairIds = g.pairIds ?? [];
-  const wins: Record<string, number> = Object.fromEntries(pairIds.map((p) => [p, 0]));
-  const losses: Record<string, number> = Object.fromEntries(pairIds.map((p) => [p, 0]));
-  for (const m of Object.values(tournament.matches)) {
-    if (m.groupId !== g.id || m.status !== 'finished') continue;
-    if (classId ? m.classId !== classId : Boolean(m.classId)) continue;
-    const winnerPair = winningPairIdFromMatch(m);
-    if (!winnerPair || !m.pairA || !m.pairB) continue;
-    if (!pairIds.includes(m.pairA) || !pairIds.includes(m.pairB)) continue;
-    wins[winnerPair] = (wins[winnerPair] ?? 0) + 1;
-    const loserPair = winnerPair === m.pairA ? m.pairB : m.pairA;
-    losses[loserPair] = (losses[loserPair] ?? 0) + 1;
-  }
-  return [...pairIds]
-    .map((pid) => ({ pid, w: wins[pid] ?? 0, l: losses[pid] ?? 0 }))
-    .sort((a, b) => b.w - a.w || a.l - b.l || a.pid.localeCompare(b.pid));
+  const matches = groupMatchesForStandings(tournament, g, classId);
+  return buildGroupStandingsRows(pairIds, matches, 'pair', g, classId);
 }
 
 function isDoublesTrackFormat(t: Tournament, classId: string | undefined): boolean {
@@ -3480,11 +3649,18 @@ export function bracketEffectiveWinner(
   if (!bm.seedA || !bm.seedB) return undefined;
   const mid = bracketPlayerMatchId(bm.id, classId);
   const direct = tournament.matches[mid];
+  const pairSeeds =
+    Boolean(trackPairsRecord(tournament, classId)[bm.seedA]) ||
+    Boolean(trackPairsRecord(tournament, classId)[bm.seedB]);
   const match =
     direct && !direct.groupId && knockoutMatchHasDecisiveOutcome(direct)
       ? direct
-      : findMatchByPlayers(tournament, bm.seedA, bm.seedB, classId);
-  if (match && !match.groupId && knockoutMatchHasDecisiveOutcome(match)) return match.winner;
+      : pairSeeds
+        ? findMatchByBracketSeeds(tournament, bm.seedA, bm.seedB, classId)
+        : findMatchByPlayers(tournament, bm.seedA, bm.seedB, classId);
+  if (match && !match.groupId && knockoutMatchHasDecisiveOutcome(match)) {
+    return bracketWinnerFromMatch(tournament, match);
+  }
   return undefined;
 }
 

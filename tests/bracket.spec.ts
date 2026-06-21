@@ -19,6 +19,7 @@ import {
   compareBracketMatchIdString,
   ensureBracketPhasePlayerMatches,
   formatBracketSlotPlayerLabel,
+  groupStandingsRowsForBracket,
   materializeReadyNextRoundBracketSlots,
   orderParticipantsForGroupBalancedBracket,
   resolveClosedFormBracketSeedingKind,
@@ -140,14 +141,13 @@ describe('Bracket generation', () => {
     const ids = new Set(
       bracket.flatMap((m) => [m.seedA, m.seedB]).filter((x): x is string => Boolean(x)),
     );
-    expect(ids.size).toBe(4);
-    expect(ids.has('p1')).toBe(true);
-    expect(ids.has('p2')).toBe(true);
-    expect(ids.has('p5')).toBe(true);
-    expect(ids.has('p6')).toBe(true);
-    expect(ids.has('p3')).toBe(false);
-    expect(ids.has('p4')).toBe(false);
-    expect(ids.has('p7')).toBe(false);
+    const gaTop = groupStandingsRowsForBracket(tournament, tournament.groups.ga!, undefined)
+      .slice(0, 2)
+      .map((r) => r.pid);
+    const gbTop = groupStandingsRowsForBracket(tournament, tournament.groups.gb!, undefined)
+      .slice(0, 2)
+      .map((r) => r.pid);
+    expect(ids).toEqual(new Set([...gaTop, ...gbTop]));
   });
 
   it('advances bracket round after all winners are present', () => {

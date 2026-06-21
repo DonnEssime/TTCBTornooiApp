@@ -40,6 +40,8 @@
     isMiscActive,
     isPlayerDisplayIdentityTaken,
     matchPlayersResolvedForBracketPhaseList,
+    isTrackParticipantId,
+    bracketSeedsMatchSides,
     normalizeHandicapConfig,
     normalizeMiscConfig,
     formatPlayerDisplayLabel,
@@ -1012,7 +1014,7 @@
       const scgId = trackSetGroupsCommandId(s, classId);
       if (scgId) deps.push(scgId);
       const cmdId = `cmd-bracket-slot-${bm.id}-${Date.now()}`;
-      const r = c.createMatch(mid, seedA, seedB, deps, cmdId, classId);
+      const r = createBracketSeedPlayerMatch(c, tournament, mid, seedA, seedB, deps, cmdId, classId);
       if (!r.success) {
         showCommandError(r, 'ui.fallback.createBracketMatchRow');
         return;
@@ -1466,6 +1468,32 @@
     return m.status === 'scheduled' || m.status === 'in-progress';
   }
 
+  function createBracketSeedPlayerMatch(
+    c: TournamentController,
+    t: Tournament,
+    mid: string,
+    seedA: string,
+    seedB: string,
+    deps: string[],
+    cmdId: string,
+    classId?: string,
+  ) {
+    if (!isTrackParticipantId(t, seedA, classId) || !isTrackParticipantId(t, seedB, classId)) {
+      return { success: false as const, reason: 'command.playerNotFound' };
+    }
+    const sides = bracketSeedsMatchSides(t, seedA, seedB, classId);
+    return c.createMatch(
+      mid,
+      sides.playerA,
+      sides.playerB,
+      deps,
+      cmdId,
+      classId,
+      sides.pairA,
+      sides.pairB,
+    );
+  }
+
   /** After undo/clear, bracket slots may lack a `match-*` row; create scheduled rows so debug scoring can run. */
   function debugEnsureBracketMatchRows(
     c: TournamentController,
@@ -1477,7 +1505,6 @@
     const bracketMatches = getCompetitionTrack(t, classId).bracketMatches;
     for (const bm of bracketMatches) {
       if (!bm.seedA || !bm.seedB) continue;
-      if (!t.players[bm.seedA] || !t.players[bm.seedB]) continue;
       const mid = bracketPlayerMatchId(bm.id, classId);
       if (t.matches[mid]) continue;
       const deps: string[] = [`cmd-${bm.seedA}`, `cmd-${bm.seedB}`];
@@ -1485,7 +1512,7 @@
       const scgId = trackSetGroupsCommandId(s, classId);
       if (scgId) deps.push(scgId);
       const cmdId = `cmd-dbg-ensure-${bm.id}-${Date.now()}`;
-      const r = c.createMatch(mid, bm.seedA, bm.seedB, deps, cmdId, classId);
+      const r = createBracketSeedPlayerMatch(c, t, mid, bm.seedA, bm.seedB, deps, cmdId, classId);
       if (!r.success && r.reason !== 'command.matchAlreadyExists') {
         showCommandError(r, 'ui.fallback.createMatch');
       }
@@ -1804,35 +1831,13 @@
     });
   }
 
-  function groupStandingsForGroup(
-    t: Tournament,
-    g: GroupDefinition,
-    classId: string | undefined,
-  ): Array<{ pid: string; w: number; l: number }> {
-    const pids = g.playerIds;
-    const wins: Record<string, number> = Object.fromEntries(pids.map((p) => [p, 0]));
-    const losses: Record<string, number> = Object.fromEntries(pids.map((p) => [p, 0]));
-    for (const m of Object.values(t.matches)) {
-      if (m.groupId !== g.id || m.status !== 'finished' || !m.winner) continue;
-      if (classId ? m.classId !== classId : Boolean(m.classId)) continue;
-      if (!pids.includes(m.playerA) || !pids.includes(m.playerB)) continue;
-      wins[m.winner] = (wins[m.winner] ?? 0) + 1;
-      const loser = m.winner === m.playerA ? m.playerB : m.playerA;
-      losses[loser] = (losses[loser] ?? 0) + 1;
-    }
-    return [...pids]
-      .map((pid) => ({ pid, w: wins[pid] ?? 0, l: losses[pid] ?? 0 }))
-      .sort((a, b) => b.w - a.w || a.l - b.l || a.pid.localeCompare(b.pid));
-  }
-
-  /** W/L per player for the matrix footer columns (order-independent). */
   function groupStandingsWlByPid(
     t: Tournament,
     g: GroupDefinition,
     classId: string | undefined,
   ): Record<string, { w: number; l: number }> {
     const m: Record<string, { w: number; l: number }> = {};
-    for (const row of groupStandingsForGroup(t, g, classId)) {
+    for (const row of groupStandingsRowsForBracket(t, g, classId)) {
       m[row.pid] = { w: row.w, l: row.l };
     }
     return m;
@@ -2745,22 +2750,16 @@
         const a = bm.seedA!;
         const b = bm.seedB!;
         const createCmdId = `${genId}-pair-${bm.id}`;
-        const pairs = getTrackPairs(live, classId);
-        const pairA = pairs[a];
-        const pairB = pairs[b];
-        const rM =
-          pairA && pairB
-            ? c.createMatch(
-                mid,
-                pairA.playerIds[0],
-                pairB.playerIds[0],
-                [genId, `cmd-${a}`, `cmd-${b}`],
-                createCmdId,
-                classId,
-                a,
-                b,
-              )
-            : c.createMatch(mid, a, b, [genId, `cmd-${a}`, `cmd-${b}`], createCmdId, classId);
+        const rM = createBracketSeedPlayerMatch(
+          c,
+          live,
+          mid,
+          a,
+          b,
+          [genId, `cmd-${a}`, `cmd-${b}`],
+          createCmdId,
+          classId,
+        );
         if (!rM.success) {
           showError(rM.reason ?? 'createMatch failed');
           return;
