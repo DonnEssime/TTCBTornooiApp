@@ -84,6 +84,7 @@ export type CommandType =
   | 'SetSeedings'
   | 'SetHandicapConfig'
   | 'SetMiscConfig'
+  | 'SetDebugMode'
   | 'SetTournamentClasses'
   | 'AddTournamentClass'
   | 'SetPlayerClassFlags'
@@ -180,6 +181,11 @@ export interface SetHandicapConfigCommand extends CommandBase {
 export interface SetMiscConfigCommand extends CommandBase {
   type: 'SetMiscConfig';
   payload: { config: MiscConfig | null };
+}
+
+export interface SetDebugModeCommand extends CommandBase {
+  type: 'SetDebugMode';
+  payload: { enabled: boolean };
 }
 
 export interface SetTournamentClassesCommand extends CommandBase {
@@ -307,6 +313,7 @@ export type Command =
   | SetSeedingsCommand
   | SetHandicapConfigCommand
   | SetMiscConfigCommand
+  | SetDebugModeCommand
   | SetTournamentClassesCommand
   | AddTournamentClassCommand
   | SetPlayerClassFlagsCommand
@@ -949,6 +956,14 @@ export class CommandRunner {
         }
         return { success: true };
       }
+      case 'SetDebugMode': {
+        if (command.payload.enabled) {
+          tournament.debugMode = true;
+        } else {
+          delete tournament.debugMode;
+        }
+        return { success: true };
+      }
       case 'SetTournamentClasses': {
         const { classes } = command.payload;
         if (!Array.isArray(classes)) {
@@ -1246,13 +1261,11 @@ export class CommandRunner {
             ...(bracketSeedingMode !== undefined ? { bracketSeedingMode } : {}),
           });
           applyBracketToTrack(tournament, bm, trackClassId);
-          if (isDoublesTrack(tournament, trackClassId)) {
-            ensureBracketPhasePlayerMatchesIn(
-              tournament,
-              getCompetitionTrack(tournament, trackClassId).bracketMatches,
-              trackClassId,
-            );
-          }
+          ensureBracketPhasePlayerMatchesIn(
+            tournament,
+            getCompetitionTrack(tournament, trackClassId).bracketMatches,
+            trackClassId,
+          );
         } catch (e) {
           return commandFailFromText(e instanceof Error ? e.message : String(e));
         }

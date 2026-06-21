@@ -10,6 +10,8 @@ const FOOTER_SUMMARY_KEYS: string[] = [
   'ui.summary.setSeeding',
   'ui.summary.disabledHandicap',
   'ui.summary.disabledMisc',
+  'ui.summary.enabledDebugMode',
+  'ui.summary.disabledDebugMode',
   'ui.summary.miscConfig',
   'ui.summary.handicapConfig',
   'ui.summary.enteredScores',
@@ -72,6 +74,7 @@ const COMMAND_TYPES: CommandType[] = [
   'SetSeedings',
   'SetHandicapConfig',
   'SetMiscConfig',
+  'SetDebugMode',
   'SetTournamentClasses',
   'AddTournamentClass',
   'SetPlayerClassFlags',
@@ -99,6 +102,6 @@ describe('command summary i18n', () => {
   });
 
   it('lists a summary mapping for each command type', () => {
-    expect(COMMAND_TYPES.length).toBe(29);
+    expect(COMMAND_TYPES.length).toBe(30);
   });
 });

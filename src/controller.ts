@@ -16,6 +16,7 @@ import {
   SetSeedingsCommand,
   SetHandicapConfigCommand,
   SetMiscConfigCommand,
+  SetDebugModeCommand,
   SetTournamentClassesCommand,
   AddTournamentClassCommand,
   SetPlayerClassFlagsCommand,
@@ -279,6 +280,20 @@ export class TournamentController {
     };
     const result = this.runner.execute(command);
     this.view?.renderMessage(`SetMiscConfig: ${JSON.stringify(result)}`);
+    this.view?.renderTournament(this.getTournament());
+    return result;
+  }
+
+  setDebugMode(enabled: boolean, dependsOn: string[] = [], commandId?: string): CommandResult {
+    const command: SetDebugModeCommand = {
+      id: commandId ?? this.newCommandId(),
+      type: 'SetDebugMode',
+      timestamp: this.makeTimestamp(),
+      dependsOn,
+      payload: { enabled },
+    };
+    const result = this.runner.execute(command);
+    this.view?.renderMessage(`SetDebugMode: ${JSON.stringify(result)}`);
     this.view?.renderTournament(this.getTournament());
     return result;
   }

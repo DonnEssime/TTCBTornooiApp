@@ -33,6 +33,11 @@ describe('Table Tennis score legality', () => {
     expect(isGameScoreLegal({ playerA: 11, playerB: 10 })).toBe(false);
   });
 
+  it('should accept long deuce games with no upper score cap', () => {
+    expect(isGameScoreLegal({ playerA: 32, playerB: 30 })).toBe(true);
+    expect(isGameScoreLegal({ playerA: 110, playerB: 108 })).toBe(true);
+  });
+
   it('should determine match winner in best-of-5 with 3 valid games', () => {
     const scores = [
       { playerA: 11, playerB: 9 },

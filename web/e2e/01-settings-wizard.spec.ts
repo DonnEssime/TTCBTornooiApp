@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures/test-fixture';
-import { createMinimalTournament, enableHandicap, enableMisc, enableClasses, setWizardTableCount } from './helpers/wizard';
+import { createMinimalTournament, enableHandicap, enableMisc, enableClasses, enableDebug, setWizardTableCount } from './helpers/wizard';
 import { expectReplayRoundTrip, readBackend, expectLogContains } from './helpers/backend';
 import { waitForTournamentTab, workspaceTab, gotoSettings, selectCompetitionClassTab } from './helpers/app';
 
@@ -9,6 +9,28 @@ test.describe('01 settings wizard', () => {
     const { tournament, log } = await readBackend(page);
     expect(tournament.tables.length).toBe(4);
     expect(log.some((c) => c.type === 'SetTournamentTables')).toBe(true);
+    expect(tournament.debugMode).toBe(true);
+    expect(log.some((c) => c.type === 'SetDebugMode')).toBe(true);
+    await expectReplayRoundTrip(page);
+  });
+
+  test('creates tournament without debug when checkbox unchecked', async ({ page }) => {
+    await page.getByTestId('wizard-name').fill('No Debug');
+    await page.getByTestId('wizard-create').click();
+    await waitForTournamentTab(page, 'No Debug');
+    const { tournament, log } = await readBackend(page);
+    expect(tournament.debugMode).toBeUndefined();
+    expect(log.some((c) => c.type === 'SetDebugMode')).toBe(false);
+  });
+
+  test('creates tournament with debug mode enabled', async ({ page }) => {
+    await page.getByTestId('wizard-name').fill('Debug On');
+    await enableDebug(page);
+    await page.getByTestId('wizard-create').click();
+    await waitForTournamentTab(page, 'Debug On');
+    const { tournament, log } = await readBackend(page);
+    expect(tournament.debugMode).toBe(true);
+    await expectLogContains(page, 'SetDebugMode');
     await expectReplayRoundTrip(page);
   });
 

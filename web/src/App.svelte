@@ -38,6 +38,7 @@
     isExactClosedFormBracketGrid,
     isHandicapActive,
     isMiscActive,
+    isDebugModeActive,
     isPlayerDisplayIdentityTaken,
     matchPlayersResolvedForBracketPhaseList,
     isTrackParticipantId,
@@ -51,6 +52,7 @@
     randomPlayerHandicapValue,
     randomDebugPlayerMiscValue,
     singleEliminationPlacementRows,
+    competitionTrackFunStats,
     gameWinner,
     generateBracket,
     searchBestHeuristicBracketOrderAsync,
@@ -76,6 +78,7 @@
     isPlayerDisplayNameTaken,
     matchWinner,
     anyBracketKnockoutMatchHasRecordedPlay,
+    ensureBracketPhasePlayerMatchesIn,
     playerHasAnyRecordedMatchInClass,
     shuffleDeterministic,
     DEFAULT_NUMERICAL_HANDICAP_CONFIG,
@@ -90,6 +93,7 @@
   import BracketStreamView from './BracketStreamView.svelte';
   import { displayBracketColumns } from './bracketStream/displayColumns';
   import PlayerName from './PlayerName.svelte';
+  import ResultsFunStats from './ResultsFunStats.svelte';
   import PlayerMatchHistoryModal from './PlayerMatchHistoryModal.svelte';
   import TournamentOverview from './TournamentOverview.svelte';
   import VersionFooter from './VersionFooter.svelte';
@@ -115,8 +119,11 @@
   import { getLocale, setLocale } from './i18n/locale.svelte';
   import { commandFailureText, enrichBracketRoundParams, msg, msgText } from './i18n/msg';
 
-  /** When true, show developer shortcuts (bulk players, simulated group scores). */
-  const DEBUG_UI = true;
+  /** When true, show the debug-mode checkbox on the new-tournament wizard. */
+  const DEBUG_CHECKBOX_VISIBLE = true;
+
+  /** Draft: enable developer shortcuts for the tournament being created. */
+  let draftDebugEnabled = $state(false);
 
   /** Draft count for [DEBUG] Fill players (parsed on click). */
   let debugFillPlayerCount = $state('21');
@@ -206,6 +213,7 @@
   let tournament = $state<Tournament>(createTournament());
   const handicapEnabled = $derived(isHandicapActive(tournament));
   const miscEnabled = $derived(isMiscActive(tournament));
+  const debugModeEnabled = $derived(isDebugModeActive(tournament));
   const miscFieldLabel = $derived(tournament.miscConfig?.label ?? msgText('ui.misc.defaultLabel'));
   const handicapBounds = $derived(
     tournament.handicapConfig ? handicapValueBounds(tournament.handicapConfig) : { min: 0, max: 0 },
@@ -410,9 +418,9 @@
   }
 
   function logDebugReplayExecuteProfile(label: string, profile: ReplayExecuteProfile | undefined): void {
-    if (!DEBUG_UI || !profile) return;
+    if (!debugModeEnabled || !profile) return;
     const fmtMs = (ms: number) => `${ms.toFixed(3)} ms`;
-    console.group(`[DEBUG_UI] Replay execute profile — ${label}`);
+    console.group(`[debugMode] Replay execute profile — ${label}`);
     console.log(`Commands replayed: ${profile.commandCount}`);
     console.log(`Total execute time: ${fmtMs(profile.totalExecuteMs)}`);
     console.log(`Average per command: ${fmtMs(profile.avgExecuteMs)}`);
@@ -445,7 +453,7 @@
           }
         },
         yieldEvery: 8,
-        profileExecute: DEBUG_UI,
+        profileExecute: debugModeEnabled,
       });
     } finally {
       tournamentLoad = null;
@@ -1518,6 +1526,8 @@
     if (Object.keys(c.getTournament().teamMatches).length > 0) return;
     let t = c.getTournament();
     const bracketMatches = getCompetitionTrack(t, classId).bracketMatches;
+    ensureBracketPhasePlayerMatchesIn(t, bracketMatches, classId);
+    t = c.getTournament();
     for (const bm of bracketMatches) {
       if (!bm.seedA || !bm.seedB) continue;
       const mid = bracketPlayerMatchId(bm.id, classId);
@@ -1526,6 +1536,8 @@
       if (s.lastSeedingCommandId) deps.push(s.lastSeedingCommandId);
       const scgId = trackSetGroupsCommandId(s, classId);
       if (scgId) deps.push(scgId);
+      const genId = trackGenerateBracketCommandId(s, classId);
+      if (genId) deps.push(genId);
       const cmdId = `cmd-dbg-ensure-${bm.id}-${Date.now()}`;
       const r = createBracketSeedPlayerMatch(c, t, mid, bm.seedA, bm.seedB, deps, cmdId, classId);
       if (!r.success && r.reason !== 'command.matchAlreadyExists') {
@@ -1744,7 +1756,7 @@
   }
 
   function debugSimulateOverviewTableMatches(): void {
-    if (!DEBUG_UI) return;
+    if (!debugModeEnabled) return;
     clearStatus();
     const s = getActiveSession();
     if (!s) return;
@@ -1779,7 +1791,7 @@
   }
 
   function debugFillOverviewEmptyTables(orderedMatchIds: string[]): void {
-    if (!DEBUG_UI) return;
+    if (!debugModeEnabled) return;
     clearStatus();
     const s = getActiveSession();
     if (!s) return;
@@ -2466,6 +2478,14 @@
         return;
       }
     }
+    if (draftDebugEnabled) {
+      const cmdId = `cmd-debug-init-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
+      const rDebug = controller.setDebugMode(true, [], cmdId);
+      if (!rDebug.success) {
+        showError(rDebug.reason ?? 'Could not enable debug mode');
+        return;
+      }
+    }
     {
       const cmdId = `cmd-tables-init-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
       const tableIds = buildDefaultTableIds(Math.max(1, Math.floor(Number(draftTableCount) || 1)));
@@ -2516,6 +2536,7 @@
     draftClassEditorRows = [{ id: newCompetitionClassId(), name: '' }];
     draftTournamentFormat = 'group-bracket';
     draftTableCount = 4;
+    draftDebugEnabled = false;
     pull();
     showInfoKey('ui.tournament_created_add_players_on_the_players_ta');
   }
@@ -2736,7 +2757,7 @@
           return;
         }
         tieBreakSalt = search.tieBreakSalt;
-        logHeuristicBracketSearchDebug(search, DEBUG_UI);
+        logHeuristicBracketSearchDebug(search, debugModeEnabled);
       } finally {
         bracketHeuristicSearch = null;
       }
@@ -3122,7 +3143,7 @@
 
   /** DEBUG: random legal BO5, write drafts, then same path as Save match. */
   function debugSimulateOpenScoreModalMatch(): void {
-    if (!DEBUG_UI) return;
+    if (!debugModeEnabled) return;
     clearStatus();
     scoreModalHint = null;
     const sm = scoreModalTargetMatch();
@@ -3178,6 +3199,11 @@
         const cfg = cmd.payload.config;
         if (!cfg) return msg('ui.summary.disabledMisc');
         return msg('ui.summary.miscConfig', { label: cfg.label });
+      }
+      case 'SetDebugMode': {
+        return cmd.payload.enabled
+          ? msg('ui.summary.enabledDebugMode')
+          : msg('ui.summary.disabledDebugMode');
       }
       case 'EnterScore': {
         const m = t.matches[cmd.payload.matchId];
@@ -3712,8 +3738,14 @@
               </div>
             {/if}
 
-            <div class="btn-row">
+            <div class="btn-row btn-row-create">
               <button type="button" class="btn primary" data-testid="wizard-create" onclick={createTournamentFromWizard}><Msg key="ui.create_tournament" /></button>
+              {#if DEBUG_CHECKBOX_VISIBLE}
+                <label class="checkbox-line">
+                  <input type="checkbox" data-testid="wizard-debug" bind:checked={draftDebugEnabled} />
+                  <span><Msg key="ui.settings.debugMode" /></span>
+                </label>
+              {/if}
             </div>
           </div>
 
@@ -3904,7 +3936,7 @@
                 useClassTabs={useClassTabs}
                 groupDisplayLabel={groupDisplayLabel}
                 tableCount={overviewTableCount}
-                showDebugUi={DEBUG_UI}
+                showDebugUi={debugModeEnabled}
                 onIncrementTables={incrementOverviewTableCount}
                 onDecrementTables={decrementOverviewTableCount}
                 onOpenGroupMatch={openScoreModal}
@@ -3963,7 +3995,7 @@
                 {/if}
                 <button type="submit" class="btn primary" data-testid="player-add-btn"><Msg key="ui.add_player" /></button>
               </form>
-              {#if DEBUG_UI}
+              {#if debugModeEnabled}
                 <div class="row align-end gap-sm debug-fill-row">
                   <label class="row align-center gap-sm">
                     <span class="muted small"><Msg key="ui.players.hashToAdd" tag="span" class="muted small" /></span>
@@ -4134,7 +4166,7 @@
                     <Msg key="ui.group.clearGroups" />
                   </button>
                 </div>
-                {#if DEBUG_UI}
+                {#if debugModeEnabled}
                   <div class="row align-end">
                     <button type="button" class="btn subtle" data-testid="debug-simulate-group" onclick={() => debugSimulateGroupMatches(undefined)}>
                       <Msg key="ui.group.debugSimulateMatches" />
@@ -4356,7 +4388,7 @@
                   onPairingClick={openBracketPairingModal}
                   ariaLabel={msgText('ui.bracket.aria')}
                 />
-                {#if DEBUG_UI}
+                {#if debugModeEnabled}
                   {@const debugElimRounds = uniqueSortedRounds(tournament.bracketMatches).filter((elimRound) =>
                     bracketRoundHasOpenEliminationPairings(tournament, tournament.bracketMatches, elimRound),
                   )}
@@ -4392,7 +4424,7 @@
                     {/each}
                   </div>
                 {/if}
-                {#if DEBUG_UI}
+                {#if debugModeEnabled}
                   <div class="row align-end">
                     <button
                       type="button"
@@ -4439,6 +4471,15 @@
                 <p class="muted small"><Msg key="ui.generate_a_knockout_bracket_to_show_finishing_or" /></p>
               {/if}
             </section>
+            {#if tournament.bracketMatches.length > 0}
+              {@const placementRows = singleEliminationPlacementRows(tournament.bracketMatches, tournament)}
+              {#if placementRows}
+                {@const funStatsAwards = competitionTrackFunStats(tournament)}
+                {#if funStatsAwards}
+                  <ResultsFunStats {tournament} awards={funStatsAwards} />
+                {/if}
+              {/if}
+            {/if}
           {:else if useClassTabs && multiClassScreen}
             {@const cid = multiClassScreen.classId}
             {@const def = tournament.classDefinitions.find((x) => x.id === cid)}
@@ -4543,7 +4584,7 @@
                       <Msg key="ui.group.clearGroups" />
                     </button>
                   </div>
-                  {#if DEBUG_UI}
+                  {#if debugModeEnabled}
                     <div class="row align-end">
                       <button type="button" class="btn subtle" onclick={() => debugSimulateGroupMatches(cid)}>
                         <Msg key="ui.group.debugSimulateMatches" />
@@ -4770,7 +4811,7 @@
                     ariaLabel={msgText('ui.bracket.classAria')}
                     emptyMessage={msgText('ui.bracket.classEmptyEntrants')}
                   />
-                  {#if DEBUG_UI}
+                  {#if debugModeEnabled}
                     {@const debugElimRounds = uniqueSortedRounds(slice.bracketMatches).filter((elimRound) =>
                       bracketRoundHasOpenEliminationPairings(tournament, slice.bracketMatches, elimRound),
                     )}
@@ -4806,7 +4847,7 @@
                       {/each}
                     </div>
                   {/if}
-                  {#if DEBUG_UI}
+                  {#if debugModeEnabled}
                     <div class="row align-end">
                       <button
                         type="button"
@@ -4850,6 +4891,15 @@
                   <p class="muted small"><Msg key="ui.no_knockout_bracket_for_this_class_yet" /></p>
                 {/if}
               </section>
+              {#if slice.bracketMatches.length > 0}
+                {@const classPlacementRows = singleEliminationPlacementRows(slice.bracketMatches, tournament, cid)}
+                {#if classPlacementRows}
+                  {@const classFunStatsAwards = competitionTrackFunStats(tournament, cid)}
+                  {#if classFunStatsAwards}
+                    <ResultsFunStats {tournament} classId={cid} awards={classFunStatsAwards} />
+                  {/if}
+                {/if}
+              {/if}
             {/if}
           {/if}
         </div>
@@ -5202,7 +5252,7 @@
           {/if}
           <div class="row modal-actions">
             <button type="button" class="btn" data-testid="score-cancel" onclick={() => cancelScoreModal()}><Msg key="ui.cancel" /></button>
-            {#if DEBUG_UI}
+            {#if debugModeEnabled}
               <button
                 type="button"
                 class="btn subtle"
@@ -5503,6 +5553,10 @@
     flex-wrap: wrap;
     gap: 0.5rem;
     align-items: center;
+  }
+
+  .btn-row-create {
+    gap: 1rem;
   }
 
   .recent-list {

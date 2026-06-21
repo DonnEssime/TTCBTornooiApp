@@ -12,6 +12,8 @@ export const uiSummaryCatalog = {
   'ui.summary.setSeeding': t('Set seeding order ({{count}} players).', 'Klassement ingesteld ({{count}} spelers).'),
   'ui.summary.disabledHandicap': t('Disabled handicap tracking.', 'Handicapregistratie uitgeschakeld.'),
   'ui.summary.disabledMisc': t('Disabled per-player misc tracking.', 'Extra veld per speler uitgeschakeld.'),
+  'ui.summary.enabledDebugMode': t('Enabled debug tools.', 'Debugtools ingeschakeld.'),
+  'ui.summary.disabledDebugMode': t('Disabled debug tools.', 'Debugtools uitgeschakeld.'),
   'ui.summary.miscConfig': t('Per-player field: {{label}}.', 'Veld per speler: {{label}}.'),
   'ui.summary.handicapConfig': t(
     'Handicap: numerical {{min}}–{{max}}, {{crit}}, max adjustment {{adj}}.',

@@ -165,6 +165,10 @@ export function isMiscActive(tournament: Tournament): boolean {
   return Boolean(tournament.miscConfig);
 }
 
+export function isDebugModeActive(tournament: Tournament): boolean {
+  return tournament.debugMode === true;
+}
+
 export function normalizeMiscConfig(raw: Partial<MiscConfig> | null | undefined): MiscConfig | undefined {
   if (!raw) return undefined;
   const label = String(raw.label ?? DEFAULT_MISC_CONFIG.label).trim() || DEFAULT_MISC_CONFIG.label;
@@ -270,6 +274,8 @@ export interface Tournament {
   handicapConfig?: HandicapConfig;
   /** When set, each player carries a misc value (e.g. club) and identity is (name, misc). */
   miscConfig?: MiscConfig;
+  /** When true, developer shortcuts (fill players, simulate scores) are enabled for this tournament. */
+  debugMode?: true;
 }
 
 export function createTournament(): Tournament {
@@ -664,26 +670,7 @@ export function isGameScoreLegal(score: GameScore, pointTarget = defaultPointTar
     return false;
   }
 
-  const { playerA, playerB } = score;
-
-  // both players can't have points after a game is already decided
-  const possibleWinner = gameWinner(score, pointTarget);
-  if (!possibleWinner) {
-    return false;
-  }
-
-  // enforce no additional points after the game is finished (two-point gap property in scoring format)
-  if (playerA > playerB) {
-    if (playerA > pointTarget + 20 || playerB > playerA) {
-      return false;
-    }
-  } else {
-    if (playerB > pointTarget + 20 || playerA > playerB) {
-      return false;
-    }
-  }
-
-  return true;
+  return gameWinner(score, pointTarget) !== undefined;
 }
 
 export function matchWinner(scores: GameScore[], bestOf = 5, pointTarget = defaultPointTarget): 'A' | 'B' | undefined {

@@ -3,7 +3,7 @@
 export const TOURNAMENT_STORAGE_FORMAT_VERSION = 2;
 
 /** Matches root `package.json` — embedded in saved files for debugging. */
-export const APP_VERSION = '2.0.0';
+export const APP_VERSION = '2.1.0';
 
 export const TOURNAMENT_LOG_HEADER_TYPE = 'TournamentLogHeader' as const;
 

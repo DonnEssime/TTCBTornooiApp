@@ -2,8 +2,13 @@ import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 import { waitForTournamentTab, workspaceTab } from './app';
 
+export async function enableDebug(page: Page): Promise<void> {
+  await page.getByTestId('wizard-debug').check();
+}
+
 export async function createMinimalTournament(page: Page, name = 'E2E Tournament'): Promise<void> {
   await page.getByTestId('wizard-name').fill(name);
+  await enableDebug(page);
   await page.getByTestId('wizard-create').click();
   await waitForTournamentTab(page, name);
 }

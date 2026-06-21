@@ -43,6 +43,27 @@ This document is a minimal intent + workflow guide for a small maintenance agent
 - Empty `nl` shows English with **red** text (`.i18n-fallback`) until translated.
 - Run `npm run check:i18n` for warn-only missing-Dutch report (does not fail CI).
 
+## Versioning
+
+Bump the app version when the user asks for a release/version bump, or when wrapping up a batch of user-visible changes they intend to ship.
+
+Use [semver](https://semver.org/): **patch** for fixes, **minor** for new features (backward compatible), **major** for breaking user-facing behavior.
+
+**Do not** bump the version for every small commit, refactors, tests-only work, or internal changes with no release intent.
+
+**App version** (`APP_VERSION`) is separate from **tournament log format version** (`TOURNAMENT_STORAGE_FORMAT_VERSION` in `src/storage-format.ts`). Only bump format version when saved tournament logs would break compatibility with older app builds.
+
+When bumping the app version, update all of these to the same value:
+
+1. `package.json` (`version` — source of truth for build info)
+2. `web/package.json` (`version`)
+3. `src/storage-format.ts` (`APP_VERSION` — embedded in exported tournament logs)
+4. `web/src/generated/build-info.default.json` (`version` — fallback when git is unavailable)
+5. `package-lock.json` (root and `web` workspace entries)
+6. Run `node scripts/update-build-info.mjs` to refresh `web/src/generated/build-info.json`
+
+Prefer a dedicated commit: `chore: bump version to X.Y.Z`.
+
 ## Quality guidance
 
 - Avoid large diff refactors in the same commit as feature work.

@@ -74,7 +74,11 @@ Async: `window.__ttcTestListRecent()` for recent tournament list.
 - `e2e/fixtures/` — committed JSONL import fixtures
 - `e2e/scripts/build-fixtures.ts` — fixture generator
 
-## DEBUG_UI hybrid policy
+## Debug tools policy
+
+Developer shortcuts (fill players, simulate scores) are enabled per tournament via the **Enable debug tools** checkbox on the Settings wizard (next to Create tournament). The checkbox is unchecked by default.
+
+E2E helpers call `enableDebug()` via `createMinimalTournament()` so specs that use `debugFillPlayers` or simulate buttons get debug mode automatically. Specs that create tournaments without the helper leave debug off unless they check the box explicitly.
 
 Some long flows use debug simulate buttons (`debug-simulate-group`, `debug-simulate-bracket`, `debug-simulate-score`) after 1–2 real score entries. Core specs (01, 02, 06, 07, 13, 15) use real interaction only.
 

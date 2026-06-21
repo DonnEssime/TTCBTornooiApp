@@ -131,7 +131,6 @@ describe('End-to-end tournament flow', () => {
 
     let deps = ['gen', ...pids.map((p) => `cp-${p}`)];
     let round = 1;
-    let bootstrapped = false;
     while (round <= 4) {
       const t = controller.getTournament();
       const pending = t.bracketMatches.filter(
@@ -150,12 +149,13 @@ describe('End-to-end tournament flow', () => {
         const mid = bracketPlayerMatchId(bm.id);
         const winner = winners[`${bm.seedA}-${bm.seedB}`] ?? bm.seedA!;
         const scores = winner === bm.seedA ? BO5_A : BO5_B;
-        if (!bootstrapped) {
+        if (!t.matches[mid]) {
           expect(controller.createMatch(mid, bm.seedA!, bm.seedB!, deps, `cm-${bm.id}`)).toEqual({ success: true });
-          bootstrapped = true;
           deps = [...deps, `cm-${bm.id}`];
         }
-        expect(controller.enterScore(mid, scores, deps, `sc-${bm.id}`)).toEqual({ success: true });
+        const createCmdId = controller.findLatestActiveCreateMatchCommandId(mid);
+        const scoreDeps = createCmdId ? [createCmdId] : deps;
+        expect(controller.enterScore(mid, scores, scoreDeps, `sc-${bm.id}`)).toEqual({ success: true });
         deps = [...deps, `sc-${bm.id}`];
       }
       settleBracketWinners(controller.getTournament());
