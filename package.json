@@ -17,7 +17,8 @@
     "check:i18n": "vitest run tests/i18n-coverage.spec.ts",
     "lint": "echo 'no lint configured yet'",
     "dev:web": "npm run dev -w web",
-    "build:web": "npm run build -w web"
+    "build:web": "npm run build -w web",
+    "test:e2e": "npm run test:e2e -w web"
   },
   "keywords": [],
   "author": "",

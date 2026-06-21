@@ -3269,6 +3269,17 @@
     return summarizeLastCommand(log[log.length - 1]!, t);
   });
 
+  /** Footer redo: must track command log — `canRedo()` alone is not a Svelte dependency. */
+  const footerRedoEnabled = $derived.by((): boolean => {
+    const s = getActiveSession();
+    if (!s) return false;
+    const log = s.controller.getCommandLog();
+    void log.length;
+    void log[log.length - 1]?.id;
+    void tournament;
+    return s.controller.canRedo();
+  });
+
   const singleTrackRestTabs = $derived.by((): Array<{ id: InnerTab; labelKey: MessageKey }> => {
     void getLocale();
     const tabs: Array<{ id: InnerTab; labelKey: MessageKey }> = [
@@ -3393,7 +3404,7 @@
 
   onMount(() => {
     void refreshRecentTournaments();
-    if (import.meta.env.VITE_E2E) {
+    if (import.meta.env.VITE_E2E === 'true') {
       installTestBridge({
         getActiveSession: () => {
           const s = getActiveSession();
@@ -3406,7 +3417,7 @@
       });
     }
     return () => {
-      if (import.meta.env.VITE_E2E) uninstallTestBridge();
+      if (import.meta.env.VITE_E2E === 'true') uninstallTestBridge();
     };
   });
 </script>
@@ -4252,7 +4263,7 @@
 
               {#if bracketTrack.bracketMatches.length > 0}
                 <div class="row align-end bracket-remove-row" style="margin-bottom: 0.75rem;">
-                  <button type="button" class="btn danger-ghost" data-testid="bracket-remove" onclick={removeKnockoutBracket}>
+                  <button type="button" class="btn danger-ghost" data-testid="bracket-remove" onclick={() => removeKnockoutBracket()}>
                     <Msg key="ui.bracket.removeBracket" />
                   </button>
                 </div>
@@ -4781,7 +4792,7 @@
           class="btn ghost"
           data-testid="redo-btn"
           onclick={doRedo}
-          disabled={!activeSess.controller.canRedo()}
+          disabled={!footerRedoEnabled}
           title={msgText('ui.drop_last_undo_from_log')}
         >
           <Msg key="ui.footer.redo" />

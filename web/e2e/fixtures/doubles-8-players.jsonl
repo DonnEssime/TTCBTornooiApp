@@ -1,0 +1,11 @@
+{"type":"TournamentLogHeader","formatVersion":2,"appVersion":"2.0.0"}
+{"id":"cp-p1","type":"CreatePlayer","dependsOn":[],"payload":{"playerId":"p1","name":"P1","handicap":0},"timestamp":"2026-01-01T00:00:00.000Z"}
+{"id":"cp-p2","type":"CreatePlayer","dependsOn":[],"payload":{"playerId":"p2","name":"P2","handicap":0},"timestamp":"2026-01-01T00:00:00.001Z"}
+{"id":"cp-p3","type":"CreatePlayer","dependsOn":[],"payload":{"playerId":"p3","name":"P3","handicap":0},"timestamp":"2026-01-01T00:00:00.002Z"}
+{"id":"cp-p4","type":"CreatePlayer","dependsOn":[],"payload":{"playerId":"p4","name":"P4","handicap":0},"timestamp":"2026-01-01T00:00:00.003Z"}
+{"id":"cp-p5","type":"CreatePlayer","dependsOn":[],"payload":{"playerId":"p5","name":"P5","handicap":0},"timestamp":"2026-01-01T00:00:00.004Z"}
+{"id":"cp-p6","type":"CreatePlayer","dependsOn":[],"payload":{"playerId":"p6","name":"P6","handicap":0},"timestamp":"2026-01-01T00:00:00.005Z"}
+{"id":"cp-p7","type":"CreatePlayer","dependsOn":[],"payload":{"playerId":"p7","name":"P7","handicap":0},"timestamp":"2026-01-01T00:00:00.006Z"}
+{"id":"cp-p8","type":"CreatePlayer","dependsOn":[],"payload":{"playerId":"p8","name":"P8","handicap":0},"timestamp":"2026-01-01T00:00:00.007Z"}
+{"id":"seed","type":"SetSeedings","dependsOn":["cp-p1","cp-p2","cp-p3","cp-p4","cp-p5","cp-p6","cp-p7","cp-p8"],"payload":{"playerIds":["p1","p2","p3","p4","p5","p6","p7","p8"]},"timestamp":"2026-01-01T00:00:00.008Z"}
+{"id":"sg","type":"SetGroups","dependsOn":["seed","cp-p1","cp-p2","cp-p3","cp-p4","cp-p5","cp-p6","cp-p7","cp-p8"],"payload":{"targetGroupSize":4,"playerIds":["p1","p2","p3","p4","p5","p6","p7","p8"],"format":"doubles-random-partners"},"timestamp":"2026-01-01T00:00:00.009Z"}

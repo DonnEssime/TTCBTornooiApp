@@ -1,0 +1,7 @@
+{"type":"TournamentLogHeader","formatVersion":2,"appVersion":"2.0.0"}
+{"id":"cmd-p1","type":"CreatePlayer","dependsOn":[],"payload":{"playerId":"p1","name":"A","handicap":0},"timestamp":"2026-01-01T00:00:00.000Z"}
+{"id":"cmd-p2","type":"CreatePlayer","dependsOn":[],"payload":{"playerId":"p2","name":"B","handicap":0},"timestamp":"2026-01-01T00:00:00.001Z"}
+{"id":"seed","type":"SetSeedings","dependsOn":["cmd-p1","cmd-p2"],"payload":{"playerIds":["p1","p2"]},"timestamp":"2026-01-01T00:00:00.002Z"}
+{"id":"gen","type":"GenerateBracket","dependsOn":["seed"],"payload":{"fillByes":true,"cullToPowerOfTwo":false},"timestamp":"2026-01-01T00:00:00.003Z"}
+{"id":"m1","type":"CreateMatch","dependsOn":["cmd-p1","cmd-p2"],"payload":{"matchId":"match-1","playerA":"p1","playerB":"p2"},"timestamp":"2026-01-01T00:00:00.004Z"}
+{"id":"lock1","type":"SetRoundLock","dependsOn":["m1"],"payload":{"bracketRound":1,"locked":true},"timestamp":"2026-01-01T00:00:00.005Z"}

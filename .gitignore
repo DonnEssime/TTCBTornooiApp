@@ -75,6 +75,11 @@ jspm_packages/
 # Library package build output (tsup)
 dist/
 
+# Playwright E2E artifacts
+web/test-results/
+web/playwright-report/
+web/blob-report/
+
 # TypeScript
 *.tsbuildinfo
 

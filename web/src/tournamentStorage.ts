@@ -114,6 +114,23 @@ export function newTournamentFileId(): string {
   return `tournament-${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`;
 }
 
+/** Remove all stored tournament files (E2E test isolation). */
+export async function clearAllStoredTournaments(): Promise<void> {
+  if (!isTournamentStorageSupported()) return;
+  const dir = await tournamentsDirectory();
+  const names: string[] = [];
+  for await (const [name] of dir.entries()) {
+    names.push(name);
+  }
+  for (const name of names) {
+    try {
+      await dir.removeEntry(name);
+    } catch {
+      // ignore
+    }
+  }
+}
+
 /** Remove stored JSONL and meta for a tournament (no-op if files are already gone). */
 export async function deleteTournament(fileId: string): Promise<void> {
   const dir = await tournamentsDirectory();

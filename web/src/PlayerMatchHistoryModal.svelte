@@ -199,6 +199,7 @@
         <input
           class="player-details-input"
           type="text"
+          data-testid="player-history-name"
           autocomplete="off"
           bind:value={nameDraft}
           onfocus={() => {
