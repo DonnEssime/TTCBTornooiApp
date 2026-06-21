@@ -1567,6 +1567,14 @@ export function isExactClosedFormBracketGrid(G: number, S: number): boolean {
  */
 export function defaultBracketSeedingMode(G: number, S: number): BracketSeedingMode {
   if (isExactClosedFormBracketGrid(G, S)) return 'closed_form';
+  if (
+    isClosedFormGroupCount(G) &&
+    S >= 2 &&
+    S <= CLOSED_FORM_PLAYERS_PER_GROUP &&
+    balancedBracketVirtualGridTarget(G, S)?.G_tgt === G
+  ) {
+    return 'closed_form';
+  }
   return 'heuristic';
 }
 
@@ -3009,24 +3017,20 @@ export function splitParticipantsTopFourPerGroup(
 }
 
 /**
- * Whether closed-form seeding applies: exact **G×4** grid, or larger groups culled to top four per group.
+ * Whether closed-form seeding applies: exact **G×4** grid, groups culled to top four per group, or a virtual
+ * **G×4** layout with **BYE** for missing group places when **G** is 2, 4, 8, or 16.
  * `participantIds` must be exactly the union of all group members in scope (typical tournament seedings).
  */
 export function resolveClosedFormBracketSeedingKind(
   tournament: Tournament,
   participantIds: readonly PlayerId[],
   classId: string | undefined,
-): 'exact' | 'culled' | null {
+): 'exact' | 'culled' | 'virtual' | null {
   const groups = sortGroupDefinitionsStable(groupRecordForBracketScope(tournament, classId));
   if (groups.length === 0) return null;
 
   const G = groups.length;
-  if (!isClosedFormGroupCount(G) || !isExactClosedFormBracketGrid(G, CLOSED_FORM_PLAYERS_PER_GROUP)) {
-    return null;
-  }
-  if (groups.some((g) => groupParticipantCount(tournament, g, classId) < CLOSED_FORM_PLAYERS_PER_GROUP)) {
-    return null;
-  }
+  if (!isClosedFormGroupCount(G)) return null;
 
   const pset = new Set(participantIds);
   if (pset.size !== participantIds.length) return null;
@@ -3041,19 +3045,40 @@ export function resolveClosedFormBracketSeedingKind(
     if (!findGroupForParticipant(tournament, pid, classId)) return null;
   }
 
-  const split = splitParticipantsTopFourPerGroup(tournament, participantIds, classId);
-  if (!split || split.qualified.length !== G * CLOSED_FORM_PLAYERS_PER_GROUP) return null;
+  const scope = bracketGroupLayoutScope(tournament, participantIds, classId);
+  if (!scope || scope.minGroupSize < 2) return null;
 
-  const meta = equalSizedGroupBracketMeta(tournament, classId);
-  if (
-    meta &&
-    isExactClosedFormBracketGrid(meta.G, meta.S) &&
-    meta.G * meta.S === participantIds.length &&
-    split.culled.length === 0
-  ) {
-    return 'exact';
+  for (const g of groups) {
+    const rows = groupStandingsRowsForBracket(tournament, g, classId);
+    const n = groupParticipantCount(tournament, g, classId);
+    if (rows.length !== n) return null;
   }
-  return split.culled.length > 0 ? 'culled' : null;
+
+  const allGroupsAtLeastFour = groups.every(
+    (g) => groupParticipantCount(tournament, g, classId) >= CLOSED_FORM_PLAYERS_PER_GROUP,
+  );
+
+  if (allGroupsAtLeastFour) {
+    const split = splitParticipantsTopFourPerGroup(tournament, participantIds, classId);
+    if (!split || split.qualified.length !== G * CLOSED_FORM_PLAYERS_PER_GROUP) return null;
+
+    const meta = equalSizedGroupBracketMeta(tournament, classId);
+    if (
+      meta &&
+      isExactClosedFormBracketGrid(meta.G, meta.S) &&
+      meta.G * meta.S === participantIds.length &&
+      split.culled.length === 0
+    ) {
+      return 'exact';
+    }
+    if (split.culled.length > 0) return 'culled';
+    return null;
+  }
+
+  if (scope.maxGroupSize > CLOSED_FORM_PLAYERS_PER_GROUP) return null;
+  const grid = balancedBracketVirtualGridTarget(scope.G, scope.maxGroupSize);
+  if (!grid || grid.G_tgt !== G) return null;
+  return 'virtual';
 }
 
 /** Round `round` rows in id order (standard pairwise advance geometry). */
@@ -3172,7 +3197,9 @@ export function generateBracket(
     (opts.tieBreakSalt !== undefined ? String(opts.tieBreakSalt).trim() : '') || String(Date.now());
 
   if (tournament) {
-    const modeRaw = opts.bracketSeedingMode ?? 'heuristic';
+    const modeRaw =
+      opts.bracketSeedingMode ??
+      defaultBracketSeedingModeForTournament(tournament, participants, opts.classId);
     const beKey = opts.shuffleKey !== undefined ? String(opts.shuffleKey).trim() || 'Tournament' : 'Tournament';
 
     if (modeRaw === 'extend_closed_form') {
@@ -3183,36 +3210,45 @@ export function generateBracket(
         );
       }
       participants = ordered;
-    } else if (modeRaw === 'closed_form') {
-      if (!resolveClosedFormBracketSeedingKind(tournament, participants, opts.classId)) {
+    } else if (modeRaw === 'closed_form' || modeRaw === 'crop_closed_form') {
+      const closedKind = resolveClosedFormBracketSeedingKind(tournament, participants, opts.classId);
+      if (!closedKind) {
         throw new Error(
-          'Closed-form bracket seeding requires G groups (G ∈ {2,4,8,16}) with at least four players each, decided standings, and a supported G×4 layout.',
+          'Closed-form bracket seeding requires G groups (G ∈ {2,4,8,16}), decided standings, and a supported G×4 layout (missing places may be BYE).',
         );
       }
-      const split = splitParticipantsTopFourPerGroup(tournament, participants, opts.classId);
-      if (!split) {
-        throw new Error(
-          'Closed-form bracket seeding requires every player in exactly one group with decided standings.',
+      if (closedKind === 'virtual') {
+        const ordered = orderParticipantsForGroupBalancedBracket(
+          tournament,
+          participants,
+          opts.classId,
+          'virtual',
         );
+        if (!ordered) {
+          throw new Error('Closed-form bracket seeding could not build the virtual G×4 layout.');
+        }
+        participants = ordered;
+      } else if (closedKind === 'culled' && modeRaw === 'crop_closed_form') {
+        const split = splitParticipantsTopFourPerGroup(tournament, participants, opts.classId);
+        const ordered = orderParticipantsForCropClosedFormBracket(tournament, participants, opts.classId);
+        if (!ordered) {
+          throw new Error('Crop closed-form bracket seeding could not build the draw.');
+        }
+        participants = ordered;
+        cropClosedFormLeafOrder = Boolean(split && split.culled.length > 0);
+      } else {
+        const split = splitParticipantsTopFourPerGroup(tournament, participants, opts.classId);
+        if (!split) {
+          throw new Error(
+            'Closed-form bracket seeding requires every player in exactly one group with decided standings.',
+          );
+        }
+        const ordered = orderTopFourPerGroupForClosedFormBracket(tournament, split.qualified, opts.classId);
+        if (!ordered) {
+          throw new Error('Closed-form bracket seeding could not build the G×4 layout for the top four per group.');
+        }
+        participants = ordered;
       }
-      const ordered = orderTopFourPerGroupForClosedFormBracket(tournament, split.qualified, opts.classId);
-      if (!ordered) {
-        throw new Error('Closed-form bracket seeding could not build the G×4 layout for the top four per group.');
-      }
-      participants = ordered;
-    } else if (modeRaw === 'crop_closed_form') {
-      if (!resolveClosedFormBracketSeedingKind(tournament, participants, opts.classId)) {
-        throw new Error(
-          'Crop closed-form bracket seeding requires G groups (G ∈ {2,4,8,16}) with at least four players each, decided standings, and a supported G×4 layout.',
-        );
-      }
-      const split = splitParticipantsTopFourPerGroup(tournament, participants, opts.classId);
-      const ordered = orderParticipantsForCropClosedFormBracket(tournament, participants, opts.classId);
-      if (!ordered) {
-        throw new Error('Crop closed-form bracket seeding could not build the draw.');
-      }
-      participants = ordered;
-      cropClosedFormLeafOrder = Boolean(split && split.culled.length > 0);
     } else {
       const trials = opts.heuristicSearchTrials ?? 1;
       const search =
@@ -3589,6 +3625,63 @@ export function bracketScopeForPlayerMatch(
   };
 }
 
+/** True when a match has scores or is no longer an untouched scheduled row. */
+export function matchHasRecordedPlay(m: Match): boolean {
+  if (m.scores.length > 0) return true;
+  if (m.status !== 'scheduled') return true;
+  return false;
+}
+
+function playerParticipatesInTrackMatch(
+  tournament: Tournament,
+  m: Match,
+  playerId: PlayerId,
+  classId: string | undefined,
+): boolean {
+  if (m.pairA && m.pairB) {
+    const pairs = classId ? (tournament.classTournaments[classId]?.pairs ?? {}) : (tournament.pairs ?? {});
+    const pa = pairs[m.pairA];
+    const pb = pairs[m.pairB];
+    if (pa?.playerIds.includes(playerId)) return true;
+    if (pb?.playerIds.includes(playerId)) return true;
+    return false;
+  }
+  return m.playerA === playerId || m.playerB === playerId;
+}
+
+/** True if a player has any recorded play in group matches belonging to one track. */
+export function playerHasAnyRecordedGroupMatchInTrack(
+  tournament: Tournament,
+  playerId: PlayerId,
+  classId: string | undefined,
+): boolean {
+  for (const m of Object.values(tournament.matches)) {
+    if (!m?.groupId) continue;
+    if (classId !== undefined) {
+      if (m.classId !== classId) continue;
+    } else if (m.classId) {
+      continue;
+    }
+    if (!playerParticipatesInTrackMatch(tournament, m, playerId, classId)) continue;
+    if (matchHasRecordedPlay(m)) return true;
+  }
+  return false;
+}
+
+/** True if a player has any recorded play in matches belonging to one class track. */
+export function playerHasAnyRecordedMatchInClass(
+  tournament: Tournament,
+  playerId: PlayerId,
+  classId: string,
+): boolean {
+  for (const m of Object.values(tournament.matches)) {
+    if (m.classId !== classId) continue;
+    if (!playerParticipatesInTrackMatch(tournament, m, playerId, classId)) continue;
+    if (matchHasRecordedPlay(m)) return true;
+  }
+  return false;
+}
+
 /** True if any knockout player row for this draw has scores or is no longer an untouched scheduled row. */
 export function anyBracketKnockoutMatchHasRecordedPlay(
   tournament: Tournament,
@@ -3600,8 +3693,7 @@ export function anyBracketKnockoutMatchHasRecordedPlay(
     const mid = bracketPlayerMatchId(bm.id, classId);
     const m = tournament.matches[mid];
     if (!m || m.groupId) continue;
-    if (m.scores.length > 0) return true;
-    if (m.status !== 'scheduled') return true;
+    if (matchHasRecordedPlay(m)) return true;
   }
   return false;
 }

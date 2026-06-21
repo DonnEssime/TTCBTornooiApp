@@ -96,8 +96,8 @@ export const uiRemainingCatalog = {
     'Alle {{count}} spelers in deze reeks zijn opgenomen, in reeks-volgorde.',
   ),
   'ui.bracket.closedFormDesc': t(
-    '— built-in layout when you have power-of-two groups (≥4 players each).',
-    '— ingebouwde layout bij een macht-van-twee aantal groepen (≥4 spelers per groep).',
+    '— built-in layout when you have power-of-two groups (2–4 players each).',
+    '— ingebouwde layout bij een macht-van-twee aantal groepen (2–4 spelers per groep).',
   ),
   'ui.bracket.closedFormCulled': t(
     'Top four per group use the closed layout; 5th place and lower join via an extra preliminary round (selected by default).',
@@ -106,6 +106,10 @@ export const uiRemainingCatalog = {
   'ui.bracket.closedFormExact': t(
     'Exact G×4 grid (every group has four players).',
     'Exact G×4-raster (elke groep heeft vier spelers).',
+  ),
+  'ui.bracket.closedFormVirtual': t(
+    'G×4 layout with BYE walkovers for missing group places.',
+    'G×4-layout met BYE-walkovers voor ontbrekende pouleplaatsen.',
   ),
   'ui.bracket.heuristicDesc': t(
     '— rule-based placement from group standings.',

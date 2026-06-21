@@ -60,6 +60,7 @@
     groupNumberedTitle,
     getCompetitionTrack,
     trackGroupMatches,
+    classTrackHasGeneratedBracket,
     tournamentUsesClassTabs,
     MAIN_TRACK_KEY,
     isDoublesTrack,
@@ -75,6 +76,7 @@
     isPlayerDisplayNameTaken,
     matchWinner,
     anyBracketKnockoutMatchHasRecordedPlay,
+    playerHasAnyRecordedMatchInClass,
     shuffleDeterministic,
     DEFAULT_NUMERICAL_HANDICAP_CONFIG,
     buildDefaultTableIds,
@@ -305,12 +307,25 @@
 
   /** Keep bracket-tab radios aligned with group grid while knockout not yet created. */
   $effect(() => {
-    if (tournament.bracketMatches.length > 0) return;
-    bracketSeedingChoice = defaultBracketSeedingModeForTournament(
+    let classId: string | undefined;
+    if (useClassTabs) {
+      if (!multiClassScreen) return;
+      classId = multiClassScreen.classId;
+    } else {
+      if (singleTrackInner !== 'bracket') return;
+      classId = undefined;
+    }
+
+    const track = getCompetitionTrack(tournament, classId);
+    if (track.bracketMatches.length > 0) return;
+
+    let mode = defaultBracketSeedingModeForTournament(
       tournament,
-      trackBracketParticipants(tournament, undefined),
-      undefined,
+      trackBracketParticipants(tournament, classId),
+      classId,
     );
+    if (mode === 'closed_form') mode = 'crop_closed_form';
+    bracketSeedingChoice = mode;
   });
   type StatusKind = 'info' | 'warn' | 'error';
   type AppStatus = { messageKey: MessageKey; kind: StatusKind; params?: Record<string, string> };
@@ -3378,6 +3393,25 @@
     clearStatus();
     const s = getActiveSession();
     if (!s) return;
+    const t = s.controller.getTournament();
+    if (
+      checked &&
+      !Boolean(t.playerClassFlags[playerId]?.[classId]) &&
+      classTrackHasGeneratedBracket(t, classId)
+    ) {
+      showErrorKey('command.cannotAddPlayerToClassBracketGenerated');
+      pull();
+      return;
+    }
+    if (
+      !checked &&
+      Boolean(t.playerClassFlags[playerId]?.[classId]) &&
+      playerHasAnyRecordedMatchInClass(t, playerId, classId)
+    ) {
+      showErrorKey('command.cannotRemovePlayerFromClassAlreadyPlayed');
+      pull();
+      return;
+    }
     const c = s.controller;
     const cmdId = `cmd-pcf-${playerId}-${classId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 8)}`;
     const r = c.setPlayerClassFlags(playerId, { [classId]: checked }, [`cmd-${playerId}`], cmdId);
@@ -3978,10 +4012,23 @@
                     {#if tournament.classDefinitions.length > 0}
                       <div class="player-classes">
                         {#each tournament.classDefinitions as def (def.id)}
-                          <label class="chk tight">
+                          {@const classRemoveLocked =
+                            Boolean(classFlagDrafts[pid]?.[def.id]) &&
+                            playerHasAnyRecordedMatchInClass(tournament, pid, def.id)}
+                          {@const classAddLocked =
+                            !Boolean(classFlagDrafts[pid]?.[def.id]) &&
+                            classTrackHasGeneratedBracket(tournament, def.id)}
+                          {@const classLocked = classRemoveLocked || classAddLocked}
+                          <label class="chk tight" class:chk-locked={classLocked}>
                             <input
                               type="checkbox"
                               checked={Boolean(classFlagDrafts[pid]?.[def.id])}
+                              disabled={classLocked}
+                              title={classRemoveLocked
+                                ? msgText('command.cannotRemovePlayerFromClassAlreadyPlayed')
+                                : classAddLocked
+                                  ? msgText('command.cannotAddPlayerToClassBracketGenerated')
+                                  : undefined}
                               onchange={(e) =>
                                 togglePlayerClass(
                                   pid,
@@ -4258,6 +4305,8 @@
                         <Msg key="ui.bracket.closedFormCulled" />
                       {:else if bracketTrackClosedForm === 'exact'}
                         <Msg key="ui.bracket.closedFormExact" />
+                      {:else if bracketTrackClosedForm === 'virtual'}
+                        <Msg key="ui.bracket.closedFormVirtual" />
                       {/if}
                     </span>
                   </label>
@@ -4664,6 +4713,8 @@
                           <Msg key="ui.bracket.closedFormCulled" />
                         {:else if classBracketClosedForm === 'exact'}
                           <Msg key="ui.bracket.closedFormExact" />
+                        {:else if classBracketClosedForm === 'virtual'}
+                          <Msg key="ui.bracket.closedFormVirtual" />
                         {/if}
                       </span>
                     </label>
@@ -6282,6 +6333,11 @@
   .chk.tight {
     font-size: 0.82rem;
     color: #475569;
+  }
+
+  .chk.tight.chk-locked {
+    cursor: not-allowed;
+    opacity: 0.72;
   }
 
   .class-grid {

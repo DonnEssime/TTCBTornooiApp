@@ -255,4 +255,12 @@ export const commandCatalog = {
   'command.dynamicError': t('{{message}}', '{{message}}'),
   'command.replayFailed': t('Replay failed', 'Opnieuw afspelen mislukt'),
   'command.invalidCommandFormat': t('invalid command format', 'ongeldig opdrachtformaat'),
+  'command.cannotRemovePlayerFromClassAlreadyPlayed': t(
+    'This player has already played matches in this class and cannot be removed from it.',
+    'Deze speler heeft al wedstrijden gespeeld in deze reeks en kan er niet uit worden gehaald.',
+  ),
+  'command.cannotAddPlayerToClassBracketGenerated': t(
+    'This class already has a knockout bracket; players cannot be added to it.',
+    'Deze reeks heeft al een afvallingstabel; spelers kunnen er niet meer aan worden toegevoegd.',
+  ),
 } as const satisfies Record<string, MessageEntry>;

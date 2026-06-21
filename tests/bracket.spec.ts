@@ -742,8 +742,8 @@ describe('Group-balanced bracket seeding', () => {
     };
     t.seedings = Array.from({ length: 11 }, (_, i) => `p${i + 1}`);
 
-    expect(resolveClosedFormBracketSeedingKind(t, t.seedings, undefined)).toBeNull();
-    expect(defaultBracketSeedingModeForTournament(t, t.seedings, undefined)).toBe('heuristic');
+    expect(resolveClosedFormBracketSeedingKind(t, t.seedings, undefined)).toBe('virtual');
+    expect(defaultBracketSeedingModeForTournament(t, t.seedings, undefined)).toBe('crop_closed_form');
 
     const ordered = orderParticipantsForGroupBalancedBracket(t, t.seedings, undefined, 'virtual');
     expect(ordered).not.toBeNull();
@@ -753,9 +753,41 @@ describe('Group-balanced bracket seeding', () => {
     const bracket = generateBracket([...t.seedings], t, {
       fillByes: true,
       shuffleKey: 'ignored',
-      bracketSeedingMode: 'extend_closed_form',
+      bracketSeedingMode: 'crop_closed_form',
     });
     expect(bracket.filter((m) => bracketMatchRound(m) === 1)).toHaveLength(8);
+    const byeWalkovers = bracket.filter(
+      (m) =>
+        bracketMatchRound(m) === 1 &&
+        ((m.seedA && !m.seedB) || (!m.seedA && m.seedB)),
+    );
+    expect(byeWalkovers.length).toBeGreaterThan(0);
+  });
+
+  it('virtual closed_form when 2×3: missing fourth places become BYE walkovers', () => {
+    const t = createTournament();
+    for (let i = 1; i <= 6; i++) {
+      const id = `p${i}`;
+      t.players[id] = { id, name: `P${i}`, handicap: 0 };
+    }
+    addGroupRR3(t, 'ga', ['p1', 'p2', 'p3']);
+    addGroupRR3(t, 'gb', ['p4', 'p5', 'p6']);
+    t.seedings = Array.from({ length: 6 }, (_, i) => `p${i + 1}`);
+    expect(resolveClosedFormBracketSeedingKind(t, t.seedings, undefined)).toBe('virtual');
+    expect(defaultBracketSeedingMode(2, 3)).toBe('closed_form');
+
+    const bracket = generateBracket([...t.seedings], t, {
+      fillByes: true,
+      bracketSeedingMode: 'crop_closed_form',
+    });
+    expect(inferBracketSlotCountFromRoundOne(bracket)).toBe(8);
+    const inBracket = new Set<string>();
+    for (const m of bracket) {
+      if (m.seedA) inBracket.add(m.seedA);
+      if (m.seedB) inBracket.add(m.seedB);
+    }
+    expect(inBracket.size).toBe(6);
+    expect(bracket.some((m) => bracketMatchRound(m) === 1 && m.seedA && !m.seedB)).toBe(true);
   });
 
   it('2×4: cross-group R1 with group winners in opposite halves', () => {
@@ -948,6 +980,21 @@ describe('Group-balanced bracket seeding', () => {
     addGroupRR5(t, 'gb', ['p6', 'p7', 'p8', 'p9', 'p10']);
     t.seedings = Array.from({ length: 10 }, (_, i) => `p${i + 1}`);
     expect(defaultBracketSeedingModeForTournament(t, t.seedings, undefined)).toBe('crop_closed_form');
+  });
+
+  it('defaults generateBracket to closed-form when available and mode omitted', () => {
+    const t = createTournament();
+    for (let i = 1; i <= 8; i++) {
+      const id = `p${i}`;
+      t.players[id] = { id, name: `P${i}`, handicap: 0 };
+    }
+    addGroupRR4(t, 'ga', ['p1', 'p2', 'p3', 'p4']);
+    addGroupRR4(t, 'gb', ['p5', 'p6', 'p7', 'p8']);
+    t.seedings = Array.from({ length: 8 }, (_, i) => `p${i + 1}`);
+    expect(resolveClosedFormBracketSeedingKind(t, t.seedings, undefined)).toBe('exact');
+
+    const bracket = generateBracket([...t.seedings], t, { fillByes: true });
+    expect(bracket.filter((m) => bracketMatchRound(m) === 1)).toHaveLength(4);
   });
 
   it('closed_form culled when 21 players are split across 4 groups (uneven sizes)', () => {
@@ -1439,9 +1486,15 @@ describe('defaultBracketSeedingMode', () => {
     expect(defaultBracketSeedingMode(16, 4)).toBe('closed_form');
   });
 
-  it('prefers heuristic when grid is not exact G×4', () => {
-    expect(defaultBracketSeedingMode(2, 3)).toBe('heuristic');
-    expect(defaultBracketSeedingMode(4, 3)).toBe('heuristic');
+  it('prefers closed_form on power-of-two G with fewer than four players per group', () => {
+    expect(defaultBracketSeedingMode(2, 3)).toBe('closed_form');
+    expect(defaultBracketSeedingMode(4, 3)).toBe('closed_form');
+    expect(defaultBracketSeedingMode(2, 2)).toBe('closed_form');
+  });
+
+  it('prefers heuristic when group count is not power-of-two closed layout', () => {
+    expect(defaultBracketSeedingMode(3, 3)).toBe('heuristic');
+    expect(defaultBracketSeedingMode(3, 4)).toBe('heuristic');
   });
 
   it('prefers heuristic when virtual layout would add dummy groups', () => {

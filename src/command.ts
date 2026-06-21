@@ -4,6 +4,7 @@ import {
   applyBracketToTrack,
   getCompetitionTrack,
   listCompetitionTracks,
+  classTrackHasGeneratedBracket,
   mutateCompetitionTrack,
   resolveTrackClassId,
   setTrackGroups,
@@ -56,6 +57,9 @@ import {
   clampPlayerHandicapValue,
   normalizeHandicapConfig,
   validatePlayerHandicapForTournament,
+  matchHasRecordedPlay,
+  playerHasAnyRecordedGroupMatchInTrack,
+  playerHasAnyRecordedMatchInClass,
   type HandicapConfig,
 } from './model';
 import {
@@ -357,25 +361,6 @@ function deletePlayerScheduledGroupMatches(tournament: Tournament, playerId: str
     delete tournament.matches[mid];
   }
   tournament.tableAssignments = tournament.tableAssignments.filter((a) => !set.has(a.matchId));
-}
-
-function playerHasAnyRecordedGroupMatch(
-  tournament: Tournament,
-  playerId: string,
-  classId: string | undefined,
-): boolean {
-  for (const m of Object.values(tournament.matches)) {
-    if (!m?.groupId) continue;
-    if (m.playerA !== playerId && m.playerB !== playerId) continue;
-    if (classId !== undefined) {
-      if (m.classId !== classId) continue;
-    } else if (m.classId) {
-      continue;
-    }
-    if (m.scores.length > 0) return true;
-    if (m.status !== 'scheduled') return true;
-  }
-  return false;
 }
 
 function dependsReach(cmd: Command, ancestorId: string, byId: Map<string, Command>): boolean {
@@ -1065,7 +1050,18 @@ export class CommandRunner {
         const valid = new Set(tournament.classDefinitions.map((c) => c.id));
         for (const [k, v] of Object.entries(flags)) {
           if (!valid.has(k)) continue;
-          tournament.playerClassFlags[playerId][k] = Boolean(v);
+          const next = Boolean(v);
+          if (next && !tournament.playerClassFlags[playerId]?.[k]) {
+            if (classTrackHasGeneratedBracket(tournament, k)) {
+              return commandFail('command.cannotAddPlayerToClassBracketGenerated');
+            }
+          }
+          if (!next && tournament.playerClassFlags[playerId]?.[k]) {
+            if (playerHasAnyRecordedMatchInClass(tournament, playerId, k)) {
+              return commandFail('command.cannotRemovePlayerFromClassAlreadyPlayed');
+            }
+          }
+          tournament.playerClassFlags[playerId][k] = next;
         }
         recomputeClassTournamentSlices(tournament);
         return { success: true };
@@ -1130,7 +1126,7 @@ export class CommandRunner {
         }
 
         if (currentGroupId !== null && targetGroupId === null) {
-          if (playerHasAnyRecordedGroupMatch(tournament, pid, trackClassId)) {
+          if (playerHasAnyRecordedGroupMatchInTrack(tournament, pid, trackClassId)) {
             return commandFail('command.cannotLeaveGroupAlreadyPlayed');
           }
         }

@@ -497,6 +497,11 @@ export function trackGroupMatches(t: Tournament, classId: string | undefined): M
   });
 }
 
+/** True when a class track already has a generated knockout bracket. */
+export function classTrackHasGeneratedBracket(t: Tournament, classId: string): boolean {
+  return getCompetitionTrack(t, classId).bracketMatches.length > 0;
+}
+
 /** Group matches for a track, limited to pools currently defined on that track. */
 export function trackDefinedGroupMatches(
   t: Tournament,
