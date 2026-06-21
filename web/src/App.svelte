@@ -2055,6 +2055,7 @@
       const s = getActiveSession();
       if (!s) {
         tournament = createTournament();
+        classFlagDrafts = {};
         return;
       }
       const t = structuredClone(s.controller.getTournament());
@@ -2064,7 +2065,6 @@
         scoreModalMatchId = null;
         scoreModalHint = null;
       }
-      tournament = t;
 
       const navNext = normalizeSessionNav(t, s.nav);
       if (JSON.stringify(navNext) !== JSON.stringify(s.nav)) {
@@ -2152,7 +2152,9 @@
         scoreModalHint = null;
       }
 
-      const po = sAfter.playerOrder;
+      const sFinal = getActiveSession();
+      if (!sFinal) return;
+      const po = sFinal.playerOrder;
       const cfd: Record<string, Record<string, boolean>> = {};
       for (const pid of po) {
         const row: Record<string, boolean> = {};
@@ -2162,6 +2164,7 @@
         cfd[pid] = row;
       }
       classFlagDrafts = cfd;
+      tournament = t;
 
       if (options.persist !== false) {
         void persistActiveSession();
@@ -3226,13 +3229,13 @@
       showCommandError(r, 'ui.fallback.addCompetitionClass');
       return;
     }
-    pull();
     const t = getActiveSession()?.controller.getTournament();
     const newDef = t?.classDefinitions.find((c) => !beforeIds.has(c.id));
     const newId = newDef?.id ?? t?.classDefinitions[t.classDefinitions.length - 1]?.id;
     if (newId) {
       patchActiveSession({ nav: { kind: 'multi', screen: { classId: newId, inner: 'groups' } } });
     }
+    pull();
     cancelAddClassModal();
   }
 
@@ -3764,8 +3767,13 @@
                           <label class="chk tight">
                             <input
                               type="checkbox"
-                              bind:checked={classFlagDrafts[pid][def.id]}
-                              onchange={() => togglePlayerClass(pid, def.id, classFlagDrafts[pid][def.id])}
+                              checked={Boolean(classFlagDrafts[pid]?.[def.id])}
+                              onchange={(e) =>
+                                togglePlayerClass(
+                                  pid,
+                                  def.id,
+                                  (e.currentTarget as HTMLInputElement).checked,
+                                )}
                             />
                             {def.name}
                           </label>
