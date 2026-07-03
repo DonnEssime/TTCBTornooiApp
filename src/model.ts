@@ -2986,6 +2986,24 @@ export function groupAllMatchesFinished(
 }
 
 /**
+ * Row/column order for the group-phase matrix UI: fixed creation order while play is open;
+ * standings order (best first) once every match in the group is finished. Visual only.
+ */
+export function groupMatrixParticipantOrder(
+  tournament: Tournament,
+  group: GroupDefinition,
+  classId: string | undefined,
+): PlayerId[] {
+  const doubles = isDoublesTrackFormat(tournament, classId);
+  const creationOrder = doubles ? [...(group.pairIds ?? [])] : [...group.playerIds];
+  const matches = groupMatchesForStandings(tournament, group, classId);
+  if (matches.length === 0 || !groupAllMatchesFinished(tournament, group, classId)) {
+    return creationOrder;
+  }
+  return groupStandingsRowsForBracket(tournament, group, classId).map((r) => r.pid);
+}
+
+/**
  * True when the bracket UI may show this player's real name: not in a scoped group, or that group's
  * phase is fully finished. Until then, slots use {@link formatBracketSlotPlayerLabel}.
  */
