@@ -2807,28 +2807,43 @@ function resolveBracketPartitionEntriesForBestEffort(
   const pset = new Set(participantIds);
   if (pset.size !== participantIds.length) return null;
 
+  for (const pid of participantIds) {
+    if (!findGroupForParticipant(tournament, pid, classId)) return null;
+  }
+
   const union = new Set<PlayerId>();
   let sumSizes = 0;
   for (const g of groups) {
     sumSizes += groupParticipantCount(tournament, g, classId);
     for (const pid of groupParticipantIds(tournament, g, classId)) union.add(pid);
   }
-  if (sumSizes !== P || union.size !== P || ![...union].every((id) => pset.has(id))) {
-    return null;
-  }
-  for (const pid of participantIds) {
-    if (!findGroupForParticipant(tournament, pid, classId)) return null;
+  const isFullField =
+    sumSizes === P && union.size === P && [...union].every((id) => pset.has(id));
+
+  if (isFullField) {
+    const entries: BracketPartitionEntry[] = [];
+    for (let gi = 0; gi < groups.length; gi++) {
+      const g = groups[gi]!;
+      const rows = groupStandingsRowsForBracket(tournament, g, classId);
+      const nParticipants = groupParticipantCount(tournament, g, classId);
+      if (rows.length < nParticipants) return null;
+      for (let place = 1; place <= rows.length; place++) {
+        entries.push({ pid: rows[place - 1]!.pid, groupIndex: gi, place });
+      }
+    }
+    return entries;
   }
 
   const entries: BracketPartitionEntry[] = [];
-  for (let gi = 0; gi < groups.length; gi++) {
-    const g = groups[gi]!;
+  for (const pid of participantIds) {
+    const g = findGroupForParticipant(tournament, pid, classId);
+    if (!g) return null;
+    const gi = groups.findIndex((gr) => gr.id === g.id);
+    if (gi < 0) return null;
     const rows = groupStandingsRowsForBracket(tournament, g, classId);
-    const nParticipants = groupParticipantCount(tournament, g, classId);
-    if (rows.length !== nParticipants) return null;
-    for (let place = 1; place <= rows.length; place++) {
-      entries.push({ pid: rows[place - 1]!.pid, groupIndex: gi, place });
-    }
+    const place = rows.findIndex((r) => r.pid === pid) + 1;
+    if (place < 1) return null;
+    entries.push({ pid, groupIndex: gi, place });
   }
   return entries;
 }
@@ -3228,9 +3243,10 @@ export function closedFormQualifierLayout(
   if (rem !== 0 || perGroup < 1 || q !== G * perGroup) return null;
 
   for (const g of groups) {
-    const rows = groupStandingsRowsForBracket(tournament, g, classId);
     const n = groupParticipantCount(tournament, g, classId);
-    if (rows.length !== n || n < perGroup) return null;
+    if (n < perGroup) return null;
+    const rows = groupStandingsRowsForBracket(tournament, g, classId);
+    if (rows.length < perGroup) return null;
   }
 
   const scope = bracketGroupLayoutScopeFromGroupsOnly(tournament, classId);
@@ -3248,10 +3264,37 @@ export function closedFormQualifierLayout(
     return { perGroup, kind: 'culled' };
   }
 
-  if (!scope.equalSized || perGroup > CLOSED_FORM_PLAYERS_PER_GROUP) return null;
+  if (perGroup > CLOSED_FORM_PLAYERS_PER_GROUP) return null;
   const grid = balancedBracketVirtualGridTarget(G, perGroup);
   if (!grid || grid.G_tgt !== G) return null;
+  // Top-N-per-group virtual layouts (e.g. 4×2) do not require equal group sizes.
+  if (perGroup < CLOSED_FORM_PLAYERS_PER_GROUP) {
+    return { perGroup, kind: 'virtual' };
+  }
+  if (!scope.equalSized) return null;
   return { perGroup, kind: 'virtual' };
+}
+
+function selectedQualifiersInGroupOrder(
+  tournament: Tournament,
+  g: GroupDefinition,
+  selectedSet: ReadonlySet<PlayerId>,
+  classId: string | undefined,
+): PlayerId[] {
+  return groupStandingsRowsForBracket(tournament, g, classId)
+    .map((r) => r.pid)
+    .filter((pid) => selectedSet.has(pid));
+}
+
+/** Per-group qualifier counts for a selected participant set, in stable group order. */
+export function qualifiersPerGroupFromSelection(
+  tournament: Tournament,
+  selectedIds: readonly PlayerId[],
+  classId: string | undefined,
+): number[] {
+  const groups = sortGroupDefinitionsStable(groupRecordForBracketScope(tournament, classId));
+  const pset = new Set(selectedIds);
+  return groups.map((g) => selectedQualifiersInGroupOrder(tournament, g, pset, classId).length);
 }
 
 function participantsAreTopNPerGroup(
@@ -3264,11 +3307,13 @@ function participantsAreTopNPerGroup(
   if (participantIds.length !== groups.length * perGroup) return false;
   const pset = new Set(participantIds);
   for (const g of groups) {
-    const rows = groupStandingsRowsForBracket(tournament, g, classId);
     const n = groupParticipantCount(tournament, g, classId);
-    if (rows.length !== n || n < perGroup) return false;
+    if (n < perGroup) return false;
+    const selected = selectedQualifiersInGroupOrder(tournament, g, pset, classId);
+    if (selected.length !== perGroup) return false;
+    const rows = groupStandingsRowsForBracket(tournament, g, classId);
     for (let i = 0; i < perGroup; i++) {
-      if (!pset.has(rows[i]!.pid)) return false;
+      if (rows[i]!.pid !== selected[i]) return false;
     }
   }
   return true;
@@ -3291,11 +3336,11 @@ export function orderQualifierClosedFormParticipants(
   if (kind === 'virtual') {
     const grid = balancedBracketVirtualGridTarget(G, perGroup);
     if (!grid || grid.G_tgt !== G) return null;
+    const pset = new Set(participantIds);
     const pidForVirtual = (gi: number, place: number): PlayerId => {
       const g = groups[gi]!;
-      if (place <= perGroup) {
-        return groupStandingsRowsForBracket(tournament, g, classId)[place - 1]!.pid;
-      }
+      const selected = selectedQualifiersInGroupOrder(tournament, g, pset, classId);
+      if (place <= selected.length) return selected[place - 1]!;
       if (place <= grid.S_tgt) return bracketLayoutDummyPadPid(g.id, place);
       throw new Error(`place ${place} out of range for qualifier virtual layout`);
     };
@@ -3325,6 +3370,9 @@ export function qualifierCountClosedFormCompatible(
   if (q === undefined) {
     return resolveClosedFormBracketSeedingKind(tournament, allParticipantIds, classId) !== null;
   }
+  const groups = sortGroupDefinitionsStable(groupRecordForBracketScope(tournament, classId));
+  const G = groups.length;
+  if (G === 0 || q % G !== 0) return false;
   if (!closedFormQualifierLayout(tournament, classId, q)) return false;
   try {
     const selected = selectTopParticipantsForBracket(tournament, allParticipantIds, classId, q, 'closed-form-check');
@@ -3429,6 +3477,127 @@ function groupsForUnionCount(tournament: Tournament, classId: string | undefined
     n += groupParticipantCount(tournament, g, classId);
   }
   return n;
+}
+
+function closedFormVirtualLeafSlotCount(
+  tournament: Tournament,
+  participantIds: readonly PlayerId[],
+  classId: string | undefined,
+): number | null {
+  const groups = sortGroupDefinitionsStable(groupRecordForBracketScope(tournament, classId));
+  if (groups.length === 0) return null;
+  const G = groups.length;
+  const perGroup = participantIds.length / G;
+  if (perGroup !== Math.floor(perGroup) || perGroup < 1) return null;
+  const grid = balancedBracketVirtualGridTarget(G, perGroup);
+  if (!grid || grid.G_tgt !== G) return null;
+  return grid.G_tgt * grid.S_tgt;
+}
+
+type ClosedFormBracketOrderResult = {
+  order: PlayerId[];
+  cropClosedFormLeafOrder: boolean;
+};
+
+function tryOrderClosedFormBracketParticipants(
+  tournament: Tournament,
+  participants: readonly PlayerId[],
+  classId: string | undefined,
+  modeRaw: 'closed_form' | 'crop_closed_form',
+  fillByes: boolean,
+): ClosedFormBracketOrderResult | null {
+  const closedKind = resolveClosedFormBracketSeedingKind(tournament, participants, classId);
+  if (!closedKind) return null;
+
+  if (closedKind === 'virtual') {
+    const unionCount = groupsForUnionCount(tournament, classId);
+    const isQualifierSubset = participants.length < unionCount;
+    const expanded = closedFormVirtualLeafSlotCount(tournament, participants, classId);
+    if (
+      !fillByes &&
+      expanded !== null &&
+      expanded > nextPowerOfTwo(participants.length)
+    ) {
+      return null;
+    }
+    const ordered = isQualifierSubset
+      ? orderQualifierClosedFormParticipants(tournament, participants, classId, 'virtual')
+      : orderParticipantsForGroupBalancedBracket(tournament, participants, classId, 'virtual');
+    if (!ordered) return null;
+    return { order: ordered, cropClosedFormLeafOrder: false };
+  }
+
+  if (closedKind === 'culled' && modeRaw === 'crop_closed_form') {
+    const unionCount = groupsForUnionCount(tournament, classId);
+    const isQualifierSubset = participants.length < unionCount;
+    if (isQualifierSubset) {
+      const ordered = orderQualifierClosedFormParticipants(
+        tournament,
+        participants,
+        classId,
+        'culled',
+      );
+      if (!ordered) return null;
+      return { order: ordered, cropClosedFormLeafOrder: false };
+    }
+    const split = splitParticipantsTopFourPerGroup(tournament, participants, classId);
+    const ordered = orderParticipantsForCropClosedFormBracket(tournament, participants, classId);
+    if (!ordered) return null;
+    return {
+      order: ordered,
+      cropClosedFormLeafOrder: Boolean(split && split.culled.length > 0),
+    };
+  }
+
+  const unionCount = groupsForUnionCount(tournament, classId);
+  const isQualifierSubset = participants.length < unionCount;
+  if (isQualifierSubset) {
+    const ordered = orderQualifierClosedFormParticipants(
+      tournament,
+      participants,
+      classId,
+      closedKind === 'exact' ? 'exact' : 'culled',
+    );
+    if (!ordered) return null;
+    return { order: ordered, cropClosedFormLeafOrder: false };
+  }
+
+  const split = splitParticipantsTopFourPerGroup(tournament, participants, classId);
+  if (!split) return null;
+  const ordered = orderTopFourPerGroupForClosedFormBracket(tournament, split.qualified, classId);
+  if (!ordered) return null;
+  return { order: ordered, cropClosedFormLeafOrder: false };
+}
+
+function applyHeuristicBracketOrdering(
+  tournament: Tournament,
+  participants: readonly PlayerId[],
+  classId: string | undefined,
+  tieBreakSalt: string,
+  trials: number,
+): { order: PlayerId[] } | null {
+  const search =
+    trials > 1
+      ? searchBestHeuristicBracketOrder(tournament, participants, classId, tieBreakSalt, trials)
+      : (() => {
+          const single = bestEffortOrderWithPenaltyForGroupBracket(
+            tournament,
+            participants,
+            classId,
+            tieBreakSalt,
+          );
+          if (!single) return null;
+          return {
+            order: single.order,
+            tieBreakSalt,
+            totalPenalty: single.totalPenalty,
+            trialPenalties: [single.totalPenalty],
+            runs: 1,
+            durationMs: 0,
+          } satisfies HeuristicBracketSearchResult;
+        })();
+  if (!search) return null;
+  return { order: search.order };
 }
 
 /** Round `round` rows in id order (standard pairwise advance geometry). */
@@ -3576,105 +3745,53 @@ export function generateBracket(
       }
       participants = ordered;
     } else if (modeRaw === 'closed_form' || modeRaw === 'crop_closed_form') {
-      const closedKind = resolveClosedFormBracketSeedingKind(tournament, participants, opts.classId);
-      if (!closedKind) {
-        throw new Error(
-          'Closed-form bracket seeding requires G groups (G ∈ {2,4,8,16}), decided standings, and a supported G×4 layout (missing places may be BYE).',
-        );
-      }
-      if (closedKind === 'virtual') {
-        const isQualifierSubset = participants.length < groupsForUnionCount(tournament, opts.classId);
-        const ordered = isQualifierSubset
-          ? orderQualifierClosedFormParticipants(tournament, participants, opts.classId, 'virtual')
-          : orderParticipantsForGroupBalancedBracket(
-              tournament,
-              participants,
-              opts.classId,
-              'virtual',
-            );
-        if (!ordered) {
-          throw new Error('Closed-form bracket seeding could not build the virtual G×4 layout.');
-        }
-        participants = ordered;
-      } else if (closedKind === 'culled' && modeRaw === 'crop_closed_form') {
-        const unionCount = groupsForUnionCount(tournament, opts.classId);
-        const isQualifierSubset = participants.length < unionCount;
-        if (isQualifierSubset) {
-          const ordered = orderQualifierClosedFormParticipants(
-            tournament,
-            participants,
-            opts.classId,
-            'culled',
-          );
-          if (!ordered) {
-            throw new Error('Closed-form bracket seeding could not build the qualifier G×4 layout.');
-          }
-          participants = ordered;
-        } else {
-          const split = splitParticipantsTopFourPerGroup(tournament, participants, opts.classId);
-          const ordered = orderParticipantsForCropClosedFormBracket(tournament, participants, opts.classId);
-          if (!ordered) {
-            throw new Error('Crop closed-form bracket seeding could not build the draw.');
-          }
-          participants = ordered;
-          cropClosedFormLeafOrder = Boolean(split && split.culled.length > 0);
-        }
+      const closedFormOrdered = tryOrderClosedFormBracketParticipants(
+        tournament,
+        participants,
+        opts.classId,
+        modeRaw,
+        fillByes,
+      );
+      if (closedFormOrdered) {
+        participants = closedFormOrdered.order;
+        cropClosedFormLeafOrder = closedFormOrdered.cropClosedFormLeafOrder;
       } else {
-        const unionCount = groupsForUnionCount(tournament, opts.classId);
-        const isQualifierSubset = participants.length < unionCount;
-        if (isQualifierSubset) {
-          const ordered = orderQualifierClosedFormParticipants(
+        const closedKind = resolveClosedFormBracketSeedingKind(tournament, participants, opts.classId);
+        const heuristicFallback =
+          !fillByes &&
+          closedKind === 'virtual' &&
+          applyHeuristicBracketOrdering(
             tournament,
             participants,
             opts.classId,
-            closedKind === 'exact' ? 'exact' : 'culled',
+            tieBreakSalt,
+            opts.heuristicSearchTrials ?? 1,
           );
-          if (!ordered) {
-            throw new Error('Closed-form bracket seeding could not build the G×4 layout for qualifiers.');
+        if (heuristicFallback) {
+          participants = heuristicFallback.order;
+          heuristicBipartitionLeafOrder = true;
+        } else if (!fillByes && closedKind === 'virtual') {
+          const key = opts.shuffleKey !== undefined ? String(opts.shuffleKey).trim() || 'Tournament' : 'Tournament';
+          if (participants.length > 1) {
+            participants = shuffleDeterministic(participants, key);
           }
-          participants = ordered;
+        } else if (!closedKind) {
+          throw new Error(
+            'Closed-form bracket seeding requires G groups (G ∈ {2,4,8,16}), decided standings, and a supported G×4 layout (missing places may be BYE).',
+          );
         } else {
-          const split = splitParticipantsTopFourPerGroup(tournament, participants, opts.classId);
-          if (!split) {
-            throw new Error(
-              'Closed-form bracket seeding requires every player in exactly one group with decided standings.',
-            );
-          }
-          const ordered = orderTopFourPerGroupForClosedFormBracket(tournament, split.qualified, opts.classId);
-          if (!ordered) {
-            throw new Error('Closed-form bracket seeding could not build the G×4 layout for the top four per group.');
-          }
-          participants = ordered;
+          throw new Error('Closed-form bracket seeding could not build the layout.');
         }
       }
     } else {
       const trials = opts.heuristicSearchTrials ?? 1;
-      const search =
-        trials > 1
-          ? searchBestHeuristicBracketOrder(
-              tournament,
-              participants,
-              opts.classId,
-              tieBreakSalt,
-              trials,
-            )
-          : (() => {
-              const single = bestEffortOrderWithPenaltyForGroupBracket(
-                tournament,
-                participants,
-                opts.classId,
-                tieBreakSalt,
-              );
-              if (!single) return null;
-              return {
-                order: single.order,
-                tieBreakSalt,
-                totalPenalty: single.totalPenalty,
-                trialPenalties: [single.totalPenalty],
-                runs: 1,
-                durationMs: 0,
-              } satisfies HeuristicBracketSearchResult;
-            })();
+      const search = applyHeuristicBracketOrdering(
+        tournament,
+        participants,
+        opts.classId,
+        tieBreakSalt,
+        trials,
+      );
       if (search) {
         participants = search.order;
         heuristicBipartitionLeafOrder = true;

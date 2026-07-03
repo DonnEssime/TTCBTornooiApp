@@ -7,6 +7,7 @@ import {
   qualifierCountClosedFormCompatible,
   resolveClosedFormBracketSeedingKind,
   selectTopParticipantsForBracket,
+  bestEffortOrderWithPenaltyForGroupBracket,
   type Match,
   type Tournament,
 } from '../src/model';
@@ -189,11 +190,101 @@ describe('generateBracket qualifierCount', () => {
         .flatMap((m) => [m.seedA, m.seedB])
         .filter((x): x is string => Boolean(x) && x !== 'BYE'),
     );
-    expect(r1Ids.size).toBeLessThanOrEqual(8);
+    expect(r1Ids.size).toBe(8);
     const expected = new Set(selectTopParticipantsForBracket(t, t.seedings, undefined, 8, 'test'));
     for (const id of r1Ids) {
       expect(expected.has(id)).toBe(true);
     }
+  });
+
+  it('heuristic with qualifierCount 10 seeds exactly ten players', () => {
+    const runner = new CommandRunner();
+    addPlayersAndGroups4x4(runner);
+    const t = runner.getTournament();
+    finishAllGroupMatches(t);
+
+    const bm = generateBracket(t.seedings, t, {
+      fillByes: true,
+      cullToPowerOfTwo: false,
+      qualifierCount: 10,
+      bracketSeedingMode: 'heuristic',
+      tieBreakSalt: 'ten',
+    });
+    const r1Ids = new Set(
+      bm
+        .filter((m) => m.round === 1)
+        .flatMap((m) => [m.seedA, m.seedB])
+        .filter((x): x is string => Boolean(x) && x !== 'BYE'),
+    );
+    expect(r1Ids.size).toBe(10);
+    expect(bm.filter((m) => m.round === 1)).toHaveLength(8);
+  });
+
+  it('heuristic with qualifierCount 8 works on selected subset (15 players, 4 groups)', () => {
+    const runner = new CommandRunner();
+    addPlayersAndGroups4x4(runner);
+    const t = runner.getTournament();
+    finishAllGroupMatches(t);
+    // Add 7th player to group 1 to mimic 15-player / 4-group uneven field
+    runner.execute({
+      id: 'cmd-extra',
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: 'extra', name: 'extra', handicap: 0 },
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+    t.players.extra = { id: 'extra', name: 'extra', handicap: 0 };
+    t.groups['1']!.playerIds.push('extra');
+    t.seedings.push('extra');
+    finishAllGroupMatches(t);
+
+    const all = t.seedings;
+    expect(all.length).toBe(17);
+    const selected = selectTopParticipantsForBracket(t, all, undefined, 8, 'h8');
+    expect(selected).toHaveLength(8);
+    expect(bestEffortOrderWithPenaltyForGroupBracket(t, selected, undefined, 'h8')).not.toBeNull();
+    const bm = generateBracket(all, t, {
+      fillByes: true,
+      qualifierCount: 8,
+      bracketSeedingMode: 'heuristic',
+      tieBreakSalt: 'h8',
+    });
+    const r1Ids = new Set(
+      bm
+        .filter((m) => m.round === 1)
+        .flatMap((m) => [m.seedA, m.seedB])
+        .filter((x): x is string => Boolean(x) && x !== 'BYE'),
+    );
+    expect(r1Ids.size).toBe(8);
+  });
+
+  it('heuristic with qualifierCount 2 works when closed-form is unavailable', () => {
+    const runner = new CommandRunner();
+    addPlayersAndGroups4x4(runner);
+    const t = runner.getTournament();
+    finishAllGroupMatches(t);
+
+    expect(qualifierCountClosedFormCompatible(t, undefined, 2, t.seedings)).toBe(false);
+    const selected = selectTopParticipantsForBracket(t, t.seedings, undefined, 2, 'h2');
+    expect(selected).toHaveLength(2);
+    expect(bestEffortOrderWithPenaltyForGroupBracket(t, selected, undefined, 'h2')).not.toBeNull();
+  });
+
+  it('rejects closed-form when qualifier count does not divide evenly by group count', () => {
+    const runner = new CommandRunner();
+    addPlayersAndGroups4x4(runner);
+    const t = runner.getTournament();
+    finishAllGroupMatches(t);
+
+    expect(qualifierCountClosedFormCompatible(t, undefined, 10, t.seedings)).toBe(false);
+    expect(() =>
+      generateBracket(t.seedings, t, {
+        fillByes: true,
+        qualifierCount: 10,
+        bracketSeedingMode: 'crop_closed_form',
+        tieBreakSalt: 'cf10',
+      }),
+    ).toThrow();
   });
 
   it('closedFormQualifierLayout accepts G×4 and rejects uneven top-N splits', () => {
@@ -233,6 +324,79 @@ describe('generateBracket qualifierCount', () => {
     });
     const r1 = bm.filter((m) => m.round === 1 && m.seedA && m.seedB);
     expect(r1).toHaveLength(8);
+  });
+
+  it('closed-form qualifierCount 8 works with uneven group sizes (4+4+4+3)', () => {
+    const runner = new CommandRunner();
+    const ts = '2026-01-01T00:00:00.000Z';
+    const classId = 'jun';
+    runner.execute({
+      id: 'classes',
+      type: 'SetTournamentClasses',
+      dependsOn: [],
+      payload: { classes: [{ id: classId, name: 'Junior' }] },
+      timestamp: ts,
+    });
+    const ids: string[] = [];
+    for (let g = 1; g <= 4; g++) {
+      const size = g === 4 ? 3 : 4;
+      for (let p = 1; p <= size; p++) {
+        const id = `g${g}p${p}`;
+        ids.push(id);
+        runner.execute({
+          id,
+          type: 'CreatePlayer',
+          dependsOn: [],
+          payload: { playerId: id, name: id, handicap: 0 },
+          timestamp: ts,
+        });
+        runner.execute({
+          id: `${id}-cf`,
+          type: 'SetPlayerClassFlags',
+          dependsOn: [id],
+          payload: { playerId: id, flags: { [classId]: true } },
+          timestamp: ts,
+        });
+      }
+    }
+    runner.execute({
+      id: 'seed',
+      type: 'SetSeedings',
+      dependsOn: ids,
+      payload: { playerIds: ids },
+      timestamp: ts,
+    });
+    runner.execute({
+      id: 'scg',
+      type: 'SetClassGroups',
+      dependsOn: [...ids, 'seed'],
+      payload: {
+        classId,
+        groups: [
+          { id: '1', playerIds: ['g1p1', 'g1p2', 'g1p3', 'g1p4'] },
+          { id: '2', playerIds: ['g2p1', 'g2p2', 'g2p3', 'g2p4'] },
+          { id: '3', playerIds: ['g3p1', 'g3p2', 'g3p3', 'g3p4'] },
+          { id: '4', playerIds: ['g4p1', 'g4p2', 'g4p3'] },
+        ],
+        playerIds: [],
+        format: 'singles',
+      },
+      timestamp: ts,
+    });
+    const t = runner.getTournament();
+    finishAllGroupMatches(t, classId);
+    const seedings = trackBracketParticipants(t, classId);
+    expect(closedFormQualifierLayout(t, classId, 8)).toEqual({ perGroup: 2, kind: 'virtual' });
+    expect(qualifierCountClosedFormCompatible(t, classId, 8, seedings)).toBe(true);
+    const bm = generateBracket(seedings, t, {
+      fillByes: true,
+      cullToPowerOfTwo: false,
+      qualifierCount: 8,
+      classId,
+      bracketSeedingMode: 'crop_closed_form',
+      tieBreakSalt: 'uneven',
+    });
+    expect(bm.length).toBeGreaterThan(0);
   });
 });
 

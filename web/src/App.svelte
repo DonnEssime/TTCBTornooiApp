@@ -321,8 +321,14 @@
     if (changed) patchActiveSession({ classGroupTargetCountByClassId: nextByClass });
   });
 
-  function effectiveQualifierCount(total: number, raw: string): number | undefined {
-    const trimmed = raw.trim();
+  function normalizeQualifierCountRaw(raw: unknown): string {
+    if (raw === null || raw === undefined) return '';
+    if (typeof raw === 'number') return Number.isFinite(raw) ? String(Math.floor(raw)) : '';
+    return String(raw);
+  }
+
+  function effectiveQualifierCount(total: number, raw: unknown): number | undefined {
+    const trimmed = normalizeQualifierCountRaw(raw).trim();
     if (trimmed === '') return undefined;
     const n = Math.floor(Number(trimmed));
     if (!Number.isFinite(n) || n < 1 || n >= total) return undefined;
@@ -333,15 +339,19 @@
     t: Tournament,
     classId: string | undefined,
     participantIds: string[],
-    qualifierRaw: string,
+    qualifierRaw: unknown,
   ): 'exact' | 'culled' | 'virtual' | null {
-    const q = effectiveQualifierCount(participantIds.length, qualifierRaw);
-    if (!qualifierCountClosedFormCompatible(t, classId, q, participantIds)) return null;
-    if (q !== undefined) {
-      const selected = selectTopParticipantsForBracket(t, participantIds, classId, q, 'ui');
-      return resolveClosedFormBracketSeedingKind(t, selected, classId);
+    try {
+      const q = effectiveQualifierCount(participantIds.length, qualifierRaw);
+      if (!qualifierCountClosedFormCompatible(t, classId, q, participantIds)) return null;
+      if (q !== undefined) {
+        const selected = selectTopParticipantsForBracket(t, participantIds, classId, q, 'ui');
+        return resolveClosedFormBracketSeedingKind(t, selected, classId);
+      }
+      return resolveClosedFormBracketSeedingKind(t, participantIds, classId);
+    } catch {
+      return null;
     }
-    return resolveClosedFormBracketSeedingKind(t, participantIds, classId);
   }
 
   /** Keep bracket-tab radios aligned with group grid while knockout not yet created. */
@@ -2760,7 +2770,7 @@
       showWarnKey('ui.add_at_least_one_player_first');
       return;
     }
-    const qualifierRaw = bracketQualifierCount.trim();
+    const qualifierRaw = normalizeQualifierCountRaw(bracketQualifierCount).trim();
     let qualifierCount: number | undefined;
     if (qualifierRaw !== '') {
       const n = Math.floor(Number(qualifierRaw));
@@ -2793,13 +2803,22 @@
     const baseSalt = String(Date.now());
     let tieBreakSalt = baseSalt;
 
-    if (bracketSeedingChoice === 'heuristic') {
-      const participants = [...trackSeedings];
+    if (seedingMode === 'heuristic') {
+      let searchParticipants: string[] = [...trackSeedings];
+      if (qualifierCount !== undefined) {
+        searchParticipants = selectTopParticipantsForBracket(
+          t,
+          trackSeedings,
+          classId,
+          qualifierCount,
+          baseSalt,
+        );
+      }
       bracketHeuristicSearch = { done: 0, total: HEURISTIC_BRACKET_SEARCH_TRIALS };
       try {
         const search = await searchBestHeuristicBracketOrderAsync(
           t,
-          participants,
+          searchParticipants,
           classId,
           baseSalt,
           {
