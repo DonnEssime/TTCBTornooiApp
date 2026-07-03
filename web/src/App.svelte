@@ -75,6 +75,7 @@
     pairById,
     matchSideLabels,
     groupStandingsRowsForBracket,
+    groupMatrixParticipantOrder,
     isGameScoreLegal,
     isMatchScoreLegal,
     isPlayerDisplayNameTaken,
@@ -82,6 +83,7 @@
     anyBracketKnockoutMatchHasRecordedPlay,
     ensureBracketPhasePlayerMatchesIn,
     playerHasAnyRecordedMatchInClass,
+    playerHasAnyRecordedGroupMatchInTrack,
     shuffleDeterministic,
     DEFAULT_NUMERICAL_HANDICAP_CONFIG,
     buildDefaultTableIds,
@@ -95,6 +97,7 @@
   import BracketStreamView from './BracketStreamView.svelte';
   import { displayBracketColumns } from './bracketStream/displayColumns';
   import PlayerName from './PlayerName.svelte';
+  import GroupSinglesMatrix from './GroupSinglesMatrix.svelte';
   import ResultsFunStats from './ResultsFunStats.svelte';
   import PlayerMatchHistoryModal from './PlayerMatchHistoryModal.svelte';
   import TournamentOverview from './TournamentOverview.svelte';
@@ -921,6 +924,26 @@
   function setActivePlayerGroupFromModal(nextGroupId: string | null, classId?: string): void {
     const pid = playerHistoryModalPid;
     if (!pid) return;
+    movePlayerToGroup(pid, nextGroupId, classId);
+  }
+
+  function canDragPlayerBetweenGroups(pid: string, classId?: string): boolean {
+    const track = getCompetitionTrack(tournament, classId);
+    if (track.bracketMatches.length > 0) return false;
+    if (isDoublesTrack(tournament, classId)) return false;
+    return !playerHasAnyRecordedGroupMatchInTrack(tournament, pid, classId);
+  }
+
+  function groupPhaseDndEnabled(classId?: string): boolean {
+    const track = getCompetitionTrack(tournament, classId);
+    return (
+      Object.keys(track.groups).length > 0 &&
+      track.bracketMatches.length === 0 &&
+      !isDoublesTrack(tournament, classId)
+    );
+  }
+
+  function movePlayerToGroup(playerId: string, targetGroupId: string | null, classId?: string): void {
     const s = getActiveSession();
     if (!s) return;
     const track = getCompetitionTrack(tournament, classId);
@@ -936,17 +959,66 @@
       showErrorKey('command.movePlayerDisabledInDoubles');
       return;
     }
+    if (targetGroupId !== null && !canDragPlayerBetweenGroups(playerId, classId)) {
+      showErrorKey('command.cannotLeaveGroupAlreadyPlayed');
+      return;
+    }
     runUiBatch(() => {
       const scgId = trackSetGroupsCommandId(s, classId);
       const deps = scgId ? [scgId] : [];
-      const r = s.controller.setPlayerGroup(pid, nextGroupId, deps, undefined, classId);
+      const r = s.controller.setPlayerGroup(playerId, targetGroupId, deps, undefined, classId);
       showCommandError(r, 'command.replayFailed');
       if (r.success) {
         showInfoKey('ui.toast.playerGroupChanged', {
-          name: playerLabel(pid),
+          name: playerLabel(playerId),
         });
       }
     });
+  }
+
+  let groupDndDraggingPlayerId = $state<string | null>(null);
+  let groupDndDragOverGroupId = $state<string | null>(null);
+
+  function handleGroupPlayerDragStart(
+    _e: DragEvent,
+    playerId: string,
+    _fromGroupId: string,
+    _classId?: string,
+  ): void {
+    groupDndDraggingPlayerId = playerId;
+  }
+
+  function handleGroupPlayerDragEnd(): void {
+    groupDndDraggingPlayerId = null;
+    groupDndDragOverGroupId = null;
+  }
+
+  function handleGroupCardDragOver(e: DragEvent, groupId: string): void {
+    if (!groupDndDraggingPlayerId) return;
+    e.preventDefault();
+    const dt = e.dataTransfer;
+    if (dt) dt.dropEffect = 'move';
+    groupDndDragOverGroupId = groupId;
+  }
+
+  function handleGroupCardDragLeave(groupId: string): void {
+    if (groupDndDragOverGroupId === groupId) {
+      groupDndDragOverGroupId = null;
+    }
+  }
+
+  function handleGroupCardDrop(e: DragEvent, targetGroupId: string, classId?: string): void {
+    e.preventDefault();
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    const playerId = dt.getData('application/x-ttc-player-id');
+    const fromGroupId = dt.getData('application/x-ttc-from-group-id');
+    const dragClassId = dt.getData('application/x-ttc-class-id');
+    const dragClass = dragClassId ? dragClassId : undefined;
+    if ((classId ?? '') !== (dragClass ?? '')) return;
+    handleGroupPlayerDragEnd();
+    if (!playerId || fromGroupId === targetGroupId) return;
+    movePlayerToGroup(playerId, targetGroupId, classId);
   }
 
   function completedLegalGameScores(rows: ScoreRow[]): GameScore[] {
@@ -1891,41 +1963,6 @@
     });
   }
 
-  function groupStandingsWlByPid(
-    t: Tournament,
-    g: GroupDefinition,
-    classId: string | undefined,
-  ): Record<string, { w: number; l: number }> {
-    const m: Record<string, { w: number; l: number }> = {};
-    for (const row of groupStandingsRowsForBracket(t, g, classId)) {
-      m[row.pid] = { w: row.w, l: row.l };
-    }
-    return m;
-  }
-
-  /** Row/column order for the group matrix (permutation fixed when groups are created). */
-  function groupMatrixPlayerOrder(g: GroupDefinition): string[] {
-    return [...g.playerIds];
-  }
-
-  function findGroupMatchBetween(
-    t: Tournament,
-    g: GroupDefinition,
-    classId: string | undefined,
-    rowPid: string,
-    colPid: string,
-  ): Match | undefined {
-    if (rowPid === colPid) return undefined;
-    for (const m of Object.values(t.matches)) {
-      if (m.groupId !== g.id) continue;
-      if (classId ? m.classId !== classId : Boolean(m.classId)) continue;
-      const ok =
-        (m.playerA === rowPid && m.playerB === colPid) || (m.playerA === colPid && m.playerB === rowPid);
-      if (ok) return m;
-    }
-    return undefined;
-  }
-
   function findGroupMatchBetweenPairs(
     t: Tournament,
     g: GroupDefinition,
@@ -1943,10 +1980,6 @@
       if (ok) return m;
     }
     return undefined;
-  }
-
-  function groupMatrixPairOrder(g: GroupDefinition): string[] {
-    return [...(g.pairIds ?? [])];
   }
 
   function groupStandingsWlByPairId(
@@ -1974,30 +2007,6 @@
     let won = 0;
     let anyDecided = false;
     const rowIsA = m.pairA === rowPairId;
-    for (const gs of m.scores) {
-      const w = gameWinner(gs);
-      if (w === undefined) continue;
-      anyDecided = true;
-      if ((rowIsA && w === 'A') || (!rowIsA && w === 'B')) won++;
-    }
-    if (!anyDecided) return '';
-    return String(won);
-  }
-
-  /** Games won by `rowPid` vs `colPid` from decided games only; empty string if none yet (show placeholder in UI). */
-  function groupMatrixGamesWonDigit(
-    t: Tournament,
-    g: GroupDefinition,
-    classId: string | undefined,
-    rowPid: string,
-    colPid: string,
-  ): string {
-    if (rowPid === colPid) return '';
-    const m = findGroupMatchBetween(t, g, classId, rowPid, colPid);
-    if (!m || m.scores.length === 0) return '';
-    let won = 0;
-    let anyDecided = false;
-    const rowIsA = m.playerA === rowPid;
     for (const gs of m.scores) {
       const w = gameWinner(gs);
       if (w === undefined) continue;
@@ -4201,9 +4210,12 @@
                   </div>
                 {/if}
                 <h3 class="h3"><Msg key="ui.groups" /></h3>
+                {#if groupPhaseDndEnabled(undefined)}
+                  <p class="muted small group-matrix-hint"><Msg key="ui.group.dragPlayersHint" /></p>
+                {/if}
                 {#each sortGroupsForDisplay(tournament.groups) as g (g.id)}
                   {#if isDoublesTrack(tournament, undefined)}
-                    {@const matrixPairIds = groupMatrixPairOrder(g)}
+                    {@const matrixPairIds = groupMatrixParticipantOrder(tournament, g, undefined)}
                     {@const standingsWl = groupStandingsWlByPairId(tournament, g, undefined)}
                     <article class="sub-card">
                       <h4 class="h4">{groupDisplayLabel(g)}</h4>
@@ -4275,63 +4287,20 @@
                       </div>
                     </article>
                   {:else}
-                  {@const matrixPids = groupMatrixPlayerOrder(g)}
-                  {@const standingsWl = groupStandingsWlByPid(tournament, g, undefined)}
-                  <article class="sub-card">
-                    <h4 class="h4">{groupDisplayLabel(g)}</h4>
-                    <div class="group-matrix-wrap">
-                      <table class="grid compact group-matrix-table">
-                        <thead>
-                          <tr>
-                            <th><Msg key="ui.player" /></th>
-                            {#each matrixPids as colPid (colPid)}
-                              <th class="h2h-th" title={playerLabel(colPid)}>
-                                <span class="h2h-th-inner"><PlayerName {tournament} playerId={colPid} /></span>
-                              </th>
-                            {/each}
-                            <th><Msg key="ui.standings.win" /></th>
-                            <th><Msg key="ui.standings.loss" /></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {#each matrixPids as rowPid (rowPid)}
-                            <tr>
-                              <td><PlayerName {tournament} playerId={rowPid} /></td>
-                              {#each matrixPids as colPid (colPid)}
-                                <td class="h2h-cell">
-                                  {#if rowPid === colPid}
-                                    <span class="matrix-diag" aria-hidden="true">·</span>
-                                  {:else}
-                                    {@const gm = findGroupMatchBetween(tournament, g, undefined, rowPid, colPid)}
-                                    {#if gm}
-                                      {@const wins = groupMatrixGamesWonDigit(tournament, g, undefined, rowPid, colPid)}
-                                      <button
-                                        type="button"
-                                        class="group-matrix-cell-btn"
-                                        class:group-matrix-cell-readonly={groupMatrixCellViewOnly(tournament, gm)}
-                                        aria-label={groupMatrixCellAriaLabel(tournament, gm)}
-                                        onclick={() => openScoreModal(gm)}
-                                      >
-                                        {#if wins === ''}
-                                          <span class="group-matrix-placeholder">—</span>
-                                        {:else}
-                                          <span class="group-matrix-wins-digit">{wins}</span>
-                                        {/if}
-                                      </button>
-                                    {:else}
-                                      <span class="muted" title={msgText('ui.no_match')}>—</span>
-                                    {/if}
-                                  {/if}
-                                </td>
-                              {/each}
-                              <td>{standingsWl[rowPid]?.w ?? 0}</td>
-                              <td>{standingsWl[rowPid]?.l ?? 0}</td>
-                            </tr>
-                          {/each}
-                        </tbody>
-                      </table>
-                    </div>
-                  </article>
+                    <GroupSinglesMatrix
+                      {tournament}
+                      group={g}
+                      dndEnabled={groupPhaseDndEnabled(undefined)}
+                      canDragPlayer={(pid) => canDragPlayerBetweenGroups(pid, undefined)}
+                      draggingPlayerId={groupDndDraggingPlayerId}
+                      dragOverGroupId={groupDndDragOverGroupId}
+                      onOpenScoreModal={openScoreModal}
+                      onDragStart={handleGroupPlayerDragStart}
+                      onDragEnd={handleGroupPlayerDragEnd}
+                      onGroupDragOver={handleGroupCardDragOver}
+                      onGroupDragLeave={handleGroupCardDragLeave}
+                      onGroupDrop={handleGroupCardDrop}
+                    />
                   {/if}
                 {/each}
               {/if}
@@ -4608,9 +4577,12 @@
                     </div>
                   {/if}
                   <h3 class="h3"><Msg key="ui.groups" /></h3>
+                  {#if groupPhaseDndEnabled(cid)}
+                    <p class="muted small group-matrix-hint"><Msg key="ui.group.dragPlayersHint" /></p>
+                  {/if}
                   {#each sortGroupsForDisplay(slice.groups) as g (g.id)}
                     {#if isDoublesTrack(tournament, cid)}
-                      {@const matrixPairIds = groupMatrixPairOrder(g)}
+                      {@const matrixPairIds = groupMatrixParticipantOrder(tournament, g, cid)}
                       {@const standingsWl = groupStandingsWlByPairId(tournament, g, cid)}
                       <article class="sub-card">
                         <h4 class="h4">{groupDisplayLabel(g)}</h4>
@@ -4682,63 +4654,21 @@
                         </div>
                       </article>
                     {:else}
-                    {@const matrixPids = groupMatrixPlayerOrder(g)}
-                    {@const standingsWl = groupStandingsWlByPid(tournament, g, cid)}
-                    <article class="sub-card">
-                      <h4 class="h4">{groupDisplayLabel(g)}</h4>
-                      <div class="group-matrix-wrap">
-                        <table class="grid compact group-matrix-table">
-                          <thead>
-                            <tr>
-                              <th><Msg key="ui.player" /></th>
-                              {#each matrixPids as colPid (colPid)}
-                                <th class="h2h-th" title={playerLabel(colPid)}>
-                                  <span class="h2h-th-inner"><PlayerName {tournament} playerId={colPid} classId={cid} /></span>
-                                </th>
-                              {/each}
-                              <th><Msg key="ui.standings.win" /></th>
-                              <th><Msg key="ui.standings.loss" /></th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {#each matrixPids as rowPid (rowPid)}
-                              <tr>
-                                <td><PlayerName {tournament} playerId={rowPid} classId={cid} /></td>
-                                {#each matrixPids as colPid (colPid)}
-                                  <td class="h2h-cell">
-                                    {#if rowPid === colPid}
-                                      <span class="matrix-diag" aria-hidden="true">·</span>
-                                    {:else}
-                                      {@const gm = findGroupMatchBetween(tournament, g, cid, rowPid, colPid)}
-                                      {#if gm}
-                                        {@const wins = groupMatrixGamesWonDigit(tournament, g, cid, rowPid, colPid)}
-                                        <button
-                                          type="button"
-                                          class="group-matrix-cell-btn"
-                                          class:group-matrix-cell-readonly={groupMatrixCellViewOnly(tournament, gm)}
-                                          aria-label={groupMatrixCellAriaLabel(tournament, gm)}
-                                          onclick={() => openScoreModal(gm)}
-                                        >
-                                          {#if wins === ''}
-                                            <span class="group-matrix-placeholder">—</span>
-                                          {:else}
-                                            <span class="group-matrix-wins-digit">{wins}</span>
-                                          {/if}
-                                        </button>
-                                      {:else}
-                                        <span class="muted" title={msgText('ui.no_match')}>—</span>
-                                      {/if}
-                                    {/if}
-                                  </td>
-                                {/each}
-                                <td>{standingsWl[rowPid]?.w ?? 0}</td>
-                                <td>{standingsWl[rowPid]?.l ?? 0}</td>
-                              </tr>
-                            {/each}
-                          </tbody>
-                        </table>
-                      </div>
-                    </article>
+                      <GroupSinglesMatrix
+                        {tournament}
+                        group={g}
+                        classId={cid}
+                        dndEnabled={groupPhaseDndEnabled(cid)}
+                        canDragPlayer={(pid) => canDragPlayerBetweenGroups(pid, cid)}
+                        draggingPlayerId={groupDndDraggingPlayerId}
+                        dragOverGroupId={groupDndDragOverGroupId}
+                        onOpenScoreModal={openScoreModal}
+                        onDragStart={handleGroupPlayerDragStart}
+                        onDragEnd={handleGroupPlayerDragEnd}
+                        onGroupDragOver={handleGroupCardDragOver}
+                        onGroupDragLeave={handleGroupCardDragLeave}
+                        onGroupDrop={(e, groupId) => handleGroupCardDrop(e, groupId, cid)}
+                      />
                     {/if}
                   {/each}
                 {/if}

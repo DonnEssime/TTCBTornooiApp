@@ -61,6 +61,85 @@ describe('SetPlayerGroup', () => {
     expect(next.matches['gm-g1-a-b']).toBeUndefined();
   });
 
+  it('moves player between groups when no group match was played', () => {
+    const r = new CommandRunner();
+    for (const pid of ['a', 'b', 'c', 'd']) {
+      expect(
+        r.execute(baseCmd(`p-${pid}`, 'CreatePlayer', { playerId: pid, name: pid, handicap: 0 }) as any).success,
+      ).toBe(true);
+    }
+    expect(
+      r.execute(
+        baseCmd(
+          'cmd-set-groups',
+          'SetGroups',
+          {
+            groups: [
+              { id: 'g1', playerIds: ['a', 'b'] },
+              { id: 'g2', playerIds: ['c', 'd'] },
+            ],
+          },
+          [],
+        ) as any,
+      ).success,
+    ).toBe(true);
+
+    expect(
+      r.execute(baseCmd('cmd-move', 'SetPlayerGroup', { playerId: 'a', groupId: 'g2' }, ['cmd-set-groups']) as any)
+        .success,
+    ).toBe(true);
+
+    const next = r.getTournament();
+    expect(next.groups.g1.playerIds).toEqual(['b']);
+    expect(next.groups.g2.playerIds).toEqual(expect.arrayContaining(['a', 'c', 'd']));
+    expect(next.matches['gm-g1-a-b']).toBeUndefined();
+    expect(next.matches['gm-g2-a-c']?.status).toBe('scheduled');
+    expect(next.matches['gm-g2-a-d']?.status).toBe('scheduled');
+  });
+
+  it('blocks moving between groups when the player has recorded group play', () => {
+    const r = new CommandRunner();
+    for (const pid of ['a', 'b', 'c', 'd']) {
+      expect(
+        r.execute(baseCmd(`p-${pid}`, 'CreatePlayer', { playerId: pid, name: pid, handicap: 0 }) as any).success,
+      ).toBe(true);
+    }
+    expect(
+      r.execute(
+        baseCmd(
+          'cmd-set-groups',
+          'SetGroups',
+          {
+            groups: [
+              { id: 'g1', playerIds: ['a', 'b'] },
+              { id: 'g2', playerIds: ['c', 'd'] },
+            ],
+          },
+          [],
+        ) as any,
+      ).success,
+    ).toBe(true);
+    expect(
+      r.execute(
+        baseCmd('cmd-score', 'EnterScore', {
+          matchId: 'gm-g1-a-b',
+          scores: [
+            { playerA: 11, playerB: 9 },
+            { playerA: 11, playerB: 9 },
+            { playerA: 11, playerB: 9 },
+          ],
+        }) as any,
+      ).success,
+    ).toBe(true);
+
+    const res = r.execute(
+      baseCmd('cmd-move', 'SetPlayerGroup', { playerId: 'a', groupId: 'g2' }, ['cmd-set-groups']) as any,
+    );
+    expect(res.success).toBe(false);
+    expect(res.reason).toBe('command.cannotLeaveGroupAlreadyPlayed');
+    expect(r.getTournament().groups.g1.playerIds).toEqual(['a', 'b']);
+  });
+
   it('blocks leaving a group when the player has recorded group play', () => {
     const r = new CommandRunner();
     expect(r.execute(baseCmd('p-a', 'CreatePlayer', { playerId: 'a', name: 'A', handicap: 0 }) as any).success).toBe(true);

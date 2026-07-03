@@ -39,3 +39,13 @@ export async function openFirstGroupCell(page: Page): Promise<void> {
 export async function debugSimulateGroup(page: Page): Promise<void> {
   await page.getByTestId('debug-simulate-group').click();
 }
+
+export async function dragPlayerToGroup(
+  page: Page,
+  playerId: string,
+  targetGroupId: string,
+): Promise<void> {
+  const source = page.getByTestId(`group-player-drag-${playerId}`);
+  const target = page.getByTestId(`group-drop-${targetGroupId}`);
+  await source.dragTo(target);
+}

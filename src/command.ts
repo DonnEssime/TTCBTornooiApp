@@ -1142,7 +1142,7 @@ export class CommandRunner {
           return { success: true };
         }
 
-        if (currentGroupId !== null && targetGroupId === null) {
+        if (currentGroupId !== null && currentGroupId !== targetGroupId) {
           if (playerHasAnyRecordedGroupMatchInTrack(tournament, pid, trackClassId)) {
             return commandFail('command.cannotLeaveGroupAlreadyPlayed');
           }

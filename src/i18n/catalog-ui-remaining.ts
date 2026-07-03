@@ -79,6 +79,10 @@ export const uiRemainingCatalog = {
   'ui.pair.combinedHandicap': t('Combined handicap: {{value}}', 'Gecombineerde handicap: {{value}}'),
   'ui.group.clearGroups': t('Clear groups', 'Groepen wissen'),
   'ui.group.debugSimulateMatches': t('[DEBUG] Simulate matches', '[DEBUG] Wedstrijden simuleren'),
+  'ui.group.dragPlayersHint': t(
+    'Drag players between groups before they have played any group match.',
+    'Sleep spelers tussen groepen voordat ze een poulewedstrijd hebben gespeeld.',
+  ),
   'ui.group.finishGroupPhaseFirst': t(
     'Finish the group phase first — the create button enables after groups exist.',
     'Rond eerst de groepsfase af — de aanmaakknop wordt actief zodra groepen bestaan.',
@@ -194,8 +198,8 @@ export const uiRemainingCatalog = {
   'command.groupIdRequired': t('Group id is required.', 'Groeps-id is verplicht.'),
   'command.groupNotFound': t('Group not found: {{groupId}}', 'Groep niet gevonden: {{groupId}}'),
   'command.cannotLeaveGroupAlreadyPlayed': t(
-    'This player has already played group matches and cannot be removed from the group.',
-    'Deze speler heeft al poulewedstrijden gespeeld en kan niet uit de groep worden gehaald.',
+    'This player has already played group matches and cannot be moved from the group.',
+    'Deze speler heeft al poulewedstrijden gespeeld en kan niet uit de groep worden verplaatst.',
   ),
   'ui.load.loadingTournament': t('Loading “{{label}}”', '“{{label}}” laden'),
   'ui.load.replayingCommands': t('Replaying commands — {{done}} / {{total}}', 'Handelingen afspelen — {{done}} / {{total}}'),
