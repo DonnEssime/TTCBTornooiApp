@@ -104,27 +104,65 @@ function setupTwoClassBracketRunner(): CommandRunner {
   return runner;
 }
 
-function playOutClassBracket(runner: CommandRunner, classId: string, dep: string): void {
-  let lastDep = dep;
-  let tick = 100;
-  const roundOne = runner
+function roundOneMatches(runner: CommandRunner, classId: string) {
+  return runner
     .getTournament()
     .classTournaments[classId]!.bracketMatches.filter((m) => bracketMatchRound(m) === 1);
-  for (const bm of roundOne) {
+}
+
+function createBracketMatchRows(runner: CommandRunner, classId: string, dep: string): string {
+  let lastDep = dep;
+  let tick = 100;
+  for (const bm of roundOneMatches(runner, classId)) {
     if (!bm.seedA || !bm.seedB) continue;
     const mid = bracketPlayerMatchId(bm.id, classId);
     const pairId = `pair-${classId}-${bm.id}`;
-    expect(
-      runner.execute({
+    if (!runner.getTournament().matches[mid]) {
+      const result = runner.execute({
         id: pairId,
         type: 'CreateMatch',
         dependsOn: [lastDep],
         payload: { matchId: mid, playerA: bm.seedA, playerB: bm.seedB, classId },
         timestamp: iso(tick++),
-      }),
-    ).toEqual({ success: true });
-    lastDep = pairId;
+      });
+      expect(result).toEqual({ success: true });
+      lastDep = pairId;
+    }
   }
+  return lastDep;
+}
+
+function scoresFavoringPlayer(matchPlayerA: string, winnerId: string) {
+  const winnerIsA = matchPlayerA === winnerId;
+  return winnerIsA
+    ? bo5
+    : bo5.map((s) => ({ playerA: s.playerB, playerB: s.playerA }));
+}
+
+function scoreBracketMatch(
+  runner: CommandRunner,
+  classId: string,
+  bm: { id: string; seedA?: string; seedB?: string },
+  dep: string,
+): string {
+  const mid = bracketPlayerMatchId(bm.id, classId);
+  const match = runner.getTournament().matches[mid]!;
+  const winner = bm.seedA! < bm.seedB! ? bm.seedA! : bm.seedB!;
+  const cmdId = `score-${classId}-${bm.id}`;
+  expect(
+    runner.execute({
+      id: cmdId,
+      type: 'EnterScore',
+      dependsOn: [dep],
+      payload: { matchId: mid, scores: scoresFavoringPlayer(match.playerA, winner) },
+      timestamp: iso(500),
+    }),
+  ).toEqual({ success: true });
+  return cmdId;
+}
+
+function playOutClassBracket(runner: CommandRunner, classId: string, dep: string): void {
+  let lastDep = createBracketMatchRows(runner, classId, dep);
   const t = () => runner.getTournament();
   for (;;) {
     const open = t()
@@ -133,19 +171,7 @@ function playOutClassBracket(runner: CommandRunner, classId: string, dep: string
       );
     if (open.length === 0) break;
     open.sort((a, b) => bracketMatchRound(a) - bracketMatchRound(b) || a.id.localeCompare(b.id));
-    const bm = open[0]!;
-    const mid = bracketPlayerMatchId(bm.id, classId);
-    const cmdId = `score-${classId}-${bm.id}`;
-    expect(
-      runner.execute({
-        id: cmdId,
-        type: 'EnterScore',
-        dependsOn: [lastDep],
-        payload: { matchId: mid, scores: bo5 },
-        timestamp: iso(500),
-      }),
-    ).toEqual({ success: true });
-    lastDep = cmdId;
+    lastDep = scoreBracketMatch(runner, classId, open[0]!, lastDep);
   }
 }
 
@@ -181,8 +207,8 @@ describe('tournament-pdf-export', () => {
     expect(tournamentPdfPlacementRows(t, track.bracketMatches, track.classId)?.map((r) => [r.place, r.playerId])).toEqual([
       [1, 'p1'],
       [2, 'p2'],
-      [3, 'p4'],
-      [4, 'p3'],
+      [3, 'p3'],
+      [4, 'p4'],
     ]);
     expect(tournamentPdfPlacementRows(t, track.bracketMatches)).toBeNull();
     expect(

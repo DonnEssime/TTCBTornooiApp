@@ -1,10 +1,15 @@
-import type { Match, PlayerId } from './model';
+import { trackGroupMatches } from './competition-track';
+import type { GroupDefinition, Match, PlayerId, Tournament } from './model';
+import {
+  roundRobinMatchRounds,
+  roundRobinPairKey,
+  roundRobinRoundIndexForPair,
+} from './model';
 
 /**
  * Pluggable ready-match ordering algorithm.
  *
- * For now we only expose the original group-completion-staggered ordering (no ad-hoc swap optimizer).
- * Keep this type and public function surface stable so new algorithms can be introduced later.
+ * Group-phase default uses round-robin group rounds; optional wave optimizer for table packing.
  */
 export type ReadyMatchOrderingAlgorithm = 'groupCompletionStaggered';
 
@@ -46,43 +51,149 @@ export function groupPhaseCounts(matches: Match[]): GroupProgressSnapshot {
   return { total, done };
 }
 
-/**
- * Order ready group matches so groups stay in step: repeatedly pick a match from the group whose
- * simulated completion ratio is lowest, assuming each previously chosen match is already done.
- */
-export function groupCompletionStaggeredOrder(
-  matches: Match[],
-  groupProgress: (m: Match) => GroupProgressSnapshot,
-): Match[] {
-  if (matches.length <= 1) return [...matches];
-  const rem = [...matches];
-  const totals = new Map<string, GroupProgressSnapshot>();
-  for (const m of matches) {
-    const k = groupReadyStaggerKey(m);
-    if (!totals.has(k)) {
-      totals.set(k, { ...groupProgress(m) });
-    }
+export function groupDefForMatch(t: Tournament, m: Match): GroupDefinition | undefined {
+  if (!m.groupId) return undefined;
+  if (m.classId) {
+    return t.classTournaments[m.classId]?.groups[m.groupId];
   }
-  const out: Match[] = [];
-  while (rem.length > 0) {
-    let bestIdx = 0;
-    let bestRatio = Infinity;
-    let bestId = '\uffff';
-    for (let i = 0; i < rem.length; i++) {
-      const m = rem[i]!;
-      const rec = totals.get(groupReadyStaggerKey(m))!;
-      const ratio = rec.total <= 0 ? 0 : rec.done / rec.total;
-      const id = m.id;
-      if (ratio < bestRatio || (ratio === bestRatio && id.localeCompare(bestId) < 0)) {
-        bestRatio = ratio;
-        bestId = id;
-        bestIdx = i;
+  return t.groups[m.groupId];
+}
+
+function matchParticipantPair(m: Match): [PlayerId, PlayerId] | undefined {
+  if (m.pairA && m.pairB) return [m.pairA, m.pairB];
+  if (m.playerA && m.playerB) return [m.playerA, m.playerB];
+  return undefined;
+}
+
+function participantIdsForGroup(g: GroupDefinition, sample: Match): PlayerId[] {
+  if (sample.pairA && sample.pairB && g.pairIds && g.pairIds.length > 0) {
+    return g.pairIds;
+  }
+  return g.playerIds;
+}
+
+function groupMatchesFromTournament(t: Tournament, m: Match): Match[] {
+  const classScope = m.classId ?? undefined;
+  return trackGroupMatches(t, classScope).filter((x) => x.groupId === m.groupId);
+}
+
+/** Leading fully-finished round-robin rounds for a group (in-progress rounds do not count). */
+export function groupCompletedRoundCount(
+  groupMatches: readonly Match[],
+  participantIds: readonly PlayerId[],
+): number {
+  const rounds = roundRobinMatchRounds(participantIds);
+  const byKey = new Map<string, Match>();
+  for (const gm of groupMatches) {
+    const pair = matchParticipantPair(gm);
+    if (!pair) continue;
+    byKey.set(roundRobinPairKey(pair[0], pair[1]), gm);
+  }
+
+  let completed = 0;
+  for (const round of rounds) {
+    let allDone = true;
+    for (const [a, b] of round) {
+      const gm = byKey.get(roundRobinPairKey(a, b));
+      if (!gm || !isGroupMatchFinished(gm)) {
+        allDone = false;
+        break;
       }
     }
-    const picked = rem.splice(bestIdx, 1)[0]!;
-    out.push(picked);
-    totals.get(groupReadyStaggerKey(picked))!.done += 1;
+    if (!allDone) break;
+    completed++;
   }
+  return completed;
+}
+
+function roundIndexForMatch(m: Match, participantIds: readonly PlayerId[]): number | undefined {
+  const pair = matchParticipantPair(m);
+  if (!pair) return undefined;
+  return roundRobinRoundIndexForPair(participantIds, pair[0], pair[1]);
+}
+
+/**
+ * Order ready group matches in full round-robin rounds: repeatedly emit every ready match
+ * from the next incomplete round of the group with the fewest completed rounds.
+ */
+export function groupRoundStaggeredOrder(matches: Match[], tournament: Tournament): Match[] {
+  if (matches.length <= 1) return [...matches];
+
+  type GroupBucket = {
+    key: string;
+    participantIds: PlayerId[];
+    matches: Match[];
+    completedRounds: number;
+    offeredRound: number;
+  };
+
+  const buckets = new Map<string, GroupBucket>();
+  for (const m of matches) {
+    const key = groupReadyStaggerKey(m);
+    if (!buckets.has(key)) {
+      const def = groupDefForMatch(tournament, m);
+      if (!def) {
+        buckets.set(key, { key, participantIds: [], matches: [], completedRounds: 0, offeredRound: 0 });
+      } else {
+        const participantIds = participantIdsForGroup(def, m);
+        const allGroup = groupMatchesFromTournament(tournament, m);
+        const completedRounds = groupCompletedRoundCount(allGroup, participantIds);
+        buckets.set(key, { key, participantIds, matches: [], completedRounds, offeredRound: completedRounds });
+      }
+    }
+    buckets.get(key)!.matches.push(m);
+  }
+
+  const remaining = new Set(matches.map((m) => m.id));
+  const out: Match[] = [];
+
+  while (remaining.size > 0) {
+    let pickKey: string | null = null;
+    let pickCompleted = Infinity;
+    let pickOffered = Infinity;
+
+    for (const [key, bucket] of buckets) {
+      const hasRemaining = bucket.matches.some((m) => remaining.has(m.id));
+      if (!hasRemaining) continue;
+      if (
+        bucket.completedRounds < pickCompleted ||
+        (bucket.completedRounds === pickCompleted && bucket.offeredRound < pickOffered) ||
+        (bucket.completedRounds === pickCompleted &&
+          bucket.offeredRound === pickOffered &&
+          (pickKey === null || key.localeCompare(pickKey) < 0))
+      ) {
+        pickCompleted = bucket.completedRounds;
+        pickOffered = bucket.offeredRound;
+        pickKey = key;
+      }
+    }
+
+    if (!pickKey) break;
+
+    const bucket = buckets.get(pickKey)!;
+    const targetRound = bucket.offeredRound;
+    const batch = bucket.matches
+      .filter((m) => {
+        if (!remaining.has(m.id)) return false;
+        if (bucket.participantIds.length === 0) return true;
+        const ri = roundIndexForMatch(m, bucket.participantIds);
+        return ri === undefined || ri === targetRound;
+      })
+      .sort((a, b) => a.id.localeCompare(b.id));
+
+    if (batch.length === 0) {
+      const fallback = bucket.matches.filter((m) => remaining.has(m.id)).sort((a, b) => a.id.localeCompare(b.id));
+      out.push(...fallback);
+      for (const m of fallback) remaining.delete(m.id);
+      bucket.offeredRound += 1;
+      continue;
+    }
+
+    out.push(...batch);
+    for (const m of batch) remaining.delete(m.id);
+    bucket.offeredRound += 1;
+  }
+
   return out;
 }
 

@@ -9,6 +9,8 @@ import {
 } from '../src/match-notes';
 import { CommandRunner } from '../src/command';
 import { createTournament, generateBracket } from '../src/model';
+import { catalog } from '../src/i18n/catalog';
+import { messageText } from '../src/i18n/resolve';
 
 function setGroups4(runner: CommandRunner): void {
   const ts = '2026-01-01T00:00:00.000Z';
@@ -30,7 +32,13 @@ function setGroups4(runner: CommandRunner): void {
     id: 'sg',
     type: 'SetGroups',
     dependsOn: ['p1', 'p2', 'p3', 'p4'],
-    payload: { targetGroupSize: 2, playerIds: ['p1', 'p2', 'p3', 'p4'] },
+    payload: {
+      groups: [
+        { id: '1', playerIds: ['p1', 'p2'] },
+        { id: '2', playerIds: ['p3', 'p4'] },
+      ],
+      playerIds: [],
+    },
     timestamp: ts,
   });
 }
@@ -291,5 +299,16 @@ describe('match-notes', () => {
     expect(junBracket[0]!.contextLine).toContain('Junior');
     const senBracket = collectMatchNoteSlips(tAfter, { kind: 'bracket-round', classId: 'sen', round: 1 }, 'en');
     expect(senBracket.length).toBe(0);
+  });
+
+  it('uses S1–S5 for Dutch game column headers on match slips', () => {
+    expect(messageText(catalog, 'ui.matchNotes.gameN', 'en', { n: '1' })).toBe('G1');
+    expect(messageText(catalog, 'ui.matchNotes.gameN', 'nl', { n: '1' })).toBe('S1');
+    expect(messageText(catalog, 'ui.matchNotes.gameN', 'nl', { n: '3' })).toBe('S3');
+  });
+
+  it('uses Total / Totaal for match score column header', () => {
+    expect(messageText(catalog, 'ui.matchNotes.total', 'en')).toBe('Total');
+    expect(messageText(catalog, 'ui.matchNotes.total', 'nl')).toBe('Totaal');
   });
 });

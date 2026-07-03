@@ -24,6 +24,16 @@ function appendUndo(runner: CommandRunner, targetId: string, undoId: string): Re
 
 const iso = () => new Date().toISOString();
 
+function createBracketMatchUnlessExists(
+  runner: CommandRunner,
+  cmd: CreateMatchCommand,
+  fallbackDep: string,
+): string {
+  if (runner.getTournament().matches[cmd.payload.matchId]) return fallbackDep;
+  expect(runner.execute(cmd).success).toBe(true);
+  return cmd.id;
+}
+
 describe('Player display name uniqueness', () => {
   it('allows same name with different misc when misc config is active', () => {
     const runner = new CommandRunner();
@@ -1132,21 +1142,23 @@ describe('EnterScore', () => {
     const t1 = runner.getTournament();
     const bm = t1.bracketMatches.find((m) => m.round === 1 && m.seedA && m.seedB);
     expect(bm).toBeTruthy();
-    const bracketMid = `match-${bm!.id}`;
-    expect(
-      runner.execute({
-        id: 'cm',
-        type: 'CreateMatch',
-        dependsOn: ['gen', ...pids],
-        payload: { matchId: bracketMid, playerA: bm!.seedA!, playerB: bm!.seedB! },
-        timestamp: ts,
-      }).success,
-    ).toBe(true);
+    const bracketMid = bracketPlayerMatchId(bm!.id);
+    if (!t1.matches[bracketMid]) {
+      expect(
+        runner.execute({
+          id: 'cm',
+          type: 'CreateMatch',
+          dependsOn: ['gen', ...pids],
+          payload: { matchId: bracketMid, playerA: bm!.seedA!, playerB: bm!.seedB! },
+          timestamp: ts,
+        }).success,
+      ).toBe(true);
+    }
     expect(
       runner.execute({
         id: 'ek',
         type: 'EnterScore',
-        dependsOn: ['cm'],
+        dependsOn: ['gen'],
         payload: { matchId: bracketMid, scores: bo5 },
         timestamp: ts,
       }).success,
@@ -1207,15 +1219,19 @@ describe('ClearBracket', () => {
     expect(c.createPlayer('p2', 'B', 0, '', 'cmd-p2')).toEqual({ success: true });
     expect(c.setSeedings(['p1', 'p2'], ['cmd-p1', 'cmd-p2'], 'cmd-seed')).toEqual({ success: true });
     expect(c.generateBracket(true, false, ['cmd-seed'], 'cmd-gen')).toEqual({ success: true });
-    expect(c.createMatch('match-m1', 'p1', 'p2', ['cmd-gen', 'cmd-p1', 'cmd-p2'], 'cmd-pair')).toEqual({
-      success: true,
-    });
+    const bm = c.getTournament().bracketMatches.find((m) => m.seedA && m.seedB)!;
+    const mid = bracketPlayerMatchId(bm.id);
+    if (!c.getTournament().matches[mid]) {
+      expect(c.createMatch(mid, bm.seedA!, bm.seedB!, ['cmd-gen', 'cmd-p1', 'cmd-p2'], 'cmd-pair')).toEqual({
+        success: true,
+      });
+    }
     expect(c.setRoundLock(1, true, ['cmd-gen'], 'cmd-lock')).toEqual({ success: true });
     expect(c.clearBracket(['cmd-gen'], 'cmd-clear')).toEqual({ success: true });
     const t = c.getTournament();
     expect(t.bracketMatches).toEqual([]);
     expect(t.lockedBracketRounds).toEqual([]);
-    expect(t.matches['match-m1']).toBeUndefined();
+    expect(t.matches[mid]).toBeUndefined();
   });
 
   it('fails when no bracket exists', () => {
@@ -1232,21 +1248,25 @@ describe('ClearBracket', () => {
     expect(c.createPlayer('p2', 'B', 0, '', 'cmd-p2')).toEqual({ success: true });
     expect(c.setSeedings(['p1', 'p2'], ['cmd-p1', 'cmd-p2'], 'cmd-seed')).toEqual({ success: true });
     expect(c.generateBracket(true, false, ['cmd-seed'], 'cmd-gen')).toEqual({ success: true });
-    expect(c.createMatch('match-m1', 'p1', 'p2', ['cmd-gen', 'cmd-p1', 'cmd-p2'], 'cmd-pair')).toEqual({
-      success: true,
-    });
+    const bm = c.getTournament().bracketMatches.find((m) => m.seedA && m.seedB)!;
+    const mid = bracketPlayerMatchId(bm.id);
+    if (!c.getTournament().matches[mid]) {
+      expect(c.createMatch(mid, bm.seedA!, bm.seedB!, ['cmd-gen', 'cmd-p1', 'cmd-p2'], 'cmd-pair')).toEqual({
+        success: true,
+      });
+    }
     const bo5 = [
       { playerA: 11, playerB: 9 },
       { playerA: 11, playerB: 6 },
       { playerA: 11, playerB: 5 },
     ];
-    expect(c.enterScore('match-m1', bo5, ['cmd-pair'], 'cmd-score')).toEqual({ success: true });
+    expect(c.enterScore(mid, bo5, ['cmd-gen'], 'cmd-score')).toEqual({ success: true });
     expect(c.clearBracket(['cmd-gen', 'cmd-score'], 'cmd-clear')).toEqual({
       success: false,
       reason: 'model.cannotRemoveKnockoutBracketWithPlayedMatches',
     });
     expect(c.getTournament().bracketMatches.length).toBeGreaterThan(0);
-    expect(c.getTournament().matches['match-m1']).toBeDefined();
+    expect(c.getTournament().matches[mid]).toBeDefined();
   });
 });
 
@@ -1345,21 +1365,23 @@ describe('AdvanceBracketRound', () => {
       if (!bm.seedA || !bm.seedB) continue;
       const mid = bracketPlayerMatchId(bm.id, 'jun');
       const pairId = `pair-${bm.id}`;
-      expect(
-        runner.execute({
+      lastDep = createBracketMatchUnlessExists(
+        runner,
+        {
           id: pairId,
           type: 'CreateMatch',
           dependsOn: [lastDep],
           payload: { matchId: mid, playerA: bm.seedA, playerB: bm.seedB, classId: 'jun' },
           timestamp: '2026-01-01T00:00:08.500Z',
-        }).success,
-      ).toBe(true);
+        },
+        lastDep,
+      );
       const scoreId = `score-${bm.id}`;
       expect(
         runner.execute({
           id: scoreId,
           type: 'EnterScore',
-          dependsOn: [pairId],
+          dependsOn: [lastDep],
           payload: { matchId: mid, scores: bo5 },
           timestamp: '2026-01-01T00:00:08.750Z',
         }).success,
@@ -1388,14 +1410,18 @@ describe('Bracket undoLast coalescing', () => {
     expect(c.createPlayer('p2', 'B', 0, '', 'cmd-p2')).toEqual({ success: true });
     expect(c.setSeedings(['p1', 'p2'], ['cmd-p1', 'cmd-p2'], 'cmd-seed-br')).toEqual({ success: true });
     expect(c.generateBracket(true, false, ['cmd-seed-br'], 'cmd-gen-br')).toEqual({ success: true });
-    expect(c.createMatch('match-m1', 'p1', 'p2', ['cmd-gen-br', 'cmd-p1', 'cmd-p2'], 'cmd-gen-br-pair-m1')).toEqual({
-      success: true,
-    });
+    const bm = c.getTournament().bracketMatches.find((m) => m.seedA && m.seedB)!;
+    const mid = bracketPlayerMatchId(bm.id);
+    if (!c.getTournament().matches[mid]) {
+      expect(c.createMatch(mid, bm.seedA!, bm.seedB!, ['cmd-gen-br', 'cmd-p1', 'cmd-p2'], 'cmd-gen-br-pair-m1')).toEqual({
+        success: true,
+      });
+    }
     expect(c.getTournament().bracketMatches.length).toBeGreaterThan(0);
-    expect(c.getTournament().matches['match-m1']).toBeDefined();
+    expect(c.getTournament().matches[mid]).toBeDefined();
     expect(c.undoLast()).toEqual({ success: true });
     expect(c.getTournament().bracketMatches.length).toBe(0);
-    expect(c.getTournament().matches['match-m1']).toBeUndefined();
+    expect(c.getTournament().matches[mid]).toBeUndefined();
   });
 
   it('undoLast coalesces when GenerateBracket id does not use cmd-gen prefix', () => {
@@ -1405,10 +1431,14 @@ describe('Bracket undoLast coalescing', () => {
     expect(c.setSeedings(['p1', 'p2'], ['cmd-p1', 'cmd-p2'], 'cmd-seed-br')).toEqual({ success: true });
     const genId = 'gen-bracket-batch-1';
     expect(c.generateBracket(true, false, ['cmd-seed-br'], genId)).toEqual({ success: true });
-    expect(c.createMatch('match-m1', 'p1', 'p2', [genId, 'cmd-p1', 'cmd-p2'], 'pair-m1')).toEqual({ success: true });
+    const bm = c.getTournament().bracketMatches.find((m) => m.seedA && m.seedB)!;
+    const mid = bracketPlayerMatchId(bm.id);
+    if (!c.getTournament().matches[mid]) {
+      expect(c.createMatch(mid, bm.seedA!, bm.seedB!, [genId, 'cmd-p1', 'cmd-p2'], 'pair-m1')).toEqual({ success: true });
+    }
     expect(c.undoLast()).toEqual({ success: true });
     expect(c.getTournament().bracketMatches.length).toBe(0);
-    expect(c.getTournament().matches['match-m1']).toBeUndefined();
+    expect(c.getTournament().matches[mid]).toBeUndefined();
   });
 });
 
@@ -1446,12 +1476,16 @@ describe('Multi-class undo and redo', () => {
     const senBm = c.getTournament().classTournaments.sen!.bracketMatches.find((m) => m.round === 1 && m.seedA && m.seedB)!;
     const junMid = bracketPlayerMatchId(junBm.id, 'jun');
     const senMid = bracketPlayerMatchId(senBm.id, 'sen');
-    expect(
-      c.createMatch(junMid, junBm.seedA!, junBm.seedB!, [genJun, 'p1', 'p2'], `${genJun}-pair-${junBm.id}`, 'jun'),
-    ).toEqual({ success: true });
-    expect(
-      c.createMatch(senMid, senBm.seedA!, senBm.seedB!, [genSen, 'p3', 'p4'], `${genSen}-pair-${senBm.id}`, 'sen'),
-    ).toEqual({ success: true });
+    if (!c.getTournament().matches[junMid]) {
+      expect(
+        c.createMatch(junMid, junBm.seedA!, junBm.seedB!, [genJun, 'p1', 'p2'], `${genJun}-pair-${junBm.id}`, 'jun'),
+      ).toEqual({ success: true });
+    }
+    if (!c.getTournament().matches[senMid]) {
+      expect(
+        c.createMatch(senMid, senBm.seedA!, senBm.seedB!, [genSen, 'p3', 'p4'], `${genSen}-pair-${senBm.id}`, 'sen'),
+      ).toEqual({ success: true });
+    }
 
     expect(c.undoLast()).toEqual({ success: true });
     const t = c.getTournament();
@@ -1650,24 +1684,27 @@ describe('Multi-class undo and redo', () => {
     });
     const bm1 = runner.getTournament().classTournaments.jun!.bracketMatches.find((m) => m.round === 1 && m.seedA && m.seedB)!;
     const staleMid = bracketPlayerMatchId(bm1.id, 'jun');
-    runner.execute({
+    createBracketMatchUnlessExists(runner, {
       id: 'pair1',
       type: 'CreateMatch',
       dependsOn: ['gen1'],
-      payload: { matchId: staleMid, playerA: bm1.seedA, playerB: bm1.seedB, classId: 'jun' },
+      payload: { matchId: staleMid, playerA: bm1.seedA!, playerB: bm1.seedB!, classId: 'jun' },
       timestamp: '2026-01-01T00:00:07.000Z',
     });
     runner.execute({
       id: 'gen2',
       type: 'GenerateBracket',
-      dependsOn: ['scg', 'pair1'],
+      dependsOn: ['scg', 'gen1'],
       payload: { fillByes: false, cullToPowerOfTwo: false, classId: 'jun' },
       timestamp: '2026-01-01T00:00:08.000Z',
     });
-    expect(runner.getTournament().matches[staleMid]).toBeUndefined();
     const bm2 = runner.getTournament().classTournaments.jun!.bracketMatches.find((m) => m.round === 1 && m.seedA && m.seedB)!;
     expect(bm2).toBeDefined();
-    expect(runner.getTournament().matches[bracketPlayerMatchId(bm2.id, 'jun')]).toBeUndefined();
+    const newMid = bracketPlayerMatchId(bm2.id, 'jun');
+    if (bm1.id !== bm2.id) {
+      expect(runner.getTournament().matches[staleMid]).toBeUndefined();
+    }
+    expect(runner.getTournament().matches[newMid]?.status).toBe('scheduled');
   });
 
   it('undo knockout score only reconciles that class bracket', () => {
@@ -1725,24 +1762,24 @@ describe('Multi-class undo and redo', () => {
     const senBm = runner.getTournament().classTournaments.sen!.bracketMatches.find((m) => m.round === 1 && m.seedA && m.seedB)!;
     const junMid = bracketPlayerMatchId(junBm.id, 'jun');
     const senMid = bracketPlayerMatchId(senBm.id, 'sen');
-    runner.execute({
+    createBracketMatchUnlessExists(runner, {
       id: 'pair-jun',
       type: 'CreateMatch',
       dependsOn: ['gen-jun'],
-      payload: { matchId: junMid, playerA: junBm.seedA, playerB: junBm.seedB, classId: 'jun' },
+      payload: { matchId: junMid, playerA: junBm.seedA!, playerB: junBm.seedB!, classId: 'jun' },
       timestamp: '2026-01-01T00:00:06.000Z',
     });
-    runner.execute({
+    createBracketMatchUnlessExists(runner, {
       id: 'pair-sen',
       type: 'CreateMatch',
       dependsOn: ['gen-sen'],
-      payload: { matchId: senMid, playerA: senBm.seedA, playerB: senBm.seedB, classId: 'sen' },
+      payload: { matchId: senMid, playerA: senBm.seedA!, playerB: senBm.seedB!, classId: 'sen' },
       timestamp: '2026-01-01T00:00:07.000Z',
     });
     runner.execute({
       id: 'score-jun',
       type: 'EnterScore',
-      dependsOn: ['pair-jun'],
+      dependsOn: ['gen-jun'],
       payload: { matchId: junMid, scores: bo5 },
       timestamp: '2026-01-01T00:00:08.000Z',
     });
@@ -1817,17 +1854,17 @@ describe('Multi-class parity gaps', () => {
     const runner = setupTwoClassWithJunBracket();
     const bm = runner.getTournament().classTournaments.jun!.bracketMatches.find((m) => m.round === 1 && m.seedA && m.seedB)!;
     const mid = bracketPlayerMatchId(bm.id, 'jun');
-    runner.execute({
+    createBracketMatchUnlessExists(runner, {
       id: 'pair',
       type: 'CreateMatch',
       dependsOn: ['gen'],
-      payload: { matchId: mid, playerA: bm.seedA, playerB: bm.seedB, classId: 'jun' },
+      payload: { matchId: mid, playerA: bm.seedA!, playerB: bm.seedB!, classId: 'jun' },
       timestamp: '2026-01-01T00:00:06.000Z',
     });
     runner.execute({
       id: 'score',
       type: 'EnterScore',
-      dependsOn: ['pair'],
+      dependsOn: ['gen'],
       payload: { matchId: mid, scores: bo5 },
       timestamp: '2026-01-01T00:00:07.000Z',
     });
@@ -1929,25 +1966,25 @@ describe('Multi-class parity gaps', () => {
     const senBm = runner.getTournament().classTournaments.sen!.bracketMatches.find((m) => m.round === 1 && m.seedA && m.seedB)!;
     const junMid = bracketPlayerMatchId(junBm.id, 'jun');
     const senMid = bracketPlayerMatchId(senBm.id, 'sen');
-    runner.execute({
+    createBracketMatchUnlessExists(runner, {
       id: 'pair-jun',
       type: 'CreateMatch',
       dependsOn: ['gen-jun'],
-      payload: { matchId: junMid, playerA: junBm.seedA, playerB: junBm.seedB, classId: 'jun' },
+      payload: { matchId: junMid, playerA: junBm.seedA!, playerB: junBm.seedB!, classId: 'jun' },
       timestamp: '2026-01-01T00:00:08.000Z',
     });
-    runner.execute({
+    createBracketMatchUnlessExists(runner, {
       id: 'pair-sen',
       type: 'CreateMatch',
       dependsOn: ['gen-sen'],
-      payload: { matchId: senMid, playerA: senBm.seedA, playerB: senBm.seedB, classId: 'sen' },
+      payload: { matchId: senMid, playerA: senBm.seedA!, playerB: senBm.seedB!, classId: 'sen' },
       timestamp: '2026-01-01T00:00:09.000Z',
     });
     expect(
       runner.execute({
         id: 'ff',
         type: 'PlayerForfeit',
-        dependsOn: ['pair-jun', 'pair-sen'],
+        dependsOn: ['gen-jun', 'gen-sen'],
         payload: { playerId: junBm.seedA!, phase: 'bracket', classId: 'jun' },
         timestamp: '2026-01-01T00:00:10.000Z',
       }).success,

@@ -242,6 +242,7 @@ export interface GenerateBracketCommand extends CommandBase {
     /** Salt for random bipartition tie-breaks; stored for replay. When omitted, {@link generateBracket} uses current time. */
     tieBreakSalt?: string;
     cullByGroupPlacement?: boolean;
+    qualifierCount?: number;
     classId?: string;
     /** When omitted, defaults to heuristic ordering in {@link generateBracket}. */
     bracketSeedingMode?: BracketSeedingMode | 'extend_closed_form';
@@ -1100,6 +1101,7 @@ export class CommandRunner {
             passOneOf: 'command.setGroupsPassOneOf',
             requiresOneOf: 'command.setGroupsRequiresOneOf',
           },
+          command.timestamp,
         );
         if (result !== true) {
           return commandFail(result.key, result.params);
@@ -1198,7 +1200,7 @@ export class CommandRunner {
         const result = setTrackGroups(tournament, cid, groupPayload, command.id, {
           passOneOf: 'command.setClassGroupsPassOneOf',
           requiresOneOf: 'command.setClassGroupsRequiresOneOf',
-        });
+        }, command.timestamp);
         if (result !== true) {
           return commandFail(result.key, result.params);
         }
@@ -1235,7 +1237,7 @@ export class CommandRunner {
         if (Object.keys(tournament.teamMatches).length > 0) {
           return commandFail('command.cannotGenerateBracketWithTeamMatch');
         }
-        const { cullToPowerOfTwo, shuffleKey, tieBreakSalt, cullByGroupPlacement, classId, bracketSeedingMode } =
+        const { cullToPowerOfTwo, shuffleKey, tieBreakSalt, cullByGroupPlacement, qualifierCount, classId, bracketSeedingMode } =
           command.payload;
         const trackResolved = resolveTrackClassId(tournament, classId);
         if ('key' in trackResolved) {
@@ -1257,6 +1259,7 @@ export class CommandRunner {
             ...(shuffleKey !== undefined ? { shuffleKey } : {}),
             ...(tieBreakSalt !== undefined ? { tieBreakSalt } : {}),
             ...(cullByGroupPlacement ? { cullByGroupPlacement: true } : {}),
+            ...(qualifierCount !== undefined ? { qualifierCount } : {}),
             ...(trackClassId !== undefined ? { classId: trackClassId } : {}),
             ...(bracketSeedingMode !== undefined ? { bracketSeedingMode } : {}),
           });

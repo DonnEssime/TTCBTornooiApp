@@ -33,8 +33,6 @@ export function bracketKnockoutRoundMessageKey(
 
   const players = slots >> (indexInMain - 1);
   if (players === 2) return 'ui.bracket.round.final';
-  // Semi (1/2) only when the draw is large enough to have a separate quarter round before it.
-  if (players === 4 && indexInMain < depth && depth >= 5) return 'ui.bracket.round.half';
 
   return FRACTION_KEYS[players] ?? 'ui.bracket.round.numbered';
 }

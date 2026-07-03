@@ -116,6 +116,21 @@ export const uiRemainingCatalog = {
     '— rule-based placement from group standings.',
     '— regelgebaseerde plaatsing op basis van pouleresultaten.',
   ),
+  'ui.bracket.qualifierCountLabel': t('Seed top N players', 'Top N spelers plaatsen'),
+  'ui.bracket.qualifierCountLabelDoubles': t('Seed top N pairs', 'Top N paren plaatsen'),
+  'ui.bracket.qualifierCountPlaceholder': t('All', 'Allen'),
+  'ui.bracket.qualifierCountHint': t(
+    'Optional. Takes the best finishers per group (floor(N÷groups)), then fills to N by match, game, and point ratio. Leave empty for everyone.',
+    'Optioneel. Neemt de beste eindklasseringen per poule (afgerond N÷poules), vult aan tot N op wedstrijd-, spel- en puntenratio. Laat leeg voor iedereen.',
+  ),
+  'ui.bracket.qualifierCountHintDoubles': t(
+    'Optional. Takes the best pairs per group (floor(N÷groups)), then fills to N by match, game, and point ratio. Leave empty for all pairs.',
+    'Optioneel. Neemt de beste paren per poule (afgerond N÷poules), vult aan tot N op wedstrijd-, spel- en puntenratio. Laat leeg voor alle paren.',
+  ),
+  'ui.bracket.qualifierCountInvalid': t(
+    'Enter a positive number of players to seed, or leave empty for all.',
+    'Voer een positief aantal spelers in om te plaatsen, of laat leeg voor iedereen.',
+  ),
   'ui.bracket.createKnockout': t('Create knockout bracket', 'Afvallingstabel aanmaken'),
   'ui.bracket.removeBracket': t('Remove bracket', 'Afvallingstabel verwijderen'),
   'ui.bracket.clickPairingHint': t(
@@ -227,8 +242,8 @@ export const uiRemainingCatalog = {
   'ui.empty.importedTournament': t('Imported tournament', 'Geïmporteerd tornooi'),
   'ui.ov.orderingLabel': t('Ordering', 'Volgorde'),
   'ui.ov.ordering.groupCompletionStaggered': t(
-    'Group completion (staggered)',
-    'Groepsvoortgang (gespreid)',
+    'Group rounds (staggered)',
+    'Groepsrondes (gespreid)',
   ),
   'ui.ov.ordering.minWavesAvoidBackToBack': t(
     'Minimize waves (avoid back-to-back)',
@@ -346,7 +361,8 @@ export const uiRemainingCatalog = {
   'ui.matchNotes.player': t('Player', 'Speler'),
   'ui.matchNotes.table': t('Table', 'Tafel'),
   'ui.matchNotes.handicap': t('Hcp', 'Hcp'),
-  'ui.matchNotes.gameN': t('G{{n}}', 'W{{n}}'),
+  'ui.matchNotes.gameN': t('G{{n}}', 'S{{n}}'),
+  'ui.matchNotes.total': t('Total', 'Totaal'),
   'ui.matchNotes.miscDefault': t('Club', 'Club'),
   'ui.toast.matchNotesOpened': t('Opened match notes in a new tab.', 'Wedstrijdbladen geopend in een nieuw tabblad.'),
   'ui.toast.matchNotesPopupBlocked': t(

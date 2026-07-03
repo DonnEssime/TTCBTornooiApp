@@ -129,15 +129,17 @@ function createBracketMatchRows(
     if (!bm.seedA || !bm.seedB) continue;
     const mid = bracketPlayerMatchId(bm.id, classId);
     const pairId = `pair-${classId}-${bm.id}`;
-    const result = runner.execute({
-      id: pairId,
-      type: 'CreateMatch',
-      dependsOn: [lastDep],
-      payload: { matchId: mid, playerA: bm.seedA, playerB: bm.seedB, classId },
-      timestamp: iso(tick++),
-    });
-    expect(result).toEqual({ success: true });
-    lastDep = pairId;
+    if (!runner.getTournament().matches[mid]) {
+      const result = runner.execute({
+        id: pairId,
+        type: 'CreateMatch',
+        dependsOn: [lastDep],
+        payload: { matchId: mid, playerA: bm.seedA, playerB: bm.seedB, classId },
+        timestamp: iso(tick++),
+      });
+      expect(result).toEqual({ success: true });
+      lastDep = pairId;
+    }
   }
   return lastDep;
 }
@@ -155,6 +157,13 @@ function bracketTrackSnapshot(t: Tournament, classId: string) {
   });
 }
 
+function scoresFavoringPlayer(matchPlayerA: string, winnerId: string) {
+  const winnerIsA = matchPlayerA === winnerId;
+  return winnerIsA
+    ? bo5
+    : bo5.map((s) => ({ playerA: s.playerB, playerB: s.playerA }));
+}
+
 function scoreBracketMatch(
   runner: CommandRunner,
   classId: string,
@@ -162,13 +171,15 @@ function scoreBracketMatch(
   dep: string,
 ): string {
   const mid = bracketPlayerMatchId(bm.id, classId);
+  const match = runner.getTournament().matches[mid]!;
+  const winner = bm.seedA! < bm.seedB! ? bm.seedA! : bm.seedB!;
   const cmdId = `score-${classId}-${bm.id}`;
   expect(
     runner.execute({
       id: cmdId,
       type: 'EnterScore',
       dependsOn: [dep],
-      payload: { matchId: mid, scores: bo5 },
+      payload: { matchId: mid, scores: scoresFavoringPlayer(match.playerA, winner) },
       timestamp: iso(500),
     }),
   ).toEqual({ success: true });
@@ -286,8 +297,8 @@ describe('multi-class bracket other-class invariants', () => {
     expect(placements?.map((r) => [r.place, r.playerId])).toEqual([
       [1, 'p1'],
       [2, 'p2'],
-      [3, 'p4'],
-      [4, 'p3'],
+      [3, 'p3'],
+      [4, 'p4'],
     ]);
   });
 });

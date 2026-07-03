@@ -18,7 +18,7 @@
     bracketSlotAwaitingPlay,
     compareBracketMatchId,
     groupPhaseCounts,
-    groupCompletionStaggeredOrder,
+    groupRoundStaggeredOrder,
     inProgressMatchIdsForPlayer,
     matchAssignedTableId,
     matchIdOnTable,
@@ -468,11 +468,7 @@
     for (const tr of tracks) {
       list.push(...readyGroupMatches(tournament, tr.classId));
     }
-    switch (readyOrderingChoice) {
-      case 'groupCompletionStaggered':
-      default:
-        return groupCompletionStaggeredOrder(list, (m) => groupProgressForMatch(tournament, m));
-    }
+    return groupRoundStaggeredOrder(list, tournament);
   });
 
   function matchOnTable(tableId: string): Match | undefined {
@@ -577,11 +573,18 @@
 
     const inProgress = matchesOnTablesInAssignmentOrder(tournament);
 
+    const preferredGroupBracketIds: string[] = [];
+    for (const m of readyGroupsAll) preferredGroupBracketIds.push(m.id);
+    for (const item of readyBracketsAll) {
+      const mid = readyBracketPlayableMatchId(tournament, item.bm, item.classId);
+      if (mid) preferredGroupBracketIds.push(mid);
+    }
+
     const ordered = minWavesAvoidBackToBackOrder(readyMatches, {
       tableCount: tournament.tables.length,
       pastFinishedInOrder: pastFinished,
       inProgressInAssignmentOrder: inProgress,
-      preferredReadyOrderIds: lastReadyIds,
+      preferredReadyOrderIds: preferredGroupBracketIds,
     });
 
     const orderedKeys: string[] = [];

@@ -70,15 +70,17 @@ function createBracketMatchRows(runner: CommandRunner, classId: string, dep: str
     if (!bm.seedA || !bm.seedB) continue;
     const mid = bracketPlayerMatchId(bm.id, classId);
     const pairId = `pair-${classId}-${bm.id}`;
-    const result = runner.execute({
-      id: pairId,
-      type: 'CreateMatch',
-      dependsOn: [lastDep],
-      payload: { matchId: mid, playerA: bm.seedA, playerB: bm.seedB, classId },
-      timestamp: iso(tick++),
-    });
-    expect(result).toEqual({ success: true });
-    lastDep = pairId;
+    if (!runner.getTournament().matches[mid]) {
+      const result = runner.execute({
+        id: pairId,
+        type: 'CreateMatch',
+        dependsOn: [lastDep],
+        payload: { matchId: mid, playerA: bm.seedA, playerB: bm.seedB, classId },
+        timestamp: iso(tick++),
+      });
+      expect(result).toEqual({ success: true });
+      lastDep = pairId;
+    }
   }
   return lastDep;
 }

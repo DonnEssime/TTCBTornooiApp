@@ -27,6 +27,7 @@ import {
   trackBracketParticipants,
 } from './doubles-track';
 import { groupPhaseCounts, type GroupProgressSnapshot } from './match-ordering';
+import { bracketPhaseCountsIncludingFutureRounds } from './model';
 
 export type TrackGroupsFormat = { format?: TrackFormat };
 
@@ -138,6 +139,7 @@ export function setTrackGroups(
   payload: TrackGroupsPayload,
   commandId: string,
   messages: SetTrackGroupsMessages,
+  shuffleSeed?: string,
 ): true | SetTrackGroupsFail {
   const resolved = resolveTrackClassId(tournament, classId);
   if ('key' in resolved) {
@@ -145,6 +147,7 @@ export function setTrackGroups(
   }
   const trackClassId = resolved.classId;
   const track = getCompetitionTrack(tournament, trackClassId);
+  const seedBase = (shuffleSeed?.trim() || commandId).trim();
   if (tournamentUsesClassTabs(tournament) && trackClassId && !tournament.classTournaments[trackClassId]) {
     return { key: 'command.classSliceNotFound' };
   }
@@ -196,9 +199,10 @@ export function setTrackGroups(
       return { key: 'command.doublesRequiresEvenPlayerCount' };
     }
     clearTrackGroupMatches(tournament, trackClassId);
-    const pairs = formRandomPairs(ordered, `${commandId}:pairs`);
+    const shuffledPlayers = shuffleDeterministic(ordered, `${seedBase}:players`);
+    const pairs = formRandomPairs(shuffledPlayers, `${seedBase}:pairs`);
     const pairsRec = pairsRecordFromList(pairs);
-    const shuffledPairs = shuffleDeterministic(pairs, `${commandId}:pair-order`);
+    const shuffledPairs = shuffleDeterministic(pairs, `${seedBase}:pair-order`);
     let groupDefs: GroupDefinition[];
     if (hasSize) {
       const ts = Number((payload as { targetGroupSize: number }).targetGroupSize);
@@ -249,13 +253,14 @@ export function setTrackGroups(
       seenPid.add(pid);
       ordered.push(pid);
     }
+    const shuffled = shuffleDeterministic(ordered, seedBase);
     if (hasSize) {
       const ts = Number((payload as { targetGroupSize: number }).targetGroupSize);
       const tInt = Math.floor(ts);
       if (!Number.isFinite(ts) || tInt < 1) {
         return { key: 'command.targetGroupSizePositive' };
       }
-      const defs = buildNumberedGroupsFromPlayerOrder(ordered, tInt);
+      const defs = buildNumberedGroupsFromPlayerOrder(shuffled, tInt);
       groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
     } else {
       const tc = Number((payload as { targetGroupCount: number }).targetGroupCount);
@@ -263,7 +268,7 @@ export function setTrackGroups(
       if (!Number.isFinite(tc) || gInt < 1) {
         return { key: 'command.targetGroupCountPositive' };
       }
-      const defs = buildNumberedGroupsFromPlayerOrderByGroupCount(ordered, gInt);
+      const defs = buildNumberedGroupsFromPlayerOrderByGroupCount(shuffled, gInt);
       groups = defs.map((g) => ({ id: g.id, label: g.label, playerIds: g.playerIds }));
     }
   } else if (hasGroups) {
@@ -284,7 +289,9 @@ export function setTrackGroups(
   const rec: Record<string, GroupDefinition> = {};
   const gidSeen = new Set<string>();
   const pidSeen = new Set<string>();
-  const shufflePrefix = trackClassId ? `${commandId}:class:${trackClassId}:group-order:` : `${commandId}:group-order:`;
+  const shufflePrefix = trackClassId
+    ? `${seedBase}:class:${trackClassId}:group-order:`
+    : `${seedBase}:group-order:`;
 
   for (const raw of groups) {
     const id = String(raw.id ?? '').trim();
@@ -526,6 +533,32 @@ export function aggregateGroupPhaseCounts(t: Tournament): GroupProgressSnapshot 
     done += c.done;
   }
   return { total, done };
+}
+
+/** Group + bracket match progress for one class track. */
+export function classTrackPhaseCounts(t: Tournament, classId: string): GroupProgressSnapshot {
+  const tr = getCompetitionTrack(t, classId);
+  const gc = groupPhaseCounts(trackDefinedGroupMatches(t, classId, tr.groups));
+  const bc = bracketPhaseCountsIncludingFutureRounds(tr.bracketMatches);
+  return { total: gc.total + bc.total, done: gc.done + bc.done };
+}
+
+/** True when every group and bracket match on the class track is finished (or no matches exist yet). */
+export function isClassTrackFullyComplete(t: Tournament, classId: string): boolean {
+  const c = classTrackPhaseCounts(t, classId);
+  return c.total > 0 && c.done >= c.total;
+}
+
+/**
+ * First competition class (in definition order) that still has unfinished matches.
+ * Falls back to the first class when all tracks are complete or none have started.
+ */
+export function firstNonCompletedClassId(t: Tournament): string | undefined {
+  if (t.classDefinitions.length === 0) return undefined;
+  for (const def of t.classDefinitions) {
+    if (!isClassTrackFullyComplete(t, def.id)) return def.id;
+  }
+  return t.classDefinitions[0]!.id;
 }
 
 /** Install a knockout bracket on the given track and clear round locks on that track. */

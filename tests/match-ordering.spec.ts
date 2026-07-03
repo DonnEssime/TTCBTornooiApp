@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import type { Match } from '../src/model';
+import type { Match, Tournament } from '../src/model';
+import { roundRobinMatchRounds } from '../src/model';
 import {
-  groupCompletionStaggeredOrder,
   estimateScheduleWaves,
+  groupCompletedRoundCount,
+  groupRoundStaggeredOrder,
   minWavesAvoidBackToBackOrder,
 } from '../src/match-ordering';
 
@@ -25,17 +27,96 @@ function mkMatch(
   };
 }
 
+function mkTournament(groupDefs: Record<string, string[]>, matches: Record<string, Match>): Tournament {
+  return {
+    players: {},
+    teams: {},
+    matches,
+    teamMatches: {},
+    bracketMatches: [],
+    matchFinishOrder: [],
+    tables: [],
+    tableAssignments: [],
+    seedings: [],
+    groups: Object.fromEntries(
+      Object.entries(groupDefs).map(([id, playerIds]) => [id, { id, playerIds }]),
+    ),
+    forfeits: { players: {}, teams: {} },
+    forfeitResults: { playerWins: {} },
+    lockedBracketRounds: [],
+    classDefinitions: [],
+    playerClassFlags: {},
+    classTournaments: {},
+  };
+}
 
-describe('match ordering penalties', () => {
-  it('groupCompletionStaggeredOrder picks the least-complete group first', () => {
-    const g1a = mkMatch('g1-a', 'a', 'b', '1');
-    const g1b = mkMatch('g1-b', 'c', 'd', '1');
+describe('group round ordering', () => {
+  it('emits a full round at once for the least-complete group', () => {
+    const pids = ['a', 'b', 'c', 'd'];
+    const rounds = roundRobinMatchRounds(pids);
+    const g1Matches: Record<string, Match> = {};
+    for (const [a, b] of rounds[0]!) {
+      const id = `g1-${a}-${b}`;
+      g1Matches[id] = mkMatch(id, a, b, '1');
+    }
+    for (const [a, b] of rounds[1]!) {
+      const id = `g1-${a}-${b}`;
+      g1Matches[id] = mkMatch(id, a, b, '1');
+    }
     const g2a = mkMatch('g2-a', 'e', 'f', '2');
-    const progress = (m: Match) => (m.groupId === '1' ? { total: 4, done: 2 } : { total: 4, done: 0 });
-    const order = groupCompletionStaggeredOrder([g1a, g1b, g2a], progress);
-    expect(order[0]?.groupId).toBe('2');
+    const t = mkTournament({ '1': pids, '2': ['e', 'f', 'g', 'h'] }, { ...g1Matches, 'g2-a': g2a });
+
+    const ready = Object.values(g1Matches).concat([g2a]);
+    const order = groupRoundStaggeredOrder(ready, t);
+
+    expect(order).toHaveLength(5);
+    expect(order[0]?.groupId).toBe('1');
+    expect(order[1]?.groupId).toBe('1');
+    expect(order[2]?.groupId).toBe('2');
+    expect(order[3]?.groupId).toBe('1');
+    expect(order[4]?.groupId).toBe('1');
+
+    const round0Keys = new Set(rounds[0]!.map(([a, b]) => `${a}\t${b}`));
+    for (const m of order.slice(0, 2)) {
+      const key = m.playerA < m.playerB ? `${m.playerA}\t${m.playerB}` : `${m.playerB}\t${m.playerA}`;
+      expect(round0Keys.has(key)).toBe(true);
+    }
   });
 
+  it('after round 1 is complete, next batch is entire round 2', () => {
+    const pids = ['a', 'b', 'c', 'd'];
+    const rounds = roundRobinMatchRounds(pids);
+    const matches: Record<string, Match> = {};
+    for (const [a, b] of rounds[0]!) {
+      const id = `r0-${a}-${b}`;
+      matches[id] = mkMatch(id, a, b, '1', true);
+    }
+    for (const [a, b] of rounds[1]!) {
+      const id = `r1-${a}-${b}`;
+      matches[id] = mkMatch(id, a, b, '1');
+    }
+    const t = mkTournament({ '1': pids }, matches);
+    const ready = Object.values(matches).filter((m) => m.status === 'scheduled');
+    const order = groupRoundStaggeredOrder(ready, t);
+    expect(order).toHaveLength(2);
+    expect(order.every((m) => m.id.startsWith('r1-'))).toBe(true);
+  });
+
+  it('partially finished round emits only remaining matches from that round', () => {
+    const pids = ['a', 'b', 'c', 'd'];
+    const rounds = roundRobinMatchRounds(pids);
+    const [a0, b0] = rounds[0]![0]!;
+    const done = mkMatch('done', a0, b0, '1', true);
+    const [a1, b1] = rounds[0]![1]!;
+    const open = mkMatch('open', a1, b1, '1');
+    const t = mkTournament({ '1': pids }, { done, open });
+    const order = groupRoundStaggeredOrder([open], t);
+    expect(order.map((m) => m.id)).toEqual(['open']);
+    expect(groupCompletedRoundCount(Object.values(t.matches), pids)).toBe(0);
+  });
+});
+
+describe('match ordering penalties', () => {
   it('estimateScheduleWaves counts parallel table-limited waves in display order', () => {
     const slot = (a: string, b: string) => ({ playerA: a, playerB: b });
     expect(estimateScheduleWaves([], 4)).toBe(0);
@@ -46,8 +127,6 @@ describe('match ordering penalties', () => {
   });
 
   it('minWavesAvoidBackToBackOrder reduces wave count when display order is bad', () => {
-    // 2 tables. In the given order, wave1 assigns m1 (a-b) and m4 (a-c) can't fit (a busy),
-    // so it pushes work into extra waves. The optimizer should reorder to pack better.
     const m1 = mkMatch('m1', 'a', 'b', '1');
     const m2 = mkMatch('m2', 'c', 'd', '1');
     const m3 = mkMatch('m3', 'e', 'f', '1');
@@ -67,25 +146,7 @@ describe('match ordering penalties', () => {
     expect(wavesAfter).toBe(2);
   });
 
-  it('minWavesAvoidBackToBackOrder uses past/in-progress to avoid immediate repeats when waves tie', () => {
-    // Both orders can fit in 1 wave (2 tables, 2 matches), but we should avoid scheduling a player
-    // who just played (or is currently playing).
-    const r1 = mkMatch('r1', 'a', 'b', '1');
-    const r2 = mkMatch('r2', 'c', 'd', '1');
-    const ready = [r1, r2];
-
-    const optimized = minWavesAvoidBackToBackOrder(ready, {
-      tableCount: 2,
-      pastFinishedInOrder: [mkMatch('p1', 'a', 'x', '1', true)],
-      inProgressInAssignmentOrder: [],
-    });
-
-    // Prefer the match that does NOT include 'a' first when possible.
-    expect(optimized[0]?.id).toBe('r2');
-  });
-
-  it('minWavesAvoidBackToBackOrder can warm-start from current order to avoid reshuffles', () => {
-    // When objectives tie, the optimizer should preserve the given preferred order.
+  it('minWavesAvoidBackToBackOrder uses preferred order as tie-break', () => {
     const a = mkMatch('a', 'p1', 'p2', '1');
     const b = mkMatch('b', 'p3', 'p4', '1');
     const c = mkMatch('c', 'p5', 'p6', '1');

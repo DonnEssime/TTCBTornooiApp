@@ -119,12 +119,14 @@ describe('SetPlayerClassFlags class removal after recorded play', () => {
     );
     const bm = r.getTournament().classTournaments.jun!.bracketMatches.find((m) => m.seedA && m.seedB)!;
     const mid = bracketPlayerMatchId(bm.id, 'jun');
-    expect(
-      r.execute(
-        baseCmd('cm-br', 'CreateMatch', { matchId: mid, playerA: bm.seedA, playerB: bm.seedB, classId: 'jun' }, ['gen']),
-      ).success,
-    ).toBe(true);
-    expect(r.execute(baseCmd('score-br', 'EnterScore', { matchId: mid, scores: bo3 }, ['cm-br'])).success).toBe(true);
+    if (!r.getTournament().matches[mid]) {
+      expect(
+        r.execute(
+          baseCmd('cm-br', 'CreateMatch', { matchId: mid, playerA: bm.seedA, playerB: bm.seedB, classId: 'jun' }, ['gen']),
+        ).success,
+      ).toBe(true);
+    }
+    expect(r.execute(baseCmd('score-br', 'EnterScore', { matchId: mid, scores: bo3 }, ['gen'])).success).toBe(true);
 
     const res = r.execute(
       baseCmd('off-jun', 'SetPlayerClassFlags', { playerId: 'p1', flags: { jun: false } }, ['seed']),

@@ -20,6 +20,8 @@ const SLIP_COLS = 1;
 const SLIP_ROWS = MATCH_NOTES_SLIPS_PER_PAGE;
 const GUTTER_Y = 2;
 const GAMES_PER_MATCH = MATCH_NOTES_GAMES_PER_SLIP;
+const TOTAL_COL_SCALE = 1.2;
+const DEMARC_GAP = 1.5;
 const TABLE_LABEL_W = 14;
 const TABLE_BOX_W = 12;
 const TABLE_BOX_H = 6;
@@ -50,6 +52,15 @@ function drawScoreBox(doc: jsPDF, x: number, y: number, w: number, h: number): v
   doc.setDrawColor(160);
   doc.setLineWidth(0.2);
   doc.rect(x, y, w, h);
+}
+
+function drawTotalScoreBox(doc: jsPDF, x: number, y: number, w: number, h: number): void {
+  drawScoreBox(doc, x, y, w, h);
+  const midY = y + h / 2;
+  doc.setDrawColor(120);
+  doc.setLineWidth(0.35);
+  const minusHalfW = Math.min(w * 0.12, 2.5);
+  doc.line(x + w / 2 - minusHalfW, midY, x + w / 2 + minusHalfW, midY);
 }
 
 function drawSlip(
@@ -92,10 +103,15 @@ function drawSlip(
   const showMisc = isMiscActive(tournament);
   const miscLabel = tournament.miscConfig?.label?.trim() || txt('ui.matchNotes.miscDefault', locale);
 
-  const nameColW = showHcp && showMisc ? innerW * 0.42 : showHcp || showMisc ? innerW * 0.55 : innerW * 0.62;
+  const nameColW = showHcp && showMisc ? innerW * 0.40 : showHcp || showMisc ? innerW * 0.52 : innerW * 0.58;
   const hcpColW = showHcp ? 12 : 0;
-  const miscColW = showMisc ? innerW * 0.18 : 0;
-  const gameColW = (innerW - nameColW - hcpColW - miscColW) / GAMES_PER_MATCH;
+  const miscColW = showMisc ? innerW * 0.16 : 0;
+  const scoreAreaW = innerW - nameColW - hcpColW - miscColW;
+  const unitW = (scoreAreaW - DEMARC_GAP) / (GAMES_PER_MATCH + TOTAL_COL_SCALE);
+  const gameColW = unitW;
+  const totalColW = unitW * TOTAL_COL_SCALE;
+  const gamesEndX = originX + pad + nameColW + hcpColW + miscColW + GAMES_PER_MATCH * gameColW;
+  const totalColX = gamesEndX + DEMARC_GAP;
   const compact = SLIP_ROWS >= 6;
   const gameBoxH = compact ? 5.5 : 7;
   const rowH = compact ? 7.5 : 9;
@@ -118,6 +134,11 @@ function drawSlip(
     const gx = colX + g * gameColW + gameColW / 2;
     doc.text(txt('ui.matchNotes.gameN', locale, { n: String(g + 1) }), gx, tableTop, { align: 'center' });
   }
+  doc.text(txt('ui.matchNotes.total', locale), totalColX + totalColW / 2, tableTop, { align: 'center' });
+
+  doc.setDrawColor(100);
+  doc.setLineWidth(0.4);
+  doc.line(gamesEndX + DEMARC_GAP / 2, tableTop - 1.5, gamesEndX + DEMARC_GAP / 2, tableTop + 2 + rowH + gameBoxH + 1);
 
   const drawPlayerRow = (side: MatchNoteSlip['playerA'], rowY: number): void => {
     colX = originX + pad;
@@ -142,6 +163,10 @@ function drawSlip(
 
   drawPlayerRow(slip.playerA, tableTop + 2);
   drawPlayerRow(slip.playerB, tableTop + 2 + rowH);
+
+  const totalBoxY = tableTop + (compact ? 1 : 1.5);
+  const totalBoxH = rowH + gameBoxH - (compact ? 0.5 : 1);
+  drawTotalScoreBox(doc, totalColX + 0.8, totalBoxY, totalColW - 1.6, totalBoxH);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(6.5);
