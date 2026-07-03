@@ -253,32 +253,25 @@ function collectGroupSlipsForMatches(
   return out;
 }
 
-/** One batch per group (track × pool); used for page breaks in group-overall PDFs. */
-function collectGroupOverallBatches(t: Tournament, locale: Locale): MatchNoteSlip[][] {
-  const batches: MatchNoteSlip[][] = [];
+function collectGroupOverall(t: Tournament, locale: Locale): MatchNoteSlip[] {
+  const slips: MatchNoteSlip[] = [];
   if (!tournamentUsesClassTabs(t)) {
     const tr = trackSlices(t, locale)[0]!;
     for (const g of sortGroups(tr.groups)) {
       const matches = trackGroupMatches(t, undefined).filter((m) => m.groupId === g.id);
       const ctx = groupContextLine(locale, tr.trackTitle, g);
-      const slips = collectGroupSlipsForMatches(t, matches, () => ctx, undefined, locale);
-      if (slips.length > 0) batches.push(slips);
+      slips.push(...collectGroupSlipsForMatches(t, matches, () => ctx, undefined, locale));
     }
-    return batches;
+    return slips;
   }
   for (const tr of trackSlices(t, locale)) {
     for (const g of sortGroups(tr.groups)) {
       const matches = trackGroupMatches(t, tr.classId).filter((m) => m.groupId === g.id);
       const ctx = groupContextLine(locale, tr.trackTitle, g);
-      const slips = collectGroupSlipsForMatches(t, matches, () => ctx, tr.classId, locale);
-      if (slips.length > 0) batches.push(slips);
+      slips.push(...collectGroupSlipsForMatches(t, matches, () => ctx, tr.classId, locale));
     }
   }
-  return batches;
-}
-
-function collectGroupOverall(t: Tournament, locale: Locale): MatchNoteSlip[] {
-  return collectGroupOverallBatches(t, locale).flat();
+  return slips;
 }
 
 function collectGroupPool(t: Tournament, classId: string | undefined, groupId: string, locale: Locale): MatchNoteSlip[] {
@@ -320,18 +313,17 @@ export function collectMatchNoteSlips(
   return collectMatchNoteSlipBatches(tournament, segment, locale).flat();
 }
 
-/**
- * Slips grouped for PDF layout. Group-overall uses one batch per pool (page break between batches);
- * other segments return a single batch.
- */
+/** Slips for PDF layout (one batch per segment; slips fill pages in order). */
 export function collectMatchNoteSlipBatches(
   tournament: Tournament,
   segment: MatchNotesSegment,
   locale: Locale = 'en',
 ): MatchNoteSlip[][] {
   switch (segment.kind) {
-    case 'group-overall':
-      return collectGroupOverallBatches(tournament, locale);
+    case 'group-overall': {
+      const slips = collectGroupOverall(tournament, locale);
+      return slips.length > 0 ? [slips] : [];
+    }
     case 'group-pool': {
       const slips = collectGroupPool(tournament, segment.classId, segment.groupId, locale);
       return slips.length > 0 ? [slips] : [];

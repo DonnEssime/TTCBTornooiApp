@@ -81,14 +81,15 @@ describe('match-notes', () => {
     expect(after.length).toBe(1);
   });
 
-  it('group-overall returns one batch per group for page breaks', () => {
+  it('group-overall packs all groups into one layout batch for compact printing', () => {
     const runner = new CommandRunner();
     setGroups4(runner);
     const batches = collectMatchNoteSlipBatches(runner.getTournament(), { kind: 'group-overall' }, 'en');
-    expect(batches.length).toBe(2);
-    expect(batches[0]!.length).toBe(1);
-    expect(batches[1]!.length).toBe(1);
-    expect(collectMatchNoteSlips(runner.getTournament(), { kind: 'group-overall' }, 'en').length).toBe(2);
+    expect(batches.length).toBe(1);
+    expect(batches[0]!.length).toBe(2);
+    expect(batches[0]![0]!.contextLine).toContain('Group 1');
+    expect(batches[0]![1]!.contextLine).toContain('Group 2');
+    expect(matchNotesPageCount(batches[0]!.length)).toBe(1);
   });
 
   it('collects only one group for group-pool segment', () => {

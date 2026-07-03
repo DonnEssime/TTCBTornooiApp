@@ -182,7 +182,7 @@ export function buildMatchNotesPdfBlob(
   segment: MatchNotesSegment,
   locale: Locale = 'en',
 ): Blob {
-  const batches = collectMatchNoteSlipBatches(tournament, segment, locale);
+  const slips = collectMatchNoteSlipBatches(tournament, segment, locale).flat();
   const doc = new jsPDF({
     unit: 'mm',
     format: PAGE_FORMAT,
@@ -191,21 +191,13 @@ export function buildMatchNotesPdfBlob(
 
   const segmentTitle = matchNotesSegmentLabel(tournament, segment, locale);
 
-  let pageStarted = false;
-  for (let b = 0; b < batches.length; b++) {
-    const batch = batches[b]!;
-    if (pageStarted) {
+  for (let i = 0; i < slips.length; i++) {
+    const slotOnPage = i % MATCH_NOTES_SLIPS_PER_PAGE;
+    if (i > 0 && slotOnPage === 0) {
       doc.addPage(PAGE_FORMAT, PAGE_ORIENTATION);
     }
-    for (let i = 0; i < batch.length; i++) {
-      const slotOnPage = i % MATCH_NOTES_SLIPS_PER_PAGE;
-      if (pageStarted && i > 0 && slotOnPage === 0) {
-        doc.addPage(PAGE_FORMAT, PAGE_ORIENTATION);
-      }
-      pageStarted = true;
-      const { x, y } = slipOrigin(slotOnPage);
-      drawSlip(doc, batch[i]!, tournamentName, tournament, locale, x, y);
-    }
+    const { x, y } = slipOrigin(slotOnPage);
+    drawSlip(doc, slips[i]!, tournamentName, tournament, locale, x, y);
   }
 
   doc.setProperties({
