@@ -10,6 +10,7 @@
     HandicapStartingCriteria,
     Match,
     Tournament,
+    TrackFormat,
   } from 'ttc-tornooiapp';
   import {
     TournamentController,
@@ -68,6 +69,9 @@
     firstNonCompletedClassId,
     MAIN_TRACK_KEY,
     isDoublesTrack,
+    isShuffleDoublesTrack,
+    isAnyDoublesFormat,
+    trackHasBracketPhase,
     getTrackFormat,
     getTrackPairs,
     trackBracketParticipants,
@@ -98,6 +102,7 @@
   import { displayBracketColumns } from './bracketStream/displayColumns';
   import PlayerName from './PlayerName.svelte';
   import GroupSinglesMatrix from './GroupSinglesMatrix.svelte';
+  import GroupShuffleDoublesPanel from './GroupShuffleDoublesPanel.svelte';
   import ResultsFunStats from './ResultsFunStats.svelte';
   import PlayerMatchHistoryModal from './PlayerMatchHistoryModal.svelte';
   import TournamentOverview from './TournamentOverview.svelte';
@@ -183,8 +188,8 @@
     lastGenerateBracketCommandId: string;
     /** Latest `GenerateBracket` command id per class. */
     lastGenerateBracketCommandIdByClass: Record<string, string>;
-    /** Per-track doubles (random partners) checkbox when creating groups. Key `''` = main draw. */
-    doublesRandomPartnersByTrack: Record<string, boolean>;
+    /** Per-track group format draft when creating groups. Key `''` = main draw. */
+    groupFormatByTrack: Record<string, TrackFormat>;
     /** Planned flow; only `group-bracket` is implemented end-to-end. */
     tournamentFormat: TournamentFormat;
   }
@@ -677,7 +682,7 @@
       ),
       classGroupTargetSizeByClassId: {},
       classGroupTargetCountByClassId: {},
-      doublesRandomPartnersByTrack: buildDoublesTrackDraftsFromTournament(t0),
+      groupFormatByTrack: buildGroupFormatDraftsFromTournament(t0),
       tournamentFormat: 'group-bracket',
     };
   }
@@ -882,35 +887,56 @@
     return classId ?? MAIN_TRACK_KEY;
   }
 
-  function buildDoublesTrackDraftsFromTournament(t: Tournament): Record<string, boolean> {
-    const out: Record<string, boolean> = {};
+  function buildGroupFormatDraftsFromTournament(t: Tournament): Record<string, TrackFormat> {
+    const out: Record<string, TrackFormat> = {};
     if (!tournamentUsesClassTabs(t)) {
-      out[MAIN_TRACK_KEY] = getTrackFormat(t, undefined) === 'doubles-random-partners';
+      out[MAIN_TRACK_KEY] = getTrackFormat(t, undefined);
       return out;
     }
     for (const def of t.classDefinitions) {
-      out[def.id] = getTrackFormat(t, def.id) === 'doubles-random-partners';
+      out[def.id] = getTrackFormat(t, def.id);
     }
     return out;
   }
 
-  function doublesEnabledForTrack(classId?: string): boolean {
+  function groupFormatDraftForTrack(classId?: string): TrackFormat {
     const s = getActiveSession();
-    if (!s) return false;
-    return Boolean(s.doublesRandomPartnersByTrack[trackDraftKey(classId)]);
+    if (!s) return 'singles';
+    return s.groupFormatByTrack[trackDraftKey(classId)] ?? 'singles';
   }
 
-  function setDoublesEnabledForTrack(classId: string | undefined, enabled: boolean): void {
+  function setGroupFormatDraftForTrack(classId: string | undefined, format: TrackFormat): void {
     const key = trackDraftKey(classId);
     const s = getActiveSession();
     if (!s) return;
     patchActiveSession({
-      doublesRandomPartnersByTrack: { ...s.doublesRandomPartnersByTrack, [key]: enabled },
+      groupFormatByTrack: { ...s.groupFormatByTrack, [key]: format },
     });
   }
 
-  function groupFormatForTrack(classId?: string): 'singles' | 'doubles-random-partners' {
-    return doublesEnabledForTrack(classId) ? 'doubles-random-partners' : 'singles';
+  function groupFormatForTrack(classId?: string): TrackFormat {
+    return groupFormatDraftForTrack(classId);
+  }
+
+  function isFixedDoublesDraft(classId?: string): boolean {
+    return groupFormatDraftForTrack(classId) === 'doubles-random-partners';
+  }
+
+  function isShuffleDoublesDraft(classId?: string): boolean {
+    return groupFormatDraftForTrack(classId) === 'doubles-shuffle-partners';
+  }
+
+  function groupCreateCountInvalid(classId: string | undefined, playerCount: number): boolean {
+    if (isFixedDoublesDraft(classId)) return playerCount % 2 !== 0;
+    if (isShuffleDoublesDraft(classId)) return playerCount % 4 !== 0;
+    return false;
+  }
+
+  function groupCreateParticipantCount(classId: string | undefined, playerCount: number): number {
+    if (isFixedDoublesDraft(classId)) {
+      return trackParticipantCountForGroups(tournament, classId, playerCount);
+    }
+    return playerCount;
   }
 
   function openPairDetailModal(pairId: string, classId?: string): void {
@@ -940,7 +966,7 @@
   function canDragPlayerBetweenGroups(pid: string, classId?: string): boolean {
     const track = getCompetitionTrack(tournament, classId);
     if (track.bracketMatches.length > 0) return false;
-    if (isDoublesTrack(tournament, classId)) return false;
+    if (isAnyDoublesFormat(tournament, classId)) return false;
     return !playerHasAnyRecordedGroupMatchInTrack(tournament, pid, classId);
   }
 
@@ -949,7 +975,7 @@
     return (
       Object.keys(track.groups).length > 0 &&
       track.bracketMatches.length === 0 &&
-      !isDoublesTrack(tournament, classId)
+      !isAnyDoublesFormat(tournament, classId)
     );
   }
 
@@ -965,7 +991,7 @@
       showErrorKey('ui.group.addPlayersFirst');
       return;
     }
-    if (isDoublesTrack(tournament, classId)) {
+    if (isAnyDoublesFormat(tournament, classId)) {
       showErrorKey('command.movePlayerDisabledInDoubles');
       return;
     }
@@ -1403,7 +1429,9 @@
   function createGlobalGroupsByPlayerCount(): void {
     const s = getActiveSession();
     if (!s) return;
-    const targetSize = Math.max(1, Math.floor(Number(s.groupTargetSize) || CLOSED_FORM_PLAYERS_PER_GROUP));
+    const targetSize = isShuffleDoublesDraft(undefined)
+      ? 4
+      : Math.max(1, Math.floor(Number(s.groupTargetSize) || CLOSED_FORM_PLAYERS_PER_GROUP));
     runSetGlobalGroups({ targetGroupSize: targetSize, playerIds: [] });
   }
 
@@ -1482,7 +1510,8 @@
   }
 
   function createClassGroupsByPlayerCount(classId: string): void {
-    runSetClassGroups(classId, { targetGroupSize: classGroupTargetSize(classId), playerIds: [] });
+    const targetSize = isShuffleDoublesDraft(classId) ? 4 : classGroupTargetSize(classId);
+    runSetClassGroups(classId, { targetGroupSize: targetSize, playerIds: [] });
   }
 
   function createClassGroupsByGroupCount(classId: string): void {
@@ -2149,6 +2178,9 @@
 
   function normalizeInnerTab(t: Tournament, current: InnerTab): InnerTab {
     const tab = coerceLegacyInnerTab(current) as InnerTab;
+    if (tab === 'bracket' && !trackHasBracketPhase(t, undefined)) {
+      return 'groups';
+    }
     if (
       tab === 'bracket' &&
       t.bracketMatches.length > 0 &&
@@ -2166,6 +2198,9 @@
     current: InnerTab | ClassInnerTab,
   ): InnerTab | ClassInnerTab {
     const tab = coerceLegacyInnerTab(current);
+    if (tab === 'bracket' && !trackHasBracketPhase(t, classId)) {
+      return 'groups';
+    }
     if (
       tab === 'bracket' &&
       bracketMatches.length > 0 &&
@@ -2400,9 +2435,9 @@
       classFlagDrafts = cfd;
       tournament = t;
 
-      const doublesDrafts = buildDoublesTrackDraftsFromTournament(t);
-      if (JSON.stringify(doublesDrafts) !== JSON.stringify(sFinal.doublesRandomPartnersByTrack)) {
-        patchActiveSession({ doublesRandomPartnersByTrack: doublesDrafts });
+      const formatDrafts = buildGroupFormatDraftsFromTournament(t);
+      if (JSON.stringify(formatDrafts) !== JSON.stringify(sFinal.groupFormatByTrack)) {
+        patchActiveSession({ groupFormatByTrack: formatDrafts });
       }
 
       if (options.persist !== false) {
@@ -2566,7 +2601,7 @@
       lastSetClassGroupsCommandIdByClass: {},
       lastGenerateBracketCommandId: '',
       lastGenerateBracketCommandIdByClass: {},
-      doublesRandomPartnersByTrack: {},
+      groupFormatByTrack: {},
       tournamentFormat: draftTournamentFormat,
     };
     activateSession(session);
@@ -3406,8 +3441,10 @@
     void getLocale();
     const tabs: Array<{ id: InnerTab; labelKey: MessageKey }> = [
       { id: 'groups', labelKey: 'ui.group_phase' },
-      { id: 'bracket', labelKey: 'ui.bracket' },
     ];
+    if (trackHasBracketPhase(tournament, undefined)) {
+      tabs.push({ id: 'bracket', labelKey: 'ui.bracket' });
+    }
     if (tournament.bracketMatches.length > 0) {
       tabs.push({ id: 'results', labelKey: 'ui.results' });
     }
@@ -3424,8 +3461,10 @@
     void getLocale();
     const tabs: Array<{ id: ClassInnerTab; labelKey: MessageKey }> = [
       { id: 'groups', labelKey: 'ui.group_phase' },
-      { id: 'bracket', labelKey: 'ui.bracket' },
     ];
+    if (trackHasBracketPhase(tournament, cid)) {
+      tabs.push({ id: 'bracket', labelKey: 'ui.bracket' });
+    }
     if (rounds.length > 0) {
       tabs.push({ id: 'results', labelKey: 'ui.results' });
     }
@@ -4145,23 +4184,64 @@
                   {#if globalGroupPlayerCount === 0}
                     <Msg key="ui.group.addPlayersFirst" />
                   {:else}
-                    <Msg key="ui.group.allSeededIncluded" params={{ count: String(doublesEnabledForTrack(undefined) ? globalGroupParticipantCount : globalGroupPlayerCount) }} />
+                    <Msg key="ui.group.allSeededIncluded" params={{ count: String(groupCreateParticipantCount(undefined, globalGroupPlayerCount)) }} />
                   {/if}
                 </p>
-                <label class="group-doubles-option">
-                  <input
-                    type="checkbox"
-                    data-testid="group-doubles"
-                    disabled={tournament.bracketMatches.length > 0}
-                    checked={doublesEnabledForTrack(undefined)}
-                    onchange={(e) =>
-                      setDoublesEnabledForTrack(undefined, (e.currentTarget as HTMLInputElement).checked)}
-                  />
-                  <Msg key="ui.group.doublesRandomPartners" />
-                </label>
-                {#if doublesEnabledForTrack(undefined) && globalGroupPlayerCount % 2 !== 0}
+                <fieldset class="group-format-fieldset">
+                  <legend class="sr-only"><Msg key="ui.group_phase" /></legend>
+                  <label class="group-format-option">
+                    <input
+                      type="radio"
+                      name="group-format-main"
+                      data-testid="group-format-singles"
+                      disabled={tournament.bracketMatches.length > 0}
+                      checked={groupFormatDraftForTrack(undefined) === 'singles'}
+                      onchange={() => setGroupFormatDraftForTrack(undefined, 'singles')}
+                    />
+                    <Msg key="ui.group.formatSingles" />
+                  </label>
+                  <label class="group-format-option">
+                    <input
+                      type="radio"
+                      name="group-format-main"
+                      data-testid="group-format-fixed-doubles"
+                      disabled={tournament.bracketMatches.length > 0}
+                      checked={isFixedDoublesDraft(undefined)}
+                      onchange={() => setGroupFormatDraftForTrack(undefined, 'doubles-random-partners')}
+                    />
+                    <Msg key="ui.group.doublesRandomPartners" />
+                  </label>
+                  <label class="group-format-option">
+                    <input
+                      type="radio"
+                      name="group-format-main"
+                      data-testid="group-format-shuffle-doubles"
+                      disabled={tournament.bracketMatches.length > 0}
+                      checked={isShuffleDoublesDraft(undefined)}
+                      onchange={() => setGroupFormatDraftForTrack(undefined, 'doubles-shuffle-partners')}
+                    />
+                    <Msg key="ui.group.doublesShufflePartners" />
+                  </label>
+                </fieldset>
+                {#if isFixedDoublesDraft(undefined) && globalGroupPlayerCount % 2 !== 0}
                   <p class="muted small"><Msg key="ui.group.doublesEvenCountRequired" /></p>
                 {/if}
+                {#if isShuffleDoublesDraft(undefined)}
+                  {#if globalGroupPlayerCount % 4 !== 0}
+                    <p class="muted small"><Msg key="ui.group.shuffleQuadrupleRequired" /></p>
+                  {:else}
+                    <p class="muted small"><Msg key="ui.group.shuffleFixedGroupSize" /></p>
+                  {/if}
+                  <button
+                    type="button"
+                    class="btn primary"
+                    data-testid="groups-create-by-players"
+                    disabled={tournament.bracketMatches.length > 0 || globalGroupPlayerCount === 0 || groupCreateCountInvalid(undefined, globalGroupPlayerCount)}
+                    onclick={createGlobalGroupsByPlayerCount}
+                  >
+                    <Msg key="ui.group.createGroups" />
+                  </button>
+                {:else}
                 <div class="group-create-row">
                   <input
                     class="group-create-num"
@@ -4170,7 +4250,7 @@
                     step="1"
                     disabled={tournament.bracketMatches.length > 0}
                     value={activeSess?.groupTargetSize ?? CLOSED_FORM_PLAYERS_PER_GROUP}
-                    aria-label={msgText(doublesEnabledForTrack(undefined) ? 'ui.target_participants_per_group' : 'ui.target_players_per_group')}
+                    aria-label={msgText(isFixedDoublesDraft(undefined) ? 'ui.target_participants_per_group' : 'ui.target_players_per_group')}
                     oninput={(e) => {
                       const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));
                       patchActiveSession({ groupTargetSize: v });
@@ -4180,10 +4260,10 @@
                     type="button"
                     class="btn primary"
                     data-testid="groups-create-by-players"
-                    disabled={tournament.bracketMatches.length > 0 || globalGroupPlayerCount === 0 || (doublesEnabledForTrack(undefined) && globalGroupPlayerCount % 2 !== 0)}
+                    disabled={tournament.bracketMatches.length > 0 || globalGroupPlayerCount === 0 || groupCreateCountInvalid(undefined, globalGroupPlayerCount)}
                     onclick={createGlobalGroupsByPlayerCount}
                   >
-                    <Msg key={doublesEnabledForTrack(undefined) ? 'ui.group.createByParticipantCount' : 'ui.group.createByPlayerCount'} />
+                    <Msg key={isFixedDoublesDraft(undefined) ? 'ui.group.createByParticipantCount' : 'ui.group.createByPlayerCount'} />
                   </button>
                   <div class="group-create-gap" aria-hidden="true"></div>
                   <input
@@ -4202,13 +4282,14 @@
                   <button
                     type="button"
                     class="btn primary"
-                    disabled={tournament.bracketMatches.length > 0 || globalGroupPlayerCount === 0 || (doublesEnabledForTrack(undefined) && globalGroupPlayerCount % 2 !== 0)}
+                    disabled={tournament.bracketMatches.length > 0 || globalGroupPlayerCount === 0 || groupCreateCountInvalid(undefined, globalGroupPlayerCount)}
                     onclick={createGlobalGroupsByGroupCount}
                   >
                     <Msg key="ui.group.createByGroupCount" />
                   </button>
                   <div class="group-create-spacer" aria-hidden="true"></div>
                 </div>
+                {/if}
               {:else}
                 <div class="row align-end">
                   <button
@@ -4233,7 +4314,9 @@
                   <p class="muted small group-matrix-hint"><Msg key="ui.group.dragPlayersHint" /></p>
                 {/if}
                 {#each sortGroupsForDisplay(tournament.groups) as g (g.id)}
-                  {#if isDoublesTrack(tournament, undefined)}
+                  {#if isShuffleDoublesTrack(tournament, undefined)}
+                    <GroupShuffleDoublesPanel {tournament} group={g} onOpenScoreModal={openScoreModal} />
+                  {:else if isDoublesTrack(tournament, undefined)}
                     {@const matrixPairIds = groupMatrixParticipantOrder(tournament, g, undefined)}
                     {@const standingsWl = groupStandingsWlByPairId(tournament, g, undefined)}
                     <article class="sub-card">
@@ -4507,22 +4590,63 @@
                     {#if classGroupPlayerCount === 0}
                       <Msg key="ui.group.noPlayersInClass" />
                     {:else}
-                      <Msg key="ui.group.allInClassIncluded" params={{ count: String(doublesEnabledForTrack(cid) ? classGroupParticipantCount : classGroupPlayerCount) }} />
+                      <Msg key="ui.group.allInClassIncluded" params={{ count: String(groupCreateParticipantCount(cid, classGroupPlayerCount)) }} />
                     {/if}
                   </p>
-                  <label class="group-doubles-option">
-                    <input
-                      type="checkbox"
-                      disabled={slice.bracketMatches.length > 0}
-                      checked={doublesEnabledForTrack(cid)}
-                      onchange={(e) =>
-                        setDoublesEnabledForTrack(cid, (e.currentTarget as HTMLInputElement).checked)}
-                    />
-                    <Msg key="ui.group.doublesRandomPartners" />
-                  </label>
-                  {#if doublesEnabledForTrack(cid) && classGroupPlayerCount % 2 !== 0}
+                  <fieldset class="group-format-fieldset">
+                    <legend class="sr-only"><Msg key="ui.group_phase" /></legend>
+                    <label class="group-format-option">
+                      <input
+                        type="radio"
+                        name="group-format-{cid}"
+                        disabled={slice.bracketMatches.length > 0}
+                        checked={groupFormatDraftForTrack(cid) === 'singles'}
+                        onchange={() => setGroupFormatDraftForTrack(cid, 'singles')}
+                      />
+                      <Msg key="ui.group.formatSingles" />
+                    </label>
+                    <label class="group-format-option">
+                      <input
+                        type="radio"
+                        name="group-format-{cid}"
+                        data-testid="group-format-fixed-doubles"
+                        disabled={slice.bracketMatches.length > 0}
+                        checked={isFixedDoublesDraft(cid)}
+                        onchange={() => setGroupFormatDraftForTrack(cid, 'doubles-random-partners')}
+                      />
+                      <Msg key="ui.group.doublesRandomPartners" />
+                    </label>
+                    <label class="group-format-option">
+                      <input
+                        type="radio"
+                        name="group-format-{cid}"
+                        data-testid="group-format-shuffle-doubles"
+                        disabled={slice.bracketMatches.length > 0}
+                        checked={isShuffleDoublesDraft(cid)}
+                        onchange={() => setGroupFormatDraftForTrack(cid, 'doubles-shuffle-partners')}
+                      />
+                      <Msg key="ui.group.doublesShufflePartners" />
+                    </label>
+                  </fieldset>
+                  {#if isFixedDoublesDraft(cid) && classGroupPlayerCount % 2 !== 0}
                     <p class="muted small"><Msg key="ui.group.doublesEvenCountRequired" /></p>
                   {/if}
+                  {#if isShuffleDoublesDraft(cid)}
+                    {#if classGroupPlayerCount % 4 !== 0}
+                      <p class="muted small"><Msg key="ui.group.shuffleQuadrupleRequired" /></p>
+                    {:else}
+                      <p class="muted small"><Msg key="ui.group.shuffleFixedGroupSize" /></p>
+                    {/if}
+                    <button
+                      type="button"
+                      class="btn primary"
+                      data-testid="groups-create-by-players"
+                      disabled={slice.bracketMatches.length > 0 || classGroupPlayerCount === 0 || groupCreateCountInvalid(cid, classGroupPlayerCount)}
+                      onclick={() => createClassGroupsByPlayerCount(cid)}
+                    >
+                      <Msg key="ui.group.createGroups" />
+                    </button>
+                  {:else}
                   <div class="group-create-row">
                     <input
                       class="group-create-num"
@@ -4531,7 +4655,7 @@
                       step="1"
                       disabled={slice.bracketMatches.length > 0}
                       value={classGroupTargetSize(cid)}
-                      aria-label={msgText(doublesEnabledForTrack(cid) ? 'ui.target_participants_per_group_for_class' : 'ui.target_players_per_group_for_class')}
+                      aria-label={msgText(isFixedDoublesDraft(cid) ? 'ui.target_participants_per_group_for_class' : 'ui.target_players_per_group_for_class')}
                       oninput={(e) => {
                         const v = Math.max(1, Math.floor(Number((e.currentTarget as HTMLInputElement).value) || 1));
                         const s = getActiveSession();
@@ -4544,10 +4668,10 @@
                     <button
                       type="button"
                       class="btn primary"
-                      disabled={slice.bracketMatches.length > 0 || classGroupPlayerCount === 0 || (doublesEnabledForTrack(cid) && classGroupPlayerCount % 2 !== 0)}
+                      disabled={slice.bracketMatches.length > 0 || classGroupPlayerCount === 0 || groupCreateCountInvalid(cid, classGroupPlayerCount)}
                       onclick={() => createClassGroupsByPlayerCount(cid)}
                     >
-                      <Msg key={doublesEnabledForTrack(cid) ? 'ui.group.createByParticipantCount' : 'ui.group.createByPlayerCount'} />
+                      <Msg key={isFixedDoublesDraft(cid) ? 'ui.group.createByParticipantCount' : 'ui.group.createByPlayerCount'} />
                     </button>
                     <div class="group-create-gap" aria-hidden="true"></div>
                     <input
@@ -4570,13 +4694,14 @@
                     <button
                       type="button"
                       class="btn primary"
-                      disabled={slice.bracketMatches.length > 0 || classGroupPlayerCount === 0 || (doublesEnabledForTrack(cid) && classGroupPlayerCount % 2 !== 0)}
+                      disabled={slice.bracketMatches.length > 0 || classGroupPlayerCount === 0 || groupCreateCountInvalid(cid, classGroupPlayerCount)}
                       onclick={() => createClassGroupsByGroupCount(cid)}
                     >
                       <Msg key="ui.group.createByGroupCount" />
                     </button>
                     <div class="group-create-spacer" aria-hidden="true"></div>
                   </div>
+                  {/if}
                 {:else}
                   <div class="row align-end">
                     <button
@@ -4600,7 +4725,9 @@
                     <p class="muted small group-matrix-hint"><Msg key="ui.group.dragPlayersHint" /></p>
                   {/if}
                   {#each sortGroupsForDisplay(slice.groups) as g (g.id)}
-                    {#if isDoublesTrack(tournament, cid)}
+                    {#if isShuffleDoublesTrack(tournament, cid)}
+                      <GroupShuffleDoublesPanel {tournament} group={g} classId={cid} onOpenScoreModal={openScoreModal} />
+                    {:else if isDoublesTrack(tournament, cid)}
                       {@const matrixPairIds = groupMatrixParticipantOrder(tournament, g, cid)}
                       {@const standingsWl = groupStandingsWlByPairId(tournament, g, cid)}
                       <article class="sub-card">
@@ -6053,12 +6180,22 @@
     gap: 0.75rem;
   }
 
-  .group-doubles-option {
+  .group-doubles-option,
+  .group-format-option {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    margin: 0.5rem 0;
+    gap: 0.35rem;
+    margin: 0.25rem 0;
     font-size: 0.9rem;
+  }
+
+  .group-format-fieldset {
+    border: none;
+    margin: 0.35rem 0 0.5rem;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
   }
 
   .pair-label-btn {

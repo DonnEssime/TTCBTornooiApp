@@ -16,6 +16,8 @@ import {
   groupNumberedTitle,
   groupStandingsRowsForBracket,
   isDoublesTrack,
+  isShuffleDoublesTrack,
+  matchSideLabels,
   pairDisplayLabel,
 } from 'ttc-tornooiapp';
 import { drawBracketStreamOnPdf } from './bracketStream/pdfDraw';
@@ -164,6 +166,19 @@ function sectionHeading(
 function tableFinalY(doc: jsPDF): number {
   return (doc as jsPDF & { lastAutoTable: { finalY: number } }).lastAutoTable.finalY;
 }
+function shuffleMatchScoreDigit(m: Match): string {
+  if (m.scores.length === 0) return '—';
+  let gamesA = 0;
+  let anyDecided = false;
+  for (const gs of m.scores) {
+    const w = gameWinner(gs);
+    if (!w) continue;
+    anyDecided = true;
+    if (w === 'A') gamesA++;
+  }
+  if (!anyDecided) return '—';
+  return `${gamesA}-${m.scores.length - gamesA}`;
+}
 function addGroupMatrix(
   doc: jsPDF,
   y: number,
@@ -173,6 +188,60 @@ function addGroupMatrix(
   pageKind: { kind: PageKind },
   classId?: string,
 ): number {
+  if (isShuffleDoublesTrack(t, classId)) {
+    const pids = [...g.playerIds];
+    const rows = groupStandingsRowsForBracket(t, g, classId);
+    const wl = Object.fromEntries(rows.map((r) => [r.pid, { w: r.w, l: r.l }]));
+    y = nextY(doc, y, 24, pageKind);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.text(groupNumberedTitle(g, locale), PAGE_MARGIN, y);
+    y += 6;
+    autoTable(doc, {
+      startY: y,
+      head: [[
+        txt('ui.pdf.playerColumn', locale),
+        txt('ui.standings.win', locale),
+        txt('ui.standings.loss', locale),
+      ]],
+      body: pids.map((pid) => [
+        playerName(t, pid),
+        String(wl[pid]?.w ?? 0),
+        String(wl[pid]?.l ?? 0),
+      ]),
+      margin: { left: PAGE_MARGIN, right: PAGE_MARGIN },
+      styles: { fontSize: 8, cellPadding: 1.5 },
+      headStyles: { fillColor: [51, 65, 85] },
+    });
+    y = tableFinalY(doc) + SECTION_GAP;
+    const matches = Object.values(t.matches)
+      .filter((m) => {
+        if (m.groupId !== g.id || !m.teamA || !m.teamB) return false;
+        return classId ? m.classId === classId : !m.classId;
+      })
+      .sort((a, b) => (a.shuffleRound ?? 0) - (b.shuffleRound ?? 0));
+    if (matches.length > 0) {
+      y = nextY(doc, y, 24, pageKind);
+      autoTable(doc, {
+        startY: y,
+        head: [[
+          txt('ui.pdf.playerColumn', locale),
+          txt('ui.pdf.vs', locale),
+          txt('ui.pdf.playerColumn', locale),
+          '',
+        ]],
+        body: matches.map((m) => {
+          const sides = matchSideLabels(t, m, locale, classId);
+          return [sides.sideA, txt('ui.pdf.vs', locale), sides.sideB, shuffleMatchScoreDigit(m)];
+        }),
+        margin: { left: PAGE_MARGIN, right: PAGE_MARGIN },
+        styles: { fontSize: 8, cellPadding: 1.5 },
+        headStyles: { fillColor: [51, 65, 85] },
+      });
+      y = tableFinalY(doc) + SECTION_GAP;
+    }
+    return y;
+  }
   if (isDoublesTrack(t, classId)) {
     const pairIds = [...(g.pairIds ?? [])];
     const rows = groupStandingsRowsForBracket(t, g, classId);

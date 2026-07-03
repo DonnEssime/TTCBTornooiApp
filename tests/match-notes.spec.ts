@@ -311,4 +311,84 @@ describe('match-notes', () => {
     expect(messageText(catalog, 'ui.matchNotes.total', 'en')).toBe('Total');
     expect(messageText(catalog, 'ui.matchNotes.total', 'nl')).toBe('Totaal');
   });
+
+  it('doubles group slips show both players on each side', () => {
+    const ts = '2026-01-01T00:00:00.000Z';
+    const runner = new CommandRunner();
+    for (const [id, name] of [
+      ['p1', 'Alice'],
+      ['p2', 'Bob'],
+      ['p3', 'Carol'],
+      ['p4', 'Dave'],
+      ['p5', 'Eve'],
+      ['p6', 'Frank'],
+      ['p7', 'Grace'],
+      ['p8', 'Henry'],
+    ] as const) {
+      runner.execute({
+        id,
+        type: 'CreatePlayer',
+        dependsOn: [],
+        payload: { playerId: id, name, handicap: 0 },
+        timestamp: ts,
+      });
+    }
+    runner.execute({
+      id: 'sg',
+      type: 'SetGroups',
+      dependsOn: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'],
+      payload: {
+        targetGroupSize: 4,
+        playerIds: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'],
+        format: 'doubles-random-partners',
+      },
+      timestamp: ts,
+    });
+    const slips = collectMatchNoteSlips(runner.getTournament(), { kind: 'group-overall' }, 'en');
+    expect(slips.length).toBeGreaterThan(0);
+    const slip = slips[0]!;
+    expect(slip.playerA.name).toMatch(/Alice|Bob/);
+    expect(slip.playerA.name).toMatch(/Alice|Bob/);
+    expect(slip.playerA.name).not.toBe('Alice');
+    expect(slip.playerA.name).not.toBe('Bob');
+  });
+
+  it('shuffle doubles group slips show both players on each side', () => {
+    const ts = '2026-01-01T00:00:00.000Z';
+    const runner = new CommandRunner();
+    for (const [id, name] of [
+      ['p1', 'Alice'],
+      ['p2', 'Bob'],
+      ['p3', 'Carol'],
+      ['p4', 'Dave'],
+      ['p5', 'Eve'],
+      ['p6', 'Frank'],
+      ['p7', 'Grace'],
+      ['p8', 'Henry'],
+    ] as const) {
+      runner.execute({
+        id,
+        type: 'CreatePlayer',
+        dependsOn: [],
+        payload: { playerId: id, name, handicap: 0 },
+        timestamp: ts,
+      });
+    }
+    runner.execute({
+      id: 'sg',
+      type: 'SetGroups',
+      dependsOn: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'],
+      payload: {
+        targetGroupSize: 4,
+        playerIds: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'],
+        format: 'doubles-shuffle-partners',
+      },
+      timestamp: ts,
+    });
+    const slips = collectMatchNoteSlips(runner.getTournament(), { kind: 'group-overall' }, 'en');
+    expect(slips.length).toBe(6);
+    const slip = slips.find((s) => s.matchKey.includes('shuffle')) ?? slips[0]!;
+    expect(slip.playerA.name).toContain(' / ');
+    expect(slip.playerB.name).toContain(' / ');
+  });
 });

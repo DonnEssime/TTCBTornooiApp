@@ -39,6 +39,12 @@ export interface Match {
   pairB?: string;
   /** Doubles: winning pair id when match is finished. */
   winnerPairId?: string;
+  /** Shuffle doubles: both players on side A (inline teams, no global pair registry). */
+  teamA?: [PlayerId, PlayerId];
+  /** Shuffle doubles: both players on side B. */
+  teamB?: [PlayerId, PlayerId];
+  /** Shuffle doubles: fixture index 0–2 within a group of four. */
+  shuffleRound?: 0 | 1 | 2;
   /** Set for group-stage player matches (not bracket). */
   groupId?: string;
   /** Set for group-stage matches in a multi-class track. */
@@ -95,7 +101,7 @@ export interface GroupDefinition {
   pairIds?: string[];
 }
 
-export type TrackFormat = 'singles' | 'doubles-random-partners';
+export type TrackFormat = 'singles' | 'doubles-random-partners' | 'doubles-shuffle-partners';
 
 export interface CompetitionPair {
   id: string;
@@ -368,6 +374,29 @@ export function pairHandicapValue(tournament: Tournament, pair: CompetitionPair)
   const h1 = tournament.players[pair.playerIds[0]]?.handicap ?? 0;
   const h2 = tournament.players[pair.playerIds[1]]?.handicap ?? 0;
   return Math.floor((h1 + h2) / 2);
+}
+
+/** Combined handicap for an inline doubles team (shuffle partners). */
+export function teamHandicapValue(tournament: Tournament, playerIds: [PlayerId, PlayerId]): number {
+  return pairHandicapValue(tournament, { id: '', playerIds });
+}
+
+export type ShuffleDoublesFixture = {
+  teamA: [PlayerId, PlayerId];
+  teamB: [PlayerId, PlayerId];
+  shuffleRound: 0 | 1 | 2;
+};
+
+/** Three doubles fixtures for a group of four: AB–CD, AC–BD, AD–BC. */
+export function shuffleDoublesFixturesForFour(
+  playerIds: [PlayerId, PlayerId, PlayerId, PlayerId],
+): ShuffleDoublesFixture[] {
+  const [a, b, c, d] = playerIds;
+  return [
+    { teamA: [a, b], teamB: [c, d], shuffleRound: 0 },
+    { teamA: [a, c], teamB: [b, d], shuffleRound: 1 },
+    { teamA: [a, d], teamB: [b, c], shuffleRound: 2 },
+  ];
 }
 
 /** Plain-text pair label with optional combined handicap suffix, matching {@link formatPlayerDisplayLabel}. */
@@ -1064,7 +1093,23 @@ function seedPositions(size: number): number[] {
   return result;
 }
 
-type GroupStandingsParticipantMode = 'player' | 'pair';
+type GroupStandingsParticipantMode = 'player' | 'pair' | 'shuffle-doubles';
+
+function playerOnTeamSide(m: Match, pid: PlayerId): 'A' | 'B' | undefined {
+  if (m.teamA?.includes(pid)) return 'A';
+  if (m.teamB?.includes(pid)) return 'B';
+  return undefined;
+}
+
+function winningSideFromMatch(m: Match): 'A' | 'B' | undefined {
+  if (m.status !== 'finished' || !m.winner) return undefined;
+  if (m.teamA && m.teamB) {
+    return m.winner === m.playerA ? 'A' : 'B';
+  }
+  if (m.winner === m.playerA) return 'A';
+  if (m.winner === m.playerB) return 'B';
+  return undefined;
+}
 
 function groupMatchesForStandings(
   tournament: Tournament,
@@ -1085,6 +1130,9 @@ function participantSideInGroupMatch(
   pid: PlayerId,
   mode: GroupStandingsParticipantMode,
 ): 'A' | 'B' | undefined {
+  if (mode === 'shuffle-doubles') {
+    return playerOnTeamSide(m, pid);
+  }
   if (mode === 'pair') {
     if (m.pairA === pid) return 'A';
     if (m.pairB === pid) return 'B';
@@ -1106,6 +1154,11 @@ function headToHeadWinnerInGroup(
     const sideB = participantSideInGroupMatch(m, pidB, mode);
     if (!sideA || !sideB || sideA === sideB) continue;
     if (m.status !== 'finished') continue;
+    if (mode === 'shuffle-doubles') {
+      const winSide = winningSideFromMatch(m);
+      if (!winSide) continue;
+      return winSide === sideA ? pidA : pidB;
+    }
     if (mode === 'pair') {
       const winnerPair = winningPairIdFromMatch(m);
       if (winnerPair === pidA || winnerPair === pidB) return winnerPair;
@@ -1134,6 +1187,28 @@ function setsAndPointsWonInGroup(
     }
   }
   return { setsWon, pointsWon };
+}
+
+/** Games/points won and lost for one player across shuffle-doubles group matches. */
+export function setsAndPointsWonInGroupForPlayer(
+  matches: readonly Match[],
+  pid: PlayerId,
+): { setsWon: number; setsLost: number; pointsWon: number } {
+  let setsWon = 0;
+  let setsLost = 0;
+  let pointsWon = 0;
+  for (const m of matches) {
+    if (m.status !== 'finished') continue;
+    const side = playerOnTeamSide(m, pid);
+    if (!side) continue;
+    for (const score of m.scores) {
+      const gw = gameWinner(score);
+      if (gw === side) setsWon++;
+      else if (gw) setsLost++;
+      pointsWon += side === 'A' ? score.playerA : score.playerB;
+    }
+  }
+  return { setsWon, setsLost, pointsWon };
 }
 
 function groupStandingsTierByMetric(
@@ -1219,6 +1294,18 @@ function buildGroupStandingsRows(
       wins[winnerPair] = (wins[winnerPair] ?? 0) + 1;
       const loserPair = winnerPair === m.pairA ? m.pairB : m.pairA;
       losses[loserPair] = (losses[loserPair] ?? 0) + 1;
+    } else if (mode === 'shuffle-doubles') {
+      if (!m.teamA || !m.teamB) continue;
+      const winSide = winningSideFromMatch(m);
+      if (!winSide) continue;
+      const winners = winSide === 'A' ? m.teamA : m.teamB;
+      const losers = winSide === 'A' ? m.teamB : m.teamA;
+      for (const pid of winners) {
+        if (participantIds.includes(pid)) wins[pid] = (wins[pid] ?? 0) + 1;
+      }
+      for (const pid of losers) {
+        if (participantIds.includes(pid)) losses[pid] = (losses[pid] ?? 0) + 1;
+      }
     } else {
       if (!m.winner) continue;
       if (!participantIds.includes(m.playerA) || !participantIds.includes(m.playerB)) continue;
@@ -1289,9 +1376,24 @@ export function groupStandingsRowsForBracketDoubles(
   return buildGroupStandingsRows(pairIds, matches, 'pair', g, classId);
 }
 
+/** Standings row for one shuffle-doubles group (W/L per player), best first. */
+export function groupStandingsRowsForShuffleDoubles(
+  tournament: Tournament,
+  g: GroupDefinition,
+  classId: string | undefined,
+): Array<{ pid: PlayerId; w: number; l: number }> {
+  const matches = groupMatchesForStandings(tournament, g, classId);
+  return buildGroupStandingsRows(g.playerIds, matches, 'shuffle-doubles', g, classId);
+}
+
 function isDoublesTrackFormat(t: Tournament, classId: string | undefined): boolean {
   const fmt = classId ? t.classTournaments[classId]?.competitionFormat : t.competitionFormat;
   return fmt === 'doubles-random-partners';
+}
+
+function isShuffleDoublesTrackFormat(t: Tournament, classId: string | undefined): boolean {
+  const fmt = classId ? t.classTournaments[classId]?.competitionFormat : t.competitionFormat;
+  return fmt === 'doubles-shuffle-partners';
 }
 
 /** Standings row for one group (W/L, then participant id), best first — singles or doubles. */
@@ -1300,6 +1402,9 @@ export function groupStandingsRowsForBracket(
   g: GroupDefinition,
   classId: string | undefined,
 ): Array<{ pid: PlayerId; w: number; l: number }> {
+  if (isShuffleDoublesTrackFormat(tournament, classId)) {
+    return groupStandingsRowsForShuffleDoubles(tournament, g, classId);
+  }
   if (isDoublesTrackFormat(tournament, classId)) {
     return groupStandingsRowsForBracketDoubles(tournament, g, classId);
   }
@@ -1339,7 +1444,8 @@ export function bracketQualifierRatiosForParticipant(
   classId: string | undefined,
 ): BracketQualifierRatios {
   const doubles = isDoublesTrackFormat(tournament, classId);
-  const mode: GroupStandingsParticipantMode = doubles ? 'pair' : 'player';
+  const shuffle = isShuffleDoublesTrackFormat(tournament, classId);
+  const mode: GroupStandingsParticipantMode = shuffle ? 'shuffle-doubles' : doubles ? 'pair' : 'player';
   const matches = groupMatchesForStandings(tournament, g, classId);
   const rows = groupStandingsRowsForBracket(tournament, g, classId);
   const row = rows.find((r) => r.pid === pid);
@@ -4926,18 +5032,24 @@ export function isTableOccupiedByOtherMatch(tournament: Tournament, tableId: str
   return other !== undefined && other !== matchId;
 }
 
+/** Player ids that occupy a table slot for scheduling (all team members in shuffle doubles). */
+export function playersOccupiedByMatch(m: Match): PlayerId[] {
+  if (m.teamA && m.teamB) return [...m.teamA, ...m.teamB];
+  return [m.playerA, m.playerB];
+}
+
 /** In-progress player match ids involving this player. */
 export function inProgressMatchIdsForPlayer(tournament: Tournament, playerId: PlayerId): string[] {
   const ids: string[] = [];
   for (const m of Object.values(tournament.matches)) {
     if (m.status !== 'in-progress') continue;
-    if (m.playerA === playerId || m.playerB === playerId) ids.push(m.id);
+    if (playersOccupiedByMatch(m).includes(playerId)) ids.push(m.id);
   }
   return ids;
 }
 
 function assertPlayersFreeForMatchAssignment(tournament: Tournament, matchId: string, match: Match): void {
-  for (const playerId of [match.playerA, match.playerB]) {
+  for (const playerId of playersOccupiedByMatch(match)) {
     const other = inProgressMatchIdsForPlayer(tournament, playerId).filter((id) => id !== matchId);
     if (other.length === 0) continue;
     const name = tournament.players[playerId]?.name ?? playerId;
@@ -5009,8 +5121,7 @@ export function planFillEmptyTablesFromReady(
   const busyPlayers = new Set<PlayerId>();
   for (const m of Object.values(tournament.matches)) {
     if (m.status !== 'in-progress') continue;
-    busyPlayers.add(m.playerA);
-    busyPlayers.add(m.playerB);
+    for (const pid of playersOccupiedByMatch(m)) busyPlayers.add(pid);
   }
 
   const onTable = new Set(tournament.tableAssignments.map((a) => a.matchId));
@@ -5023,13 +5134,13 @@ export function planFillEmptyTablesFromReady(
     if (onTable.has(matchId)) continue;
     const match = tournament.matches[matchId];
     if (!match) continue;
-    if (scheduledPlayers.has(match.playerA) || scheduledPlayers.has(match.playerB)) continue;
+    const occupied = playersOccupiedByMatch(match);
+    if (occupied.some((pid) => scheduledPlayers.has(pid))) continue;
 
     const tableId = freeTables[tableIdx]!;
     out.push({ matchId, tableId });
     tableIdx++;
-    scheduledPlayers.add(match.playerA);
-    scheduledPlayers.add(match.playerB);
+    for (const pid of occupied) scheduledPlayers.add(pid);
     onTable.add(matchId);
   }
 

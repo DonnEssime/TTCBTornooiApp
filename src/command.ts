@@ -1,6 +1,7 @@
 import {
   addGroupDoublesRoundRobinMatches,
   addGroupRoundRobinMatches,
+  addGroupShuffleDoublesMatches,
   applyBracketToTrack,
   getCompetitionTrack,
   listCompetitionTracks,
@@ -10,7 +11,7 @@ import {
   setTrackGroups,
   tournamentUsesClassTabs,
 } from './competition-track';
-import { getTrackPairs, isDoublesTrack, trackBracketParticipants } from './doubles-track';
+import { getTrackPairs, isAnyDoublesFormat, isDoublesTrack, isShuffleDoublesTrack, trackBracketParticipants } from './doubles-track';
 import {
   Tournament,
   advanceBracketRoundIn,
@@ -1118,7 +1119,7 @@ export class CommandRunner {
           return commandFail(trackResolved.key);
         }
         const trackClassId = trackResolved.classId;
-        if (isDoublesTrack(tournament, trackClassId)) {
+        if (isAnyDoublesFormat(tournament, trackClassId)) {
           return commandFail('command.movePlayerDisabledInDoubles');
         }
         const pid = String(pidRaw ?? '').trim();
@@ -1228,6 +1229,8 @@ export class CommandRunner {
         }
         if (isDoublesTrack(tournament, cid)) {
           addGroupDoublesRoundRobinMatches(tournament, groupsRecord, getTrackPairs(tournament, cid), cid);
+        } else if (isShuffleDoublesTrack(tournament, cid)) {
+          addGroupShuffleDoublesMatches(tournament, groupsRecord, cid);
         } else {
           addGroupRoundRobinMatches(tournament, groupsRecord, cid);
         }
@@ -1244,6 +1247,9 @@ export class CommandRunner {
           return commandFail(trackResolved.key);
         }
         const trackClassId = trackResolved.classId;
+        if (isShuffleDoublesTrack(tournament, trackClassId)) {
+          return commandFail('command.bracketNotAvailableForShuffleDoubles');
+        }
         const existingBracket = getCompetitionTrack(tournament, trackClassId).bracketMatches;
         if (existingBracket.length > 0) {
           const clearErr = clearBracketFromTournament(tournament, trackClassId);

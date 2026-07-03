@@ -3,7 +3,7 @@ import {
   tournamentUsesClassTabs,
   trackTitle,
 } from './competition-track';
-import { isDoublesTrack, pairForPlayer } from './doubles-track';
+import { isDoublesTrack, isShuffleDoublesTrack, pairForPlayer } from './doubles-track';
 import {
   type BracketMatch,
   type GroupDefinition,
@@ -24,6 +24,8 @@ export type PlayerMatchLineScore = { playerGames: number; opponentGames: number 
 
 export type PlayerMatchHistoryLine = {
   opponentId: PlayerId;
+  /** Set when the line maps to a specific group match (required for shuffle doubles keys). */
+  matchId?: string;
   /** `null` when the match exists but has no decided games yet. */
   score: PlayerMatchLineScore | null;
 };
@@ -69,9 +71,15 @@ export function matchDecidedGamesWon(
   match: Match,
   focalPlayerId: PlayerId,
 ): PlayerMatchLineScore | null {
-  if (match.playerA !== focalPlayerId && match.playerB !== focalPlayerId) return null;
   if (match.scores.length === 0) return null;
-  const focalIsA = match.playerA === focalPlayerId;
+  let focalIsA = match.playerA === focalPlayerId;
+  if (match.teamA && match.teamB) {
+    if (match.teamA.includes(focalPlayerId)) focalIsA = true;
+    else if (match.teamB.includes(focalPlayerId)) focalIsA = false;
+    else return null;
+  } else if (match.playerA !== focalPlayerId && match.playerB !== focalPlayerId) {
+    return null;
+  }
   let playerGames = 0;
   let opponentGames = 0;
   let anyDecided = false;
@@ -134,6 +142,26 @@ function compareGroupMatchPlayOrderKeys(a: GroupMatchPlayOrderKey, b: GroupMatch
   return a[2].localeCompare(b[2]);
 }
 
+function findShuffleGroupMatchForPlayer(
+  tournament: Tournament,
+  groupId: string,
+  playerId: PlayerId,
+  opponentId: PlayerId,
+  classId?: string,
+): Match | undefined {
+  for (const m of Object.values(tournament.matches)) {
+    if (m.groupId !== groupId) continue;
+    if (classId ? m.classId !== classId : Boolean(m.classId)) continue;
+    if (!m.teamA || !m.teamB) continue;
+    const onA = m.teamA.includes(playerId);
+    const onB = m.teamB.includes(playerId);
+    if (!onA && !onB) continue;
+    const oppTeam = onA ? m.teamB : m.teamA;
+    if (oppTeam.includes(opponentId)) return m;
+  }
+  return undefined;
+}
+
 function compareGroupHistoryLinesByPlayOrder(
   tournament: Tournament,
   groupId: string,
@@ -142,13 +170,26 @@ function compareGroupHistoryLinesByPlayOrder(
   a: PlayerMatchHistoryLine,
   b: PlayerMatchHistoryLine,
   doublesPairId?: string,
+  shuffleDoubles?: boolean,
 ): number {
-  const matchA = doublesPairId
-    ? findGroupMatchBetweenPairs(tournament, groupId, classId, doublesPairId, a.opponentId)
-    : findGroupMatchBetweenPlayers(tournament, groupId, playerId, a.opponentId, classId);
-  const matchB = doublesPairId
-    ? findGroupMatchBetweenPairs(tournament, groupId, classId, doublesPairId, b.opponentId)
-    : findGroupMatchBetweenPlayers(tournament, groupId, playerId, b.opponentId, classId);
+  const resolveMatch = (
+    line: PlayerMatchHistoryLine,
+    opponentId: PlayerId,
+  ): Match | undefined => {
+    if (line.matchId) {
+      const m = tournament.matches[line.matchId];
+      if (m?.groupId === groupId) return m;
+    }
+    if (doublesPairId) {
+      return findGroupMatchBetweenPairs(tournament, groupId, classId, doublesPairId, opponentId);
+    }
+    if (shuffleDoubles) {
+      return findShuffleGroupMatchForPlayer(tournament, groupId, playerId, opponentId, classId);
+    }
+    return findGroupMatchBetweenPlayers(tournament, groupId, playerId, opponentId, classId);
+  };
+  const matchA = resolveMatch(a, a.opponentId);
+  const matchB = resolveMatch(b, b.opponentId);
   return compareGroupMatchPlayOrderKeys(
     groupMatchPlayOrderKey(tournament, matchA, a.opponentId),
     groupMatchPlayOrderKey(tournament, matchB, b.opponentId),
@@ -205,7 +246,24 @@ function buildTrackSection(
         const rep = tournament.players[focalPair.playerIds[0]!]?.id ?? focalPair.playerIds[0]!;
         lines.push({
           opponentId: oppPairId,
+          matchId: match?.id,
           score: match ? matchDecidedGamesWon(match, rep) : null,
+        });
+      }
+    } else if (isShuffleDoublesTrack(tournament, classId)) {
+      for (const m of Object.values(tournament.matches)) {
+        if (m.groupId !== group.id) continue;
+        if (classId ? m.classId !== classId : Boolean(m.classId)) continue;
+        if (!m.teamA || !m.teamB) continue;
+        const onA = m.teamA.includes(playerId);
+        const onB = m.teamB.includes(playerId);
+        if (!onA && !onB) continue;
+        const oppTeam = onA ? m.teamB : m.teamA;
+        const opponentId = oppTeam.find((pid) => pid !== playerId) ?? oppTeam[0]!;
+        lines.push({
+          opponentId,
+          matchId: m.id,
+          score: matchDecidedGamesWon(m, playerId),
         });
       }
     } else {
@@ -214,6 +272,7 @@ function buildTrackSection(
         const match = findGroupMatchBetweenPlayers(tournament, group.id, playerId, opponentId, classId);
         lines.push({
           opponentId,
+          matchId: match?.id,
           score: match ? matchDecidedGamesWon(match, playerId) : null,
         });
       }
@@ -227,6 +286,7 @@ function buildTrackSection(
         a,
         b,
         focalPair?.id,
+        isShuffleDoublesTrack(tournament, classId),
       ),
     );
     groupSection = { kind: 'group', group, lines };

@@ -2,12 +2,17 @@
   import type { BracketMatch, Match, Tournament } from 'ttc-tornooiapp';
   import {
     bracketKnockoutRoundLabel,
+    bracketPlayerMatchId,
     buildPlayerMatchHistory,
     displayLabelForGroup,
+    formatBracketSlotPlayerLabel,
     getCompetitionTrack,
+    isAnyDoublesFormat,
     isDoublesTrack,
+    matchSideLabels,
     pairDisplayLabel,
     pairForPlayer,
+    winningPairIdFromMatch,
     type PlayerMatchHistoryLine,
     type PlayerMatchHistoryTrackSection,
   } from 'ttc-tornooiapp';
@@ -100,11 +105,62 @@
     }
   }
 
-  function opponentName(opponentId: string, classId?: string): string {
+  function opponentName(opponentId: string, classId?: string, groupId?: string, matchId?: string): string {
+    if (groupId) {
+      const label = groupSideLabel(opponentId, groupId, classId, false, matchId);
+      if (label) return label;
+    }
     if (isDoublesTrack(tournament, classId) && (tournament.pairs?.[opponentId] || (classId && tournament.classTournaments[classId]?.pairs?.[opponentId]))) {
       return pairDisplayLabel(tournament, opponentId, classId, getLocale());
     }
     return tournament.players[opponentId]?.name ?? opponentId;
+  }
+
+  function focalName(opponentId: string, groupId: string, classId?: string, matchId?: string): string {
+    const label = groupSideLabel(opponentId, groupId, classId, true, matchId);
+    if (label) return label;
+    return focalPlayerName;
+  }
+
+  function groupSideLabel(
+    opponentId: string,
+    groupId: string,
+    classId: string | undefined,
+    focal: boolean,
+    matchId?: string,
+  ): string | undefined {
+    const match = findGroupMatch(groupId, opponentId, classId, matchId);
+    if (!match || !isAnyDoublesFormat(tournament, classId)) return undefined;
+    const sides = matchSideLabels(tournament, match, classId, getLocale());
+    const focalOnA =
+      match.teamA?.includes(playerId) ||
+      (match.pairA && pairForPlayer(tournament, classId, playerId)?.id === match.pairA);
+    if (focal) return focalOnA ? sides.sideA : sides.sideB;
+    return focalOnA ? sides.sideB : sides.sideA;
+  }
+
+  function bracketSideLabel(
+    bracketMatches: BracketMatch[],
+    round: number,
+    opponentId: string,
+    classId: string | undefined,
+    focal: boolean,
+  ): string {
+    const bm = findBracketMatch(bracketMatches, round, opponentId, classId);
+    if (!bm) return focal ? focalPlayerName : opponentName(opponentId, classId);
+    const pm = tournament.matches[bracketPlayerMatchId(bm.id, classId)];
+    if (pm && !pm.groupId && isAnyDoublesFormat(tournament, classId)) {
+      const sides = matchSideLabels(tournament, pm, classId, getLocale());
+      const seed = focalBracketSeed(classId);
+      const focalOnA = pm.pairA ? pm.pairA === seed : pm.teamA?.includes(playerId) ?? pm.playerA === playerId;
+      if (focal) return focalOnA ? sides.sideA : sides.sideB;
+      return focalOnA ? sides.sideB : sides.sideA;
+    }
+    if (isDoublesTrack(tournament, classId)) {
+      const id = focal ? focalBracketSeed(classId) : opponentId;
+      return formatBracketSlotPlayerLabel(tournament, id, classId, getLocale());
+    }
+    return focal ? focalPlayerName : opponentName(opponentId, classId);
   }
 
   function focalBracketSeed(classId?: string): string {
@@ -136,7 +192,17 @@
     groupId: string,
     opponentId: string,
     classId: string | undefined,
+    matchId?: string,
   ): Match | undefined {
+    if (matchId) {
+      const direct = tournament.matches[matchId];
+      if (
+        direct?.groupId === groupId &&
+        (classId ? direct.classId === classId : !direct.classId)
+      ) {
+        return direct;
+      }
+    }
     for (const m of Object.values(tournament.matches)) {
       if (m.groupId !== groupId) continue;
       if (classId ? m.classId !== classId : Boolean(m.classId)) continue;
@@ -147,6 +213,14 @@
           (m.pairA === pair.id && m.pairB === opponentId) ||
           (m.pairA === opponentId && m.pairB === pair.id);
         if (ok) return m;
+        continue;
+      }
+      if (m.teamA && m.teamB) {
+        const onA = m.teamA.includes(playerId);
+        const onB = m.teamB.includes(playerId);
+        if (!onA && !onB) continue;
+        const oppTeam = onA ? m.teamB : m.teamA;
+        if (oppTeam.includes(opponentId)) return m;
         continue;
       }
       const ok =
@@ -162,9 +236,30 @@
     groupId: string,
     classId: string | undefined,
     pid: string,
+    matchId?: string,
   ): BracketSlotOutcome | null {
-    const match = findGroupMatch(groupId, opponentId, classId);
-    if (!match?.winner) return null;
+    const match = findGroupMatch(groupId, opponentId, classId, matchId);
+    if (!match) return null;
+    if (match.teamA && match.teamB) {
+      if (!match.winner) return null;
+      const winTeam = match.winner === match.playerA ? match.teamA : match.teamB;
+      return winTeam.includes(pid) ? 'winner' : 'loser';
+    }
+    if (match.pairA && match.pairB) {
+      const winnerPair = winningPairIdFromMatch(match);
+      if (!winnerPair) return null;
+      let pairId: string | undefined;
+      if (pid === playerId) {
+        pairId = pairForPlayer(tournament, classId, playerId)?.id;
+      } else if (tournament.pairs?.[pid] || (classId && tournament.classTournaments[classId]?.pairs?.[pid])) {
+        pairId = pid;
+      } else {
+        pairId = pairForPlayer(tournament, classId, pid)?.id;
+      }
+      if (!pairId || (match.pairA !== pairId && match.pairB !== pairId)) return null;
+      return winnerPair === pairId ? 'winner' : 'loser';
+    }
+    if (!match.winner) return null;
     return match.winner === pid ? 'winner' : 'loser';
   }
 
@@ -302,25 +397,27 @@
 
         {#if track.groupSection}
           <ul class="player-history-lines">
-            {#each track.groupSection.lines as line (line.opponentId)}
+            {#each track.groupSection.lines as line (line.matchId ?? line.opponentId)}
               {@const focalOutcome = groupMatchOutcome(
                 line.opponentId,
                 track.groupSection.group.id,
                 track.classId,
                 playerId,
+                line.matchId,
               )}
               {@const opponentOutcome = groupMatchOutcome(
                 line.opponentId,
                 track.groupSection.group.id,
                 track.classId,
                 line.opponentId,
+                line.matchId,
               )}
               <li class="player-history-line">
                 <span
                   class="player-history-focal"
                   class:player-history-slot--winner={focalOutcome === 'winner'}
                   class:player-history-slot--loser={focalOutcome === 'loser'}
-                >{focalPlayerName}</span>
+                >{focalName(line.opponentId, track.groupSection.group.id, track.classId, line.matchId)}</span>
                 {#if scoreText(line)}
                   <span
                     class="player-history-score"
@@ -334,7 +431,7 @@
                   class="player-history-opponent"
                   class:player-history-slot--winner={opponentOutcome === 'winner'}
                   class:player-history-slot--loser={opponentOutcome === 'loser'}
-                >{opponentName(line.opponentId, track.classId)}</span>
+                >{opponentName(line.opponentId, track.classId, track.groupSection.group.id, line.matchId)}</span>
               </li>
             {/each}
           </ul>
@@ -368,7 +465,7 @@
                     class="player-history-focal"
                     class:player-history-slot--winner={focalOutcome === 'winner'}
                     class:player-history-slot--loser={focalOutcome === 'loser'}
-                  >{focalPlayerName}</span>
+                  >{bracketSideLabel(track.bracketMatches, section.round, line.opponentId, track.classId, true)}</span>
                   {#if scoreText(line)}
                     <span
                       class="player-history-score"
@@ -382,7 +479,7 @@
                     class="player-history-opponent"
                     class:player-history-slot--winner={opponentOutcome === 'winner'}
                     class:player-history-slot--loser={opponentOutcome === 'loser'}
-                  >{opponentName(line.opponentId, track.classId)}</span>
+                  >{bracketSideLabel(track.bracketMatches, section.round, line.opponentId, track.classId, false)}</span>
                 </li>
               {/each}
             </ul>

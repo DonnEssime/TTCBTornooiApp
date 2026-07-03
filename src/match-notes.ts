@@ -1,7 +1,8 @@
 import type { Locale } from './i18n/types';
 import { txt, bracketKnockoutRoundParams } from './i18n';
 import { listCompetitionTracks, trackGroupMatches, trackTitle, tournamentUsesClassTabs } from './competition-track';
-import type { BracketMatch, GroupDefinition, Match, PlayerId, Tournament } from './model';
+import { pairById } from './doubles-track';
+import type { BracketMatch, CompetitionPair, GroupDefinition, Match, PlayerId, Tournament } from './model';
 import {
   bracketEffectiveWinner,
   bracketMatchesSortedForRound,
@@ -14,6 +15,7 @@ import {
   isBracketByeWalkoverMatch,
   isHandicapActive,
   isMiscActive,
+  pairHandicapValue,
 } from './model';
 
 export const MATCH_NOTES_SLIPS_PER_PAGE = 6;
@@ -98,6 +100,45 @@ function playerSide(
   return side;
 }
 
+function teamNamesOnSlip(t: Tournament, team: [PlayerId, PlayerId], locale: Locale): string {
+  const n1 = t.players[team[0]]?.name ?? team[0];
+  const n2 = t.players[team[1]]?.name ?? team[1];
+  return txt('model.pairDisplayLabel', locale, { a: n1, b: n2 });
+}
+
+function noteSideFromPairPlayers(
+  t: Tournament,
+  pair: CompetitionPair,
+  locale: Locale,
+): MatchNotePlayerSide {
+  const name = teamNamesOnSlip(t, [pair.playerIds[0]!, pair.playerIds[1]!], locale);
+  const side: MatchNotePlayerSide = { label: name, name };
+  if (isHandicapActive(t)) side.handicap = pairHandicapValue(t, pair);
+  return side;
+}
+
+function noteSideFromMatch(
+  t: Tournament,
+  m: Match,
+  side: 'A' | 'B',
+  classId: string | undefined,
+  locale: Locale,
+  bracketSlotLabel: boolean,
+): MatchNotePlayerSide {
+  if (m.teamA && m.teamB) {
+    const team = side === 'A' ? m.teamA : m.teamB;
+    return noteSideFromPairPlayers(t, { id: '', playerIds: team }, locale);
+  }
+  if (m.pairA && m.pairB) {
+    const pairId = side === 'A' ? m.pairA : m.pairB;
+    const pair = pairById(t, classId, pairId);
+    if (pair) return noteSideFromPairPlayers(t, pair, locale);
+    return playerSide(t, pairId, classId, locale, bracketSlotLabel);
+  }
+  const pid = side === 'A' ? m.playerA : m.playerB;
+  return playerSide(t, pid, classId, locale, bracketSlotLabel);
+}
+
 function groupContextLine(
   locale: Locale,
   trackTitle: string,
@@ -126,8 +167,8 @@ function slipFromPlayerMatch(
   return {
     matchKey: m.id,
     contextLine,
-    playerA: playerSide(t, m.playerA, classId, locale, false),
-    playerB: playerSide(t, m.playerB, classId, locale, false),
+    playerA: noteSideFromMatch(t, m, 'A', classId, locale, false),
+    playerB: noteSideFromMatch(t, m, 'B', classId, locale, false),
   };
 }
 

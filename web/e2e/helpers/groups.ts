@@ -24,7 +24,12 @@ export async function createClassGroupsByPlayerCount(
 
 export async function enableDoubles(page: Page): Promise<void> {
   await goToGroupsTab(page);
-  await page.getByTestId('group-doubles').check();
+  await page.getByTestId('group-format-fixed-doubles').check();
+}
+
+export async function enableShuffleDoubles(page: Page): Promise<void> {
+  await goToGroupsTab(page);
+  await page.getByTestId('group-format-shuffle-doubles').check();
 }
 
 export async function clearGroups(page: Page): Promise<void> {

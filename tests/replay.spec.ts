@@ -106,6 +106,43 @@ describe('Command replay and deterministic JSONL round-trip', () => {
     expect(runner.getTournament().bracketMatches.some((m) => m.round === 2)).toBe(true);
   });
 
+  it('should round-trip shuffle doubles group format via JSONL replay', () => {
+    const ts = '2026-01-01T00:00:00.000Z';
+    const playerIds = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'];
+    const commands = [
+      ...playerIds.map((playerId, i) => ({
+        id: playerId,
+        type: 'CreatePlayer' as const,
+        dependsOn: [] as string[],
+        payload: { playerId, name: `P${i + 1}`, handicap: 0 },
+        timestamp: ts,
+      })),
+      {
+        id: 'sg',
+        type: 'SetGroups' as const,
+        dependsOn: playerIds,
+        payload: {
+          targetGroupSize: 4,
+          playerIds,
+          format: 'doubles-shuffle-partners' as const,
+        },
+        timestamp: ts,
+      },
+    ];
+    const lines = commands.map(commandToJsonLine);
+    const runnerA = new CommandRunner();
+    const resA = replayCommandsFromJsonLines(lines, runnerA);
+    expect(resA.success).toBe(true);
+    const tA = runnerA.getTournament();
+    expect(tA.competitionFormat).toBe('doubles-shuffle-partners');
+    expect(Object.values(tA.matches).filter((m) => m.teamA && m.teamB).length).toBe(6);
+
+    const runnerB = new CommandRunner();
+    const resB = replayCommandsFromJsonLines(lines, runnerB);
+    expect(resB.success).toBe(true);
+    expect(runnerB.getTournament()).toEqual(tA);
+  });
+
   it('should rebuild controller from exported JSONL text', () => {
     const ts = '2026-02-01T00:00:00.000Z';
     const cmds = [

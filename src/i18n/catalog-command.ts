@@ -169,6 +169,18 @@ export const commandCatalog = {
     'Doubles requires an even number of players on this track',
     'Dubbelspel vereist een even aantal spelers op dit onderdeel',
   ),
+  'command.shuffleDoublesRequiresQuadrupleCount': t(
+    'Shuffle doubles requires a player count divisible by 4 on this track',
+    'Shuffle-dubbelspel vereist een aantal spelers dat deelbaar is door 4 op dit onderdeel',
+  ),
+  'command.shuffleDoublesGroupSizeMustBeFour': t(
+    'Shuffle doubles requires exactly 4 players in every group',
+    'Shuffle-dubbelspel vereist precies 4 spelers in elke groep',
+  ),
+  'command.bracketNotAvailableForShuffleDoubles': t(
+    'Knockout bracket is not available for shuffle-partners doubles',
+    'Afvallingstabel is niet beschikbaar voor shuffle-dubbelspel',
+  ),
   'command.doublesTargetGroupSizeEven': t(
     'Doubles target players per group must be an even number of at least 2',
     'Dubbelspel: streefaantal spelers per groep moet een even getal van minstens 2 zijn',

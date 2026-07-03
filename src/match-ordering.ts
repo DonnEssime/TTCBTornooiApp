@@ -1,6 +1,7 @@
 import { trackGroupMatches } from './competition-track';
 import type { GroupDefinition, Match, PlayerId, Tournament } from './model';
 import {
+  playersOccupiedByMatch,
   roundRobinMatchRounds,
   roundRobinPairKey,
   roundRobinRoundIndexForPair,
@@ -65,7 +66,12 @@ function matchParticipantPair(m: Match): [PlayerId, PlayerId] | undefined {
   return undefined;
 }
 
+function matchSchedulePlayerIds(m: Match): PlayerId[] {
+  return playersOccupiedByMatch(m);
+}
+
 function participantIdsForGroup(g: GroupDefinition, sample: Match): PlayerId[] {
+  if (sample.teamA && sample.teamB) return g.playerIds;
   if (sample.pairA && sample.pairB && g.pairIds && g.pairIds.length > 0) {
     return g.pairIds;
   }
@@ -107,6 +113,7 @@ export function groupCompletedRoundCount(
 }
 
 function roundIndexForMatch(m: Match, participantIds: readonly PlayerId[]): number | undefined {
+  if (m.shuffleRound !== undefined) return m.shuffleRound;
   const pair = matchParticipantPair(m);
   if (!pair) return undefined;
   return roundRobinRoundIndexForPair(participantIds, pair[0], pair[1]);
@@ -200,6 +207,8 @@ export function groupRoundStaggeredOrder(matches: Match[], tournament: Tournamen
 export type ScheduleMatchSlot = {
   playerA: PlayerId;
   playerB: PlayerId;
+  /** All players busy during this match (shuffle doubles uses four). */
+  playerIds?: PlayerId[];
 };
 
 /**
@@ -229,8 +238,11 @@ export function estimateScheduleWaves(ordered: ScheduleMatchSlot[], tableCount: 
         nextRemaining.push(slot);
         continue;
       }
-      waveBusy.add(slot.playerA);
-      waveBusy.add(slot.playerB);
+      if (slotPlayerIds(slot).some((pid) => waveBusy.has(pid))) {
+        nextRemaining.push(slot);
+        continue;
+      }
+      for (const pid of slotPlayerIds(slot)) waveBusy.add(pid);
       assigned++;
     }
 
@@ -244,11 +256,16 @@ export function estimateScheduleWaves(ordered: ScheduleMatchSlot[], tableCount: 
 type InternalMatchSlot = ScheduleMatchSlot & { id: string };
 
 function slotOfMatch(m: Match): InternalMatchSlot {
-  return { id: m.id, playerA: m.playerA, playerB: m.playerB };
+  const playerIds = matchSchedulePlayerIds(m);
+  return { id: m.id, playerA: m.playerA, playerB: m.playerB, playerIds };
+}
+
+function slotPlayerIds(slot: ScheduleMatchSlot): PlayerId[] {
+  return slot.playerIds && slot.playerIds.length > 0 ? slot.playerIds : [slot.playerA, slot.playerB];
 }
 
 function matchUsesPlayer(m: ScheduleMatchSlot, p: PlayerId): boolean {
-  return m.playerA === p || m.playerB === p;
+  return slotPlayerIds(m).includes(p);
 }
 
 function countBackToBackPlayers(
@@ -257,8 +274,9 @@ function countBackToBackPlayers(
 ): number {
   let c = 0;
   for (const s of waveSlots) {
-    if (lastWavePlayers.has(s.playerA)) c++;
-    if (lastWavePlayers.has(s.playerB)) c++;
+    for (const pid of slotPlayerIds(s)) {
+      if (lastWavePlayers.has(pid)) c++;
+    }
   }
   return c;
 }
@@ -285,8 +303,9 @@ function greedyWavePack(
   // Conflict degree proxy: how many remaining matches share either player.
   const perPlayerCount = new Map<PlayerId, number>();
   for (const m of remaining) {
-    perPlayerCount.set(m.playerA, (perPlayerCount.get(m.playerA) ?? 0) + 1);
-    perPlayerCount.set(m.playerB, (perPlayerCount.get(m.playerB) ?? 0) + 1);
+    for (const pid of slotPlayerIds(m)) {
+      perPlayerCount.set(pid, (perPlayerCount.get(pid) ?? 0) + 1);
+    }
   }
 
   const takenPlayers = new Set<PlayerId>();
@@ -302,24 +321,18 @@ function greedyWavePack(
 
     for (let i = 0; i < rem.length; i++) {
       const m = rem[i]!;
-      if (takenPlayers.has(m.playerA) || takenPlayers.has(m.playerB)) continue;
+      const pids = slotPlayerIds(m);
+      if (pids.some((pid) => takenPlayers.has(pid))) continue;
 
-      const b2b = (lastWavePlayers.has(m.playerA) ? 1 : 0) + (lastWavePlayers.has(m.playerB) ? 1 : 0);
-      const deg =
-        (perPlayerCount.get(m.playerA) ?? 0) + (perPlayerCount.get(m.playerB) ?? 0) - 2; // subtract self
+      const b2b = pids.reduce((n, pid) => n + (lastWavePlayers.has(pid) ? 1 : 0), 0);
+      const deg = pids.reduce((n, pid) => n + (perPlayerCount.get(pid) ?? 0), 0) - pids.length;
 
-      // Weights chosen to be easy to reason about:
-      // - prioritize filling tables (wave count is lexicographic primary)
-      // - then avoid back-to-back
-      // - then pick constrained matches earlier (higher conflict degree first)
       const base = 10;
       const scoreMain = base - 6 * b2b + 1 * deg;
 
-      // Deterministic micro-jitter so multiple attempts explore slightly different but stable paths.
       const jitter = (hash32(`${attemptSalt}:${m.id}`) % 1024) / 1024 / 1000;
       const pref = preferredIndex ? preferredIndex.get(m.id) ?? Number.POSITIVE_INFINITY : Number.POSITIVE_INFINITY;
 
-      // Warm-start is a tie-break only: it should never outweigh the main scoring terms.
       const better =
         scoreMain > bestScoreMain ||
         (scoreMain === bestScoreMain && pref < bestPref) ||
@@ -338,8 +351,7 @@ function greedyWavePack(
     if (bestIdx < 0) break;
     const picked = rem.splice(bestIdx, 1)[0]!;
     out.push(picked);
-    takenPlayers.add(picked.playerA);
-    takenPlayers.add(picked.playerB);
+    for (const pid of slotPlayerIds(picked)) takenPlayers.add(pid);
   }
 
   return out;
@@ -355,12 +367,10 @@ export function minWavesAvoidBackToBackOrder(matches: Match[], ctx: ReadyMatchOr
   const lastFinished = ctx.pastFinishedInOrder.slice(Math.max(0, ctx.pastFinishedInOrder.length - tableCount));
   const initialLastWavePlayers = new Set<PlayerId>();
   for (const m of lastFinished) {
-    initialLastWavePlayers.add(m.playerA);
-    initialLastWavePlayers.add(m.playerB);
+    for (const pid of playersOccupiedByMatch(m)) initialLastWavePlayers.add(pid);
   }
   for (const m of ctx.inProgressInAssignmentOrder) {
-    initialLastWavePlayers.add(m.playerA);
-    initialLastWavePlayers.add(m.playerB);
+    for (const pid of playersOccupiedByMatch(m)) initialLastWavePlayers.add(pid);
   }
 
   const allSlots = matches.map(slotOfMatch);
@@ -427,8 +437,7 @@ export function minWavesAvoidBackToBackOrder(matches: Match[], ctx: ReadyMatchOr
 
         const wavePlayers = new Set<PlayerId>();
         for (const m of wave) {
-          wavePlayers.add(m.playerA);
-          wavePlayers.add(m.playerB);
+          for (const pid of slotPlayerIds(m)) wavePlayers.add(pid);
         }
 
         const wavePenalty = countBackToBackPlayers(wave, s.lastWavePlayers);

@@ -25,6 +25,32 @@ export function isDoublesTrack(t: Tournament, classId?: string): boolean {
   return getTrackFormat(t, classId) === 'doubles-random-partners';
 }
 
+export function isShuffleDoublesTrack(t: Tournament, classId?: string): boolean {
+  return getTrackFormat(t, classId) === 'doubles-shuffle-partners';
+}
+
+export function isFixedDoublesTrack(t: Tournament, classId?: string): boolean {
+  return isDoublesTrack(t, classId);
+}
+
+export function isAnyDoublesFormat(t: Tournament, classId?: string): boolean {
+  const fmt = getTrackFormat(t, classId);
+  return fmt === 'doubles-random-partners' || fmt === 'doubles-shuffle-partners';
+}
+
+export function trackHasBracketPhase(t: Tournament, classId?: string): boolean {
+  return !isShuffleDoublesTrack(t, classId);
+}
+
+function formatTeamDisplayLabel(
+  t: Tournament,
+  team: [PlayerId, PlayerId],
+  locale: Locale = 'en',
+): string {
+  const pair: CompetitionPair = { id: '', playerIds: team };
+  return formatPairDisplayLabel(t, pair, locale);
+}
+
 export function getTrackPairs(t: Tournament, classId?: string): Record<string, CompetitionPair> {
   if (classId) {
     return t.classTournaments[classId]?.pairs ?? {};
@@ -79,6 +105,9 @@ export function pairDisplayLabel(
 }
 
 export function allPlayersInMatch(t: Tournament, m: Match, classId?: string): PlayerId[] {
+  if (m.teamA && m.teamB) {
+    return [...m.teamA, ...m.teamB];
+  }
   if (m.pairA && m.pairB) {
     const pairs = getTrackPairs(t, classId);
     const pa = pairs[m.pairA];
@@ -94,6 +123,12 @@ export function matchSideLabels(
   classId?: string,
   locale: Locale = 'en',
 ): { sideA: string; sideB: string } {
+  if (m.teamA && m.teamB) {
+    return {
+      sideA: formatTeamDisplayLabel(t, m.teamA, locale),
+      sideB: formatTeamDisplayLabel(t, m.teamB, locale),
+    };
+  }
   if (m.pairA && m.pairB) {
     return {
       sideA: pairDisplayLabel(t, m.pairA, classId, locale),

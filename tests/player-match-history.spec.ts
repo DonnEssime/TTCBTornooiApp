@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { CommandRunner } from '../src/command';
 import {
   bracketPlayerMatchId,
   createTournament,
@@ -87,8 +88,8 @@ describe('buildSingleTournamentPlayerMatchHistory', () => {
     expect(h.showNoMatchesAvailable).toBe(false);
     expect(h.groupSection?.group.id).toBe('3');
     expect(h.groupSection?.lines).toEqual([
-      { opponentId: 'b', score: { playerGames: 2, opponentGames: 1 } },
-      { opponentId: 'c', score: { playerGames: 1, opponentGames: 0 } },
+      { opponentId: 'b', matchId: 'm-ab', score: { playerGames: 2, opponentGames: 1 } },
+      { opponentId: 'c', matchId: 'm-ac', score: { playerGames: 1, opponentGames: 0 } },
     ]);
   });
 
@@ -237,5 +238,36 @@ describe('buildPlayerMatchHistory', () => {
     expect(h.tracks[0]!.trackTitle).toBe('Junior');
     expect(h.tracks[0]!.groupSection?.lines[0]?.score).toEqual({ playerGames: 1, opponentGames: 0 });
     expect(h.tracks[0]!.bracketSections.length).toBeGreaterThan(0);
+  });
+
+  it('shuffle doubles group lines use unique matchId keys', () => {
+    const ts = '2026-01-01T00:00:00.000Z';
+    const runner = new CommandRunner();
+    for (let i = 1; i <= 4; i++) {
+      const id = `p${i}`;
+      runner.execute({
+        id,
+        type: 'CreatePlayer',
+        dependsOn: [],
+        payload: { playerId: id, name: `P${i}`, handicap: 0 },
+        timestamp: ts,
+      });
+    }
+    runner.execute({
+      id: 'sg',
+      type: 'SetGroups',
+      dependsOn: ['p1', 'p2', 'p3', 'p4'],
+      payload: {
+        groups: [{ id: '1', playerIds: ['p1', 'p2', 'p3', 'p4'] }],
+        playerIds: [],
+        format: 'doubles-shuffle-partners',
+      },
+      timestamp: ts,
+    });
+    const h = buildPlayerMatchHistory(runner.getTournament(), 'p1', 'Main');
+    const lines = h.tracks[0]!.groupSection?.lines ?? [];
+    expect(lines).toHaveLength(3);
+    const matchIds = lines.map((l) => l.matchId);
+    expect(new Set(matchIds).size).toBe(3);
   });
 });
