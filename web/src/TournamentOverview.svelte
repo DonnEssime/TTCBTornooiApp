@@ -62,7 +62,7 @@
     onDebugSimulateTables?: () => void;
     onDebugFillReadyTables?: (orderedMatchIds: string[]) => void;
     onOpenGroupMatch: (m: Match) => void;
-    onOpenBracketSlot: (bm: BracketMatch) => void;
+    onOpenBracketSlot: (bm: BracketMatch, classId?: string) => void;
     onOpenTableMatch: (m: Match) => void;
     onAssignMatchToTable: (matchId: string, tableId: string) => void;
     onClearMatchFromTable: (matchId: string) => void;
@@ -799,7 +799,7 @@
                 ondragstart={(e) => handleDragStart(e, bracketMid, 'ready')}
                 ondragend={handleDragEnd}
               >
-                <button type="button" class="ov-ready-btn" onclick={() => onOpenBracketSlot(entry.bm)}>
+                <button type="button" class="ov-ready-btn" onclick={() => onOpenBracketSlot(entry.bm, entry.classId)}>
                   <span class="ov-ready-pair"
                     ><strong>{formatBracketSlotPlayerLabel(tournament, entry.bm.seedA!, bracketMatch?.classId)}</strong>
                     <Msg key="ui.ov.vs" tag="span" />

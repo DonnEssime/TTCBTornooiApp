@@ -1271,7 +1271,7 @@ export class CommandRunner {
             ...(bracketSeedingMode !== undefined ? { bracketSeedingMode } : {}),
           });
           applyBracketToTrack(tournament, bm, trackClassId);
-          ensureBracketPhasePlayerMatchesIn(
+          this.reconcileBracketScope(
             tournament,
             getCompetitionTrack(tournament, trackClassId).bracketMatches,
             trackClassId,

@@ -8,6 +8,7 @@ import {
   resolveClosedFormBracketSeedingKind,
   selectTopParticipantsForBracket,
   bestEffortOrderWithPenaltyForGroupBracket,
+  matchPlayersResolvedForBracketPhaseList,
   type Match,
   type Tournament,
 } from '../src/model';
@@ -39,6 +40,36 @@ function finishAllGroupMatches(t: Tournament, classId?: string): void {
     if (!classId && m.classId) continue;
     if (m.status === 'finished') continue;
     finishMatchAsAWins(t, m.id, m.playerA);
+  }
+}
+
+function finishAllGroupMatchesViaCommands(runner: CommandRunner, classId?: string): void {
+  const ts = '2026-01-01T00:00:00.000Z';
+  const snapshot = runner.getTournament();
+  for (const m of Object.values(snapshot.matches)) {
+    if (!m.groupId) continue;
+    if (classId !== undefined && m.classId !== classId) continue;
+    if (!classId && m.classId) continue;
+    if (m.status === 'finished') continue;
+    const scores =
+      m.pairA && m.pairB
+        ? [
+            { playerA: 11, playerB: 5 },
+            { playerA: 11, playerB: 7 },
+            { playerA: 11, playerB: 3 },
+          ]
+        : [
+            { playerA: 11, playerB: 5 },
+            { playerA: 11, playerB: 7 },
+            { playerA: 11, playerB: 3 },
+          ];
+    runner.execute({
+      id: `score-${m.id}`,
+      type: 'EnterScore',
+      dependsOn: [],
+      payload: { matchId: m.id, scores },
+      timestamp: ts,
+    });
   }
 }
 
@@ -466,6 +497,47 @@ describe('doubles qualifierCount', () => {
     for (const pairId of r1Pairs) {
       expect(t.pairs![pairId]).toBeTruthy();
     }
+  });
+
+  it('GenerateBracket command materializes the first playable top-4 pair rows after bye advances', () => {
+    const runner = setupDoublesTwoByFour();
+    finishAllGroupMatchesViaCommands(runner);
+
+    const result = runner.execute({
+      id: 'gen-top4',
+      type: 'GenerateBracket',
+      dependsOn: ['sg'],
+      payload: {
+        fillByes: true,
+        cullToPowerOfTwo: false,
+        qualifierCount: 4,
+        bracketSeedingMode: 'crop_closed_form',
+        tieBreakSalt: 'dp-cmd',
+      },
+      timestamp: ts,
+    });
+    expect(result.success).toBe(true);
+    const t = runner.getTournament();
+
+    const knockoutMatches = Object.values(t.matches).filter(
+      (m) => m.id.startsWith('match-') && !m.groupId,
+    );
+    expect(knockoutMatches.length).toBeGreaterThan(0);
+
+    const playable = knockoutMatches.filter((m) => m.pairA && m.pairB);
+    expect(playable.length).toBeGreaterThan(0);
+    for (const m of playable) {
+      expect(matchPlayersResolvedForBracketPhaseList(t, m, undefined)).toBe(true);
+      expect(m.status).toBe('scheduled');
+      expect(m.scores).toHaveLength(0);
+    }
+
+    const laterRoundPlayable = playable.filter((m) => {
+      const bracketId = m.id.slice('match-'.length);
+      const bm = t.bracketMatches.find((slot) => slot.id === bracketId);
+      return (bm?.round ?? 0) > 1;
+    });
+    expect(laterRoundPlayable.length).toBeGreaterThan(0);
   });
 
   it('generateBracket with all 8 pairs uses full closed-form grid', () => {
