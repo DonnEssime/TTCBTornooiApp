@@ -42,6 +42,7 @@ import {
   scheduleRound,
   canMutateBracketPlayerMatch,
 } from '../src/model';
+import { CommandRunner } from '../src/command';
 
 describe('Bracket generation', () => {
   it('orders m{n} bracket ids numerically (not lexicographically)', () => {
@@ -1289,6 +1290,94 @@ describe('Single-elimination placement order', () => {
 });
 
 describe('Group → bracket placeholders', () => {
+  it('re-resolves early-generated round-1 bracket slots from final group standings', () => {
+    const runner = new CommandRunner();
+    const exec = (id: string, type: Parameters<CommandRunner['execute']>[0]['type'], payload: any, dependsOn: string[] = []) =>
+      runner.execute({
+        id,
+        type,
+        dependsOn,
+        payload,
+        timestamp: '2026-07-09T12:00:00.000Z',
+      } as Parameters<CommandRunner['execute']>[0]);
+
+    const playerIds = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'];
+    for (const id of playerIds) {
+      expect(exec(`cp-${id}`, 'CreatePlayer', { playerId: id, name: `P${id.slice(1)}`, handicap: 0 })).toEqual({
+        success: true,
+      });
+    }
+    expect(exec('seed', 'SetSeedings', { playerIds }, playerIds.map((id) => `cp-${id}`))).toEqual({ success: true });
+    expect(
+      exec(
+        'sg',
+        'SetGroups',
+        {
+          groups: [
+            { id: 'g1', label: 'Group 1', playerIds: ['p4', 'p3', 'p2', 'p1'] },
+            { id: 'g2', label: 'Group 2', playerIds: ['p8', 'p7', 'p6', 'p5'] },
+          ],
+        },
+        ['seed'],
+      ),
+    ).toEqual({ success: true });
+    expect(
+      exec(
+        'gen',
+        'GenerateBracket',
+        { fillByes: true, cullToPowerOfTwo: false, bracketSeedingMode: 'closed_form' },
+        ['sg'],
+      ),
+    ).toEqual({ success: true });
+
+    const finalRows = [
+      ['gm-g1-p1-p2', 'p1'],
+      ['gm-g1-p1-p3', 'p1'],
+      ['gm-g1-p1-p4', 'p1'],
+      ['gm-g1-p2-p3', 'p2'],
+      ['gm-g1-p2-p4', 'p2'],
+      ['gm-g1-p3-p4', 'p3'],
+      ['gm-g2-p5-p6', 'p5'],
+      ['gm-g2-p5-p7', 'p5'],
+      ['gm-g2-p5-p8', 'p5'],
+      ['gm-g2-p6-p7', 'p6'],
+      ['gm-g2-p6-p8', 'p6'],
+      ['gm-g2-p7-p8', 'p7'],
+    ] as const;
+    const straightSets = [
+      { playerA: 11, playerB: 0 },
+      { playerA: 11, playerB: 0 },
+      { playerA: 11, playerB: 0 },
+    ];
+
+    for (const [index, [matchId, expectedWinner]] of finalRows.entries()) {
+      const before = runner.getTournament().matches[matchId]!;
+      const focalWins = before.playerA === expectedWinner;
+      const scores = focalWins
+        ? straightSets
+        : straightSets.map((s) => ({ playerA: s.playerB, playerB: s.playerA }));
+      expect(exec(`score-${index}`, 'EnterScore', { matchId, scores }, ['sg'])).toEqual({ success: true });
+    }
+
+    const refreshed = runner.getTournament();
+    const round1 = refreshed.bracketMatches
+      .filter((bm) => bracketMatchRound(bm) === 1)
+      .sort(compareBracketMatchId);
+    expect(round1.map((bm) => [bm.seedA, bm.seedB])).toEqual([
+      ['p1', 'p8'],
+      ['p3', 'p6'],
+      ['p5', 'p4'],
+      ['p7', 'p2'],
+    ]);
+    for (const bm of round1) {
+      const playerMatch = refreshed.matches[bracketPlayerMatchId(bm.id)]!;
+      expect(playerMatch.playerA).toBe(bm.seedA);
+      expect(playerMatch.playerB).toBe(bm.seedB);
+      expect(playerMatch.status).toBe('scheduled');
+      expect(playerMatch.scores).toEqual([]);
+    }
+  });
+
   it('formatBracketSlotPlayerLabel uses group place until the group is fully finished', () => {
     const t = createTournament();
     t.players = {

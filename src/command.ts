@@ -35,6 +35,7 @@ import {
   playerMatchWinner,
   propagateBracketSeedsFromChildWinners,
   recomputeClassTournamentSlices,
+  refreshRoundOneBracketSeedsFromGroupPlacements,
   assignMatchToTable,
   clearMatchTableAssignment,
   releaseTableForFinishedOrClearedMatch,
@@ -1443,6 +1444,7 @@ export class CommandRunner {
     if (bracketMatches.length === 0) {
       return;
     }
+    refreshRoundOneBracketSeedsFromGroupPlacements(tournament, bracketMatches, classId);
     // Winners must be recomputed from player rows *before* feeding them into the next round; otherwise
     // a cleared match still leaves stale `bm.winner` on children and `propagate` copies wrong seeds upward.
     settleBracketWinnersIn(tournament, bracketMatches, classId);

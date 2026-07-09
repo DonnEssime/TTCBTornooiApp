@@ -839,9 +839,16 @@ export interface BracketMatch {
   id: string;
   seedA?: string;
   seedB?: string;
+  seedSourceA?: BracketSeedSource;
+  seedSourceB?: BracketSeedSource;
   winner?: string;
   round: number;
 }
+
+export type BracketSeedSource = {
+  groupId: string;
+  place: number;
+};
 
 /**
  * Internal {@link BracketMatch.winner} value when both sides are empty / BYE (no real {@link PlayerId}).
@@ -1584,7 +1591,7 @@ export function findGroupForPlayer(
 }
 
 function trackPairsRecord(tournament: Tournament, classId: string | undefined): Record<string, CompetitionPair> {
-  return classId ? tournament.classTournaments[classId]?.pairs ?? {} : tournament.pairs ?? {};
+  return classId ? tournament.classTournaments?.[classId]?.pairs ?? {} : tournament.pairs ?? {};
 }
 
 export function findGroupForPairId(
@@ -1703,6 +1710,33 @@ export function bracketSeedsMatchSides(
     ...(a.pairId ? { pairA: a.pairId } : {}),
     ...(b.pairId ? { pairB: b.pairId } : {}),
   };
+}
+
+function bracketSeedSourceForParticipant(
+  tournament: Tournament,
+  participantId: PlayerId | undefined,
+  classId: string | undefined,
+): BracketSeedSource | undefined {
+  if (!participantId || participantId === 'BYE' || isBracketLayoutDummyPid(participantId)) {
+    return undefined;
+  }
+  const g = findGroupForParticipant(tournament, participantId, classId);
+  if (!g) return undefined;
+  const rows = groupStandingsRowsForBracket(tournament, g, classId);
+  const idx = rows.findIndex((r) => r.pid === participantId);
+  if (idx < 0) return undefined;
+  return { groupId: g.id, place: idx + 1 };
+}
+
+function resolveBracketSeedSourceParticipant(
+  tournament: Tournament,
+  source: BracketSeedSource | undefined,
+  classId: string | undefined,
+): PlayerId | undefined {
+  if (!source) return undefined;
+  const group = groupRecordForBracketScope(tournament, classId)[source.groupId];
+  if (!group) return undefined;
+  return groupStandingsRowsForBracket(tournament, group, classId)[source.place - 1]?.pid;
 }
 
 function bracketSeedHasForfeit(
@@ -3933,6 +3967,14 @@ export function generateBracket(
     heuristicBipartitionLeafOrder || cropClosedFormLeafOrder
       ? participants
       : seedPositions(slotCount).map((seedIndex) => participants[seedIndex - 1]!);
+  const seededSources =
+    tournament === undefined
+      ? seeded.map(() => undefined)
+      : heuristicBipartitionLeafOrder || cropClosedFormLeafOrder
+        ? participants.map((pid) => bracketSeedSourceForParticipant(tournament, pid, opts.classId))
+        : seedPositions(slotCount).map((seedIndex) =>
+            bracketSeedSourceForParticipant(tournament, participants[seedIndex - 1], opts.classId),
+          );
 
   const matches: BracketMatch[] = [];
   let idCounter = 1;
@@ -3940,6 +3982,8 @@ export function generateBracket(
   for (let i = 0; i < seeded.length; i += 2) {
     const rawA = seeded[i];
     const rawB = seeded[i + 1];
+    const sourceA = seededSources[i];
+    const sourceB = seededSources[i + 1];
     const slotPid = (raw: string | undefined): string | undefined => {
       if (raw === undefined || raw === 'BYE' || isBracketLayoutDummyPid(raw)) return undefined;
       return raw;
@@ -3950,6 +3994,8 @@ export function generateBracket(
       id: `m${idCounter++}`,
       seedA: normA,
       seedB: normB,
+      ...(sourceA ? { seedSourceA: sourceA } : {}),
+      ...(sourceB ? { seedSourceB: sourceB } : {}),
       round: 1,
       winner:
         !normA && !normB
@@ -4448,10 +4494,28 @@ export function propagateBracketSeedsFromChildWinners(bracketMatches: BracketMat
       if (!p) continue;
       if (left) {
         p.seedA = bracketWinnerToNextRoundSeed(left.winner);
+        delete p.seedSourceA;
       }
       if (right) {
         p.seedB = bracketWinnerToNextRoundSeed(right.winner);
+        delete p.seedSourceB;
       }
+    }
+  }
+}
+
+export function refreshRoundOneBracketSeedsFromGroupPlacements(
+  tournament: Tournament,
+  bracketMatches: BracketMatch[],
+  classId?: string,
+): void {
+  for (const bm of bracketMatches) {
+    if (bracketMatchRound(bm) !== 1) continue;
+    if (bm.seedSourceA) {
+      bm.seedA = resolveBracketSeedSourceParticipant(tournament, bm.seedSourceA, classId);
+    }
+    if (bm.seedSourceB) {
+      bm.seedB = resolveBracketSeedSourceParticipant(tournament, bm.seedSourceB, classId);
     }
   }
 }
