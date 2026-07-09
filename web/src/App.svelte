@@ -963,6 +963,11 @@
     movePlayerToGroup(pid, nextGroupId, classId);
   }
 
+  function canChangePlayerGroupInTrack(pid: string, classId?: string): boolean {
+    const track = getCompetitionTrack(tournament, classId);
+    return Object.keys(track.groups).length > 0 && canDragPlayerBetweenGroups(pid, classId);
+  }
+
   function canDragPlayerBetweenGroups(pid: string, classId?: string): boolean {
     const track = getCompetitionTrack(tournament, classId);
     if (track.bracketMatches.length > 0) return false;
@@ -5373,6 +5378,7 @@
       {miscEnabled}
       {miscFieldLabel}
       onUpdatePlayer={commitPlayerUpdateFromModal}
+      canSetGroupId={canChangePlayerGroupInTrack}
       onSetGroupId={setActivePlayerGroupFromModal}
       onClose={closePlayerHistoryModal}
     />

@@ -29,6 +29,7 @@
     miscEnabled = false,
     miscFieldLabel = '',
     onUpdatePlayer,
+    canSetGroupId,
     onSetGroupId,
     onClose,
   }: {
@@ -39,6 +40,7 @@
     miscEnabled?: boolean;
     miscFieldLabel?: string;
     onUpdatePlayer: (updates: { name?: string; handicap?: number; misc?: string }) => void;
+    canSetGroupId: (playerId: string, classId?: string) => boolean;
     onSetGroupId: (groupId: string | null, classId?: string) => void;
     onClose: () => void;
   } = $props();
@@ -291,6 +293,10 @@
     const v = (e.currentTarget as HTMLSelectElement | null)?.value ?? '';
     onSetGroupId(v ? v : null, track.classId);
   }
+
+  function groupSelectDisabled(track: PlayerMatchHistoryTrackSection): boolean {
+    return !canSetGroupId(playerId, track.classId);
+  }
 </script>
 
 <div class="modal-root player-history-modal-root">
@@ -386,6 +392,7 @@
             class="player-history-group-select"
             aria-label={msgText('ui.players.groupSubtitle')}
             value={selectedGroupIdForTrack(track)}
+            disabled={groupSelectDisabled(track)}
             onchange={(e) => onGroupSelectChange(track, e)}
           >
             <option value=""><Msg key="ui.players.noGroupOption" /></option>
