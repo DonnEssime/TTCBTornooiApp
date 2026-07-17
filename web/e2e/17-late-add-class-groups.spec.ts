@@ -26,7 +26,12 @@ test.describe('17 late-add class with groups', () => {
 
     await createClassGroupsByPlayerCount(page, 'Veteran', 4);
     await addPlayer(page, 'Latecomer');
-    await setPlayerClassFlag(page, 'Latecomer', 'Veteran', true);
+
+    const { tournament: afterAdd } = await readBackend(page);
+    const vetIdAfterAdd = afterAdd.classDefinitions.find((d) => d.name === 'Veteran')!.id;
+    const latecomerIdAfterAdd = Object.entries(afterAdd.players).find(([, p]) => p.name === 'Latecomer')?.[0];
+    expect(latecomerIdAfterAdd).toBeDefined();
+    expect(afterAdd.playerClassFlags[latecomerIdAfterAdd!]![vetIdAfterAdd]).toBe(true);
 
     const { tournament: beforeAssign } = await readBackend(page);
     const vetId = beforeAssign.classDefinitions.find((d) => d.name === 'Veteran')!.id;

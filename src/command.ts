@@ -373,6 +373,70 @@ function deletePlayerScheduledGroupMatches(tournament: Tournament, playerId: str
   tournament.tableAssignments = tournament.tableAssignments.filter((a) => !set.has(a.matchId));
 }
 
+export type CommandLogEntry = {
+  id: string;
+  type: string;
+  payload?: unknown;
+};
+
+/** Latest active `CreatePlayer` command id for a player (any command id convention). */
+export function findCreatePlayerCommandId(
+  log: ReadonlyArray<CommandLogEntry>,
+  playerId: string,
+): string | undefined {
+  for (const cmd of log) {
+    if (cmd.type !== 'CreatePlayer') continue;
+    const p = cmd.payload as { playerId?: string } | undefined;
+    if (p?.playerId === playerId) return cmd.id;
+  }
+  return undefined;
+}
+
+/**
+ * Dependency list for appending one player to global seedings.
+ * Chains from `lastSeedingCommandId` when present so replay does not require `cmd-{playerId}` ids.
+ */
+export function seedingDepsForAddedPlayer(
+  log: ReadonlyArray<CommandLogEntry>,
+  existingPlayerOrder: ReadonlyArray<string>,
+  newPlayerId: string,
+  lastSeedingCommandId: string,
+): string[] {
+  const deps = new Set<string>();
+  deps.add(findCreatePlayerCommandId(log, newPlayerId) ?? `cmd-${newPlayerId}`);
+  if (lastSeedingCommandId) {
+    deps.add(lastSeedingCommandId);
+  } else {
+    for (const pid of existingPlayerOrder) {
+      const createId = findCreatePlayerCommandId(log, pid);
+      if (createId) deps.add(createId);
+    }
+  }
+  return [...deps];
+}
+
+/** Like {@link seedingDepsForAddedPlayer} for debug-fill / batch adds. */
+export function seedingDepsForBatchAddedPlayers(
+  log: ReadonlyArray<CommandLogEntry>,
+  existingPlayerOrder: ReadonlyArray<string>,
+  newPlayerIds: ReadonlyArray<string>,
+  lastSeedingCommandId: string,
+): string[] {
+  const deps = new Set<string>();
+  for (const pid of newPlayerIds) {
+    deps.add(findCreatePlayerCommandId(log, pid) ?? `cmd-${pid}`);
+  }
+  if (lastSeedingCommandId) {
+    deps.add(lastSeedingCommandId);
+  } else {
+    for (const pid of existingPlayerOrder) {
+      const createId = findCreatePlayerCommandId(log, pid);
+      if (createId) deps.add(createId);
+    }
+  }
+  return [...deps];
+}
+
 function dependsReach(cmd: Command, ancestorId: string, byId: Map<string, Command>): boolean {
   const stack = [...cmd.dependsOn];
   const seen = new Set<string>();

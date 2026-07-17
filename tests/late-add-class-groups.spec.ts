@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CommandRunner } from '../src/command';
+import { CommandRunner, seedingDepsForAddedPlayer } from '../src/command';
 import { TournamentController, tournamentControllerFromCommandLog } from '../src/controller';
 import {
   bracketMatchRound,
@@ -240,11 +240,13 @@ describe('late-add class with groups', () => {
     ).toEqual({ success: true });
 
     expect(c.createPlayer('p21', 'Latecomer', 0, '', 'cmd-p21')).toEqual({ success: true });
-    expect(c.setSeedings([...Array.from({ length: 20 }, (_, i) => `p${i + 1}`), 'p21'], [], 'cmd-seed-p21')).toEqual({
-      success: true,
-    });
+    const playerOrder = Array.from({ length: 20 }, (_, i) => `p${i + 1}`);
+    const seedDeps = seedingDepsForAddedPlayer(c.getCommandLog(), playerOrder, 'p21', 'seed');
     expect(
-      c.setPlayerClassFlags('p21', { vet: true }, ['cmd-p21'], 'cmd-pcf-p21-vet'),
+      c.setSeedings([...playerOrder, 'p21'], seedDeps, 'cmd-seed-p21'),
+    ).toEqual({ success: true });
+    expect(
+      c.setPlayerClassFlags('p21', { vet: true }, ['cmd-p21', 'cmd-seed-p21'], 'cmd-pcf-p21-vet'),
     ).toEqual({ success: true });
 
     const vetGroupsAfterCreate = c.getTournament().classTournaments.vet!.groups;

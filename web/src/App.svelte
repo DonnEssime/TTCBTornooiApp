@@ -66,7 +66,9 @@
     trackGroupMatches,
     classTrackHasGeneratedBracket,
     tournamentUsesClassTabs,
-    firstNonCompletedClassId,
+    preferredClassIdForNewPlayer,
+    seedingDepsForAddedPlayer,
+    seedingDepsForBatchAddedPlayers,
     MAIN_TRACK_KEY,
     isDoublesTrack,
     isShuffleDoublesTrack,
@@ -169,6 +171,8 @@
     playerOrder: string[];
     /** Latest `SetSeedings` command id (for `generateBracket` dependencies). */
     lastSeedingCommandId: string;
+    /** When set, new players are auto-assigned to this class (late-added class). */
+    lastAddedClassId?: string;
     nav: SessionNav;
     /** Draft rows for “Competition classes” (applied via `SetTournamentClasses`). */
     classEditorRows: Array<{ id: string; name: string }>;
@@ -1849,11 +1853,17 @@
         addedIds.push(id);
       }
       const newOrder = [...s.playerOrder, ...addedIds];
-      const seedDeps = newOrder.map((pid) => `cmd-${pid}`);
+      const log = c.getCommandLog();
+      const seedDeps = seedingDepsForBatchAddedPlayers(
+        log,
+        s.playerOrder,
+        addedIds,
+        s.lastSeedingCommandId,
+      );
       const seedCmdId = `cmd-seed-${crypto.randomUUID().replaceAll('-', '').slice(0, 14)}`;
       const rSeed = c.setSeedings(newOrder, seedDeps, seedCmdId);
       if (!rSeed.success) {
-        showError(rSeed.reason ?? 'Could not update seedings after debug fill');
+        showCommandError(rSeed, 'ui.fallback.stoppedAfterPlayers', { n: String(addedIds.length) });
         return;
       }
       patchActiveSession({ playerOrder: newOrder, lastSeedingCommandId: seedCmdId });
@@ -2118,7 +2128,7 @@
 
   function deriveLabel(t: Tournament, playerOrder: string[]): string {
     if (playerOrder.length > 0) {
-      const names = playerOrder
+      const names = playerOrde
         .map((id) => t.players[id]?.name)
         .filter(Boolean) as string[];
       if (names.length <= 2) return names.join(' · ') || 'Tournament';
@@ -2765,23 +2775,29 @@
     }
     const s = s0;
     const newOrder = [...s.playerOrder, id];
-    const seedDeps = newOrder.map((pid) => `cmd-${pid}`);
+    const log = c.getCommandLog();
+    const seedDeps = seedingDepsForAddedPlayer(log, s.playerOrder, id, s.lastSeedingCommandId);
     const seedCmdId = `cmd-seed-${crypto.randomUUID().replaceAll('-', '').slice(0, 14)}`;
     const rSeed = c.setSeedings([...newOrder], seedDeps, seedCmdId);
     if (!rSeed.success) {
-      showError(rSeed.reason ?? 'Could not update seeding order');
+      showCommandError(rSeed, 'ui.fallback.addPlayer');
       pull();
       return;
     }
     patchActiveSession({ playerOrder: newOrder, lastSeedingCommandId: seedCmdId });
     const defs = c.getTournament().classDefinitions;
     if (defs.length > 0) {
-      const classId = firstNonCompletedClassId(c.getTournament());
+      const classId = preferredClassIdForNewPlayer(c.getTournament(), s.lastAddedClassId);
       if (classId) {
         const classCmdId = `cmd-pcf-${id}-${classId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 8)}`;
-        const rClass = c.setPlayerClassFlags(id, { [classId]: true }, [`cmd-${id}`], classCmdId);
+        const rClass = c.setPlayerClassFlags(
+          id,
+          { [classId]: true },
+          [`cmd-${id}`, seedCmdId],
+          classCmdId,
+        );
         if (!rClass.success) {
-          showError(rClass.reason ?? 'Could not assign competition class');
+          showCommandError(rClass, 'ui.fallback.addPlayer');
           pull();
           return;
         }
@@ -3579,7 +3595,10 @@
     const newDef = t?.classDefinitions.find((c) => !beforeIds.has(c.id));
     const newId = newDef?.id ?? t?.classDefinitions[t.classDefinitions.length - 1]?.id;
     if (newId) {
-      patchActiveSession({ nav: { kind: 'multi', screen: { classId: newId, inner: 'groups' } } });
+      patchActiveSession({
+        lastAddedClassId: newId,
+        nav: { kind: 'multi', screen: { classId: newId, inner: 'groups' } },
+      });
     }
     pull();
     cancelAddClassModal();

@@ -1,23 +1,42 @@
 import { describe, it, expect } from 'vitest';
+import { seedingDepsForAddedPlayer } from '../src/command';
 import { TournamentController } from '../src/controller';
 import {
   firstNonCompletedClassId,
   isClassTrackFullyComplete,
+  preferredClassIdForNewPlayer,
 } from '../src/competition-track';
 
-/** Mirrors App.svelte addPlayer: create, seed, assign first non-completed class. */
+/** Mirrors App.svelte addPlayer: create, seed, assign preferred class. */
 function addPlayerLikeUi(
   c: TournamentController,
   playerId: string,
   name: string,
+  options: { lastSeedingCommandId?: string; lastAddedClassId?: string; playerOrder?: string[] } = {},
 ): void {
+  const playerOrder = options.playerOrder ?? c.getTournament().seedings;
+  const lastSeedingCommandId =
+    options.lastSeedingCommandId ??
+    [...c.getCommandLog()].reverse().find((cmd) => cmd.type === 'SetSeedings')?.id ??
+    '';
+
   expect(c.createPlayer(playerId, name, 0, '', `cmd-${playerId}`)).toEqual({ success: true });
-  expect(c.setSeedings([playerId], [`cmd-${playerId}`], `cmd-seed-${playerId}`)).toEqual({ success: true });
+  const log = c.getCommandLog();
+  const newOrder = [...playerOrder, playerId];
+  const seedDeps = seedingDepsForAddedPlayer(log, playerOrder, playerId, lastSeedingCommandId);
+  const seedCmdId = `cmd-seed-${playerId}`;
+  expect(c.setSeedings(newOrder, seedDeps, seedCmdId)).toEqual({ success: true });
+
   const t = c.getTournament();
-  const classId = firstNonCompletedClassId(t);
+  const classId = preferredClassIdForNewPlayer(t, options.lastAddedClassId);
   if (classId) {
     expect(
-      c.setPlayerClassFlags(playerId, { [classId]: true }, [`cmd-${playerId}`], `cmd-pcf-${playerId}-${classId}`),
+      c.setPlayerClassFlags(
+        playerId,
+        { [classId]: true },
+        [`cmd-${playerId}`, seedCmdId],
+        `cmd-pcf-${playerId}-${classId}`,
+      ),
     ).toEqual({ success: true });
   }
 }
@@ -103,10 +122,78 @@ describe('AddTournamentClass then assign existing players', () => {
     expect(isClassTrackFullyComplete(c.getTournament(), 'sen')).toBe(false);
     expect(firstNonCompletedClassId(c.getTournament())).toBe('sen');
 
-    addPlayerLikeUi(c, 'p-new', 'Alice');
+    addPlayerLikeUi(c, 'p-new', 'Alice', {
+      lastSeedingCommandId: 'cmd-seed-all',
+      playerOrder: ['j1', 'j2', 's1', 's2'],
+    });
     const t = c.getTournament();
     expect(t.playerClassFlags['p-new']).toEqual({ jun: false, sen: true });
     expect(t.classTournaments.sen?.seedings).toContain('p-new');
+  });
+
+  it('assigns a new player to a late-added class when earlier classes are finished', () => {
+    const c = new TournamentController();
+    expect(
+      c.setTournamentClasses(
+        [
+          { id: 'jun', name: 'Junior' },
+          { id: 'sen', name: 'Senior' },
+        ],
+        [],
+        'cmd-classes-init',
+      ),
+    ).toEqual({ success: true });
+
+    for (const [id, name, cls] of [
+      ['j1', 'J1', 'jun'],
+      ['j2', 'J2', 'jun'],
+      ['s1', 'S1', 'sen'],
+      ['s2', 'S2', 'sen'],
+    ] as const) {
+      expect(c.createPlayer(id, name, 0, '', `cmd-${id}`)).toEqual({ success: true });
+      expect(
+        c.setPlayerClassFlags(id, { [cls]: true }, [`cmd-${id}`], `cmd-pcf-${id}-${cls}`),
+      ).toEqual({ success: true });
+    }
+    expect(
+      c.setSeedings(['j1', 'j2', 's1', 's2'], ['cmd-j1', 'cmd-j2', 'cmd-s1', 'cmd-s2'], 'cmd-seed-all'),
+    ).toEqual({ success: true });
+
+    for (const [cls, pids] of [
+      ['jun', ['j1', 'j2']],
+      ['sen', ['s1', 's2']],
+    ] as const) {
+      expect(
+        c.setClassGroups(cls, [{ id: '1', playerIds: [...pids] }], ['cmd-seed-all'], `cmd-${cls}-groups`),
+      ).toEqual({ success: true });
+      const match = Object.values(c.getTournament().matches).find((m) => m.classId === cls)!;
+      expect(
+        c.enterScore(
+          match.id,
+          [
+            { playerA: 11, playerB: 5 },
+            { playerA: 11, playerB: 7 },
+            { playerA: 11, playerB: 3 },
+          ],
+          [],
+          `cmd-${cls}-score`,
+        ),
+      ).toEqual({ success: true });
+    }
+    expect(isClassTrackFullyComplete(c.getTournament(), 'jun')).toBe(true);
+    expect(isClassTrackFullyComplete(c.getTournament(), 'sen')).toBe(true);
+
+    expect(c.addTournamentClass('Veteran', [], 'cmd-add-vet', 'vet')).toEqual({ success: true });
+
+    addPlayerLikeUi(c, 'p-new', 'Alice', {
+      lastSeedingCommandId: 'cmd-seed-all',
+      lastAddedClassId: 'vet',
+      playerOrder: ['j1', 'j2', 's1', 's2'],
+    });
+
+    const t = c.getTournament();
+    expect(t.playerClassFlags['p-new']).toEqual({ jun: false, sen: false, vet: true });
+    expect(t.classTournaments.vet?.seedings).toEqual(['p-new']);
   });
 
   it('opts an original player into a newly added class (UI dependency pattern)', () => {

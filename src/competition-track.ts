@@ -661,6 +661,25 @@ export function firstNonCompletedClassId(t: Tournament): string | undefined {
   return t.classDefinitions[0]!.id;
 }
 
+/**
+ * Class to auto-assign when adding a player in multi-class mode.
+ * Prefers a recently added class (still open for entries) over older unfinished tracks.
+ */
+export function preferredClassIdForNewPlayer(
+  t: Tournament,
+  lastAddedClassId?: string,
+): string | undefined {
+  if (t.classDefinitions.length === 0) return undefined;
+  if (
+    lastAddedClassId &&
+    t.classDefinitions.some((d) => d.id === lastAddedClassId) &&
+    !classTrackHasGeneratedBracket(t, lastAddedClassId)
+  ) {
+    return lastAddedClassId;
+  }
+  return firstNonCompletedClassId(t);
+}
+
 /** Install a knockout bracket on the given track and clear round locks on that track. */
 export function applyBracketToTrack(
   tournament: Tournament,
