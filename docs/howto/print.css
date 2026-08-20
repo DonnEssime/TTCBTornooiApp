@@ -1,0 +1,185 @@
+/* Print / screen styles for the Dutch how-to PDF */
+:root {
+  --ink: #1a2332;
+  --muted: #5a6578;
+  --line: #d8dee8;
+  --accent: #0b6e4f;
+  --bg: #f7f8fb;
+  --card: #ffffff;
+  --font: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 11pt;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background: var(--bg);
+  font-family: var(--font);
+  line-height: 1.45;
+}
+
+.wrap {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 3rem;
+}
+
+header.doc-header {
+  border-bottom: 3px solid var(--accent);
+  padding-bottom: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+header.doc-header .brand {
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 700;
+  margin: 0 0 0.35rem;
+}
+
+header.doc-header h1 {
+  margin: 0 0 0.5rem;
+  font-size: 1.65rem;
+  line-height: 1.2;
+}
+
+header.doc-header .lead {
+  margin: 0;
+  color: var(--muted);
+  font-size: 1rem;
+}
+
+nav.toc {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 1.75rem;
+}
+
+nav.toc h2 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+nav.toc ol {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+nav.toc a {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+nav.toc a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+section {
+  margin-bottom: 1.75rem;
+  page-break-inside: avoid;
+}
+
+section h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.2rem;
+  color: var(--accent);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.25rem;
+}
+
+section p,
+section li {
+  color: var(--ink);
+}
+
+section p {
+  margin: 0.4rem 0;
+}
+
+section ul,
+section ol {
+  margin: 0.4rem 0 0.6rem;
+  padding-left: 1.25rem;
+}
+
+.figure {
+  margin: 0.75rem 0 0.25rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.figure figcaption {
+  padding: 0.45rem 0.7rem 0.6rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+}
+
+.tip {
+  background: #eef7f3;
+  border-left: 4px solid var(--accent);
+  padding: 0.55rem 0.75rem;
+  margin: 0.65rem 0;
+  border-radius: 0 6px 6px 0;
+  font-size: 0.92rem;
+}
+
+.tip strong {
+  color: var(--accent);
+}
+
+footer.doc-footer {
+  margin-top: 2rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+@media print {
+  body {
+    background: #fff;
+  }
+
+  .wrap {
+    max-width: none;
+    padding: 0;
+  }
+
+  nav.toc {
+    break-after: page;
+  }
+
+  section {
+    break-inside: avoid;
+  }
+
+  .figure {
+    break-inside: avoid;
+  }
+
+  a {
+    text-decoration: none;
+    color: inherit;
+  }
+}

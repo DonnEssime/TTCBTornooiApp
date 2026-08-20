@@ -18,7 +18,8 @@
     "lint": "echo 'no lint configured yet'",
     "dev:web": "npm run dev -w web",
     "build:web": "npm run build -w web",
-    "test:e2e": "npm run test:e2e -w web"
+    "test:e2e": "npm run test:e2e -w web",
+    "howto:pdf": "npm run howto:pdf -w web"
   },
   "keywords": [],
   "author": "",

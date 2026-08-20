@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="nl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TTCB Tornooiapp — handleiding (groep + afvalling)</title>
+    <link rel="stylesheet" href="print.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="doc-header">
+        <p class="brand">TTCB · Tornooiapp</p>
+        <h1>Handleiding: groepsfase + afvalling</h1>
+        <p class="lead">
+          Korte, visuele gids voor een eenvoudig enkeltoernooi: instellingen, spelers, groepen,
+          scores, overzicht, spelerdetails en een afvallingsbracket met gekende formule.
+          Screenshots zijn gemaakt met de Nederlandse (NL) taalinstelling.
+        </p>
+      </header>
+
+      <nav class="toc" aria-label="Inhoud">
+        <h2>Inhoud</h2>
+        <ol>
+          <li><a href="#starten">Starten en taal</a></li>
+          <li><a href="#aanmaken">Tornooi aanmaken</a></li>
+          <li><a href="#spelers">Spelers toevoegen</a></li>
+          <li><a href="#groepen">Groepsfase maken</a></li>
+          <li><a href="#scores">Wedstrijdscore invoeren</a></li>
+          <li><a href="#overzicht">Overzicht en tafels</a></li>
+          <li><a href="#details">Spelerdetails corrigeren</a></li>
+          <li><a href="#afvalling">Afvallingsbracket</a></li>
+          <li><a href="#extra">Handige extras</a></li>
+        </ol>
+      </nav>
+
+      <section id="starten">
+        <h2>1. Starten en taal</h2>
+        <p>
+          Open de app en kies rechtsboven <strong>NL</strong>. De knoppen en labels verschijnen
+          dan in het Nederlands (bijv. Instellingen, Spelers, Groepen, Overzicht).
+        </p>
+        <figure class="figure">
+          <img src="images/01-locale-nl.png" alt="App-header met NL geselecteerd" />
+          <figcaption>Taalkeuze NL in de header.</figcaption>
+        </figure>
+      </section>
+
+      <section id="aanmaken">
+        <h2>2. Tornooi aanmaken</h2>
+        <p>Ga naar <strong>Instellingen</strong> en vul het wizardformulier in:</p>
+        <ul>
+          <li>Geef het tornooi een duidelijke naam.</li>
+          <li>Stel het aantal tafels in (standaard 4).</li>
+          <li>
+            Vink <strong>Handicap</strong> aan. Gebruik bereik <strong>0–9</strong> en maximale
+            startvoorsprong <strong>7</strong> (productstandaard). Nieuwe spelers starten met
+            handicap 0 tot je zelf een waarde invult.
+          </li>
+          <li>Laat <strong>Debugtools</strong> uit — die zijn alleen voor ontwikkelaars.</li>
+          <li>Klik op <strong>Tornooi aanmaken</strong>.</li>
+        </ul>
+        <figure class="figure">
+          <img src="images/02-wizard-config.png" alt="Instellingenwizard met handicap en debug uit" />
+          <figcaption>Wizard met handicap 0–9 / max. 7 en debug uitgeschakeld.</figcaption>
+        </figure>
+      </section>
+
+      <section id="spelers">
+        <h2>3. Spelers toevoegen</h2>
+        <p>
+          Open het tabblad <strong>Spelers</strong>. Vul naam en handicap in en klik op toevoegen.
+          Herhaal tot iedereen erin staat (in dit voorbeeld 16 spelers).
+        </p>
+        <div class="tip">
+          <strong>Tip:</strong> De volgorde in de spelerslijst beïnvloedt de seeding bij groepen
+          en brackets. Zet sterkere spelers hoger als je dat wilt meenemen.
+        </div>
+        <figure class="figure">
+          <img src="images/03-add-player.png" alt="Formulier om een speler met handicap toe te voegen" />
+          <figcaption>Speler toevoegen met naam en handicap.</figcaption>
+        </figure>
+        <figure class="figure">
+          <img src="images/04-players-list.png" alt="Lijst met zestien aangemelde spelers" />
+          <figcaption>Volledige spelerslijst (16) met handicap in de labels.</figcaption>
+        </figure>
+      </section>
+
+      <section id="groepen">
+        <h2>4. Groepsfase maken</h2>
+        <p>
+          Ga naar <strong>Groepen</strong>. Kies hoeveel spelers per groep je wilt (hier 4) en
+          maak de groepen. Bij 16 spelers krijg je vier poules van vier — geschikt voor een
+          afvallingsbracket met <em>gekende formule</em>.
+        </p>
+        <figure class="figure">
+          <img src="images/05-groups-create.png" alt="Bediening om groepen te maken" />
+          <figcaption>Groepen aanmaken op basis van aantal spelers per groep.</figcaption>
+        </figure>
+        <figure class="figure">
+          <img src="images/06-group-matrix.png" alt="Groepsmatrix met round-robin cellen" />
+          <figcaption>Groepsmatrix: klik een cel om een onderlinge wedstrijd te scoren.</figcaption>
+        </figure>
+      </section>
+
+      <section id="scores">
+        <h2>5. Wedstrijdscore invoeren</h2>
+        <p>
+          Klik in de matrix op een openstaande wedstrijd. Vul de games in (meestal best-of-5 tot
+          11) en sla op. Ongeldige scores (bijv. 11–10 zonder deuce-regels) worden geweigerd.
+        </p>
+        <figure class="figure">
+          <img src="images/07-score-modal.png" alt="Scorevenster met games ingevuld" />
+          <figcaption>Scorevenster: games invoeren en opslaan.</figcaption>
+        </figure>
+      </section>
+
+      <section id="overzicht">
+        <h2>6. Overzicht en tafels</h2>
+        <p>
+          Op <strong>Overzicht</strong> zie je de klaarlijst en de tafels. Sleep een wedstrijd
+          uit de klaarlijst naar een vrije tafel om hem toe te wijzen. Zo houd je het speelveld
+          tijdens de dag overzichtelijk.
+        </p>
+        <figure class="figure">
+          <img src="images/08-overview-drag.png" alt="Overzicht met klaarlijst en tafels" />
+          <figcaption>Wedstrijd naar een tafel gesleept; drukke tafels zijn zichtbaar bezet.</figcaption>
+        </figure>
+      </section>
+
+      <section id="details">
+        <h2>7. Spelerdetails corrigeren</h2>
+        <p>
+          Klik op een spelersnaam om het detailvenster te openen. Corrigeer daar naam, handicap
+          of groepstoewijzing als er iets mis is gegaan bij het aanmelden of indelen.
+        </p>
+        <figure class="figure">
+          <img src="images/09-player-modal.png" alt="Spelerdetailvenster met naam, handicap en groep" />
+          <figcaption>Spelerdetails: naam, handicap en groep aanpassen.</figcaption>
+        </figure>
+      </section>
+
+      <section id="afvalling">
+        <h2>8. Afvallingsbracket</h2>
+        <p>
+          Als de groepsfase ver genoeg is (idealiter volledig gespeeld voor duidelijke
+          standen), open je <strong>Afvalling</strong> / de bracket-tab. Kies
+          <strong>Gekende formule</strong> en maak de bracket aan.
+        </p>
+        <figure class="figure">
+          <img src="images/10-bracket-options.png" alt="Bracketopties met gekende formule geselecteerd" />
+          <figcaption>Bracketopties: Gekende formule geselecteerd.</figcaption>
+        </figure>
+        <figure class="figure">
+          <img src="images/11-bracket-tree.png" alt="Ingevulde afvallingsbracket" />
+          <figcaption>Gegenereerde afvallingsboom; klik een speelbare slot om te scoren.</figcaption>
+        </figure>
+      </section>
+
+      <section id="extra">
+        <h2>9. Handige extras</h2>
+        <ul>
+          <li>
+            <strong>Ongedaan maken / opnieuw:</strong> foutieve stappen snel terugdraaien via
+            undo/redo in de UI.
+          </li>
+          <li>
+            <strong>Opslaan / exporteren:</strong> tornooien blijven lokaal bewaard; exporteer
+            het commandolog (JSONL) voor backup of elders openen.
+          </li>
+          <li>
+            <strong>PDF’s uit de app:</strong> tornooisamenvatting en matchbriefjes kun je
+            exporteren vanuit de app (los van deze handleiding).
+          </li>
+          <li>
+            <strong>Resultaten:</strong> na genoeg afvallingswedstrijden verschijnt de
+            eindstand onder Resultaten.
+          </li>
+          <li>
+            <strong>Brackettiming:</strong> je kunt een bracket eerder aanmaken op basis van
+            tussenstanden, maar volledige poules geven de meest stabiele seeding.
+          </li>
+        </ul>
+        <div class="tip">
+          <strong>Buiten deze korte gids:</strong> dubbels, competitieklassen, late toevoegingen
+          en heuristische brackets. Die volgen dezelfde schermen, maar met extra opties.
+        </div>
+      </section>
+
+      <footer class="doc-footer">
+        Screenshots opnieuw genereren: <code>npm run howto:pdf</code> · TTCB Tornooiapp
+      </footer>
+    </div>
+  </body>
+</html>

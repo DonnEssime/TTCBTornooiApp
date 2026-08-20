@@ -38,6 +38,7 @@ docs/         Design decisions and test notes
 
 ## Docs
 
+- [Handleiding (NL)](docs/howto/README.md) — groepsfase + afvalling (PDF: `docs/howto/TTCB-Tornooiapp-handleiding.pdf`; regenereer met `npm run howto:pdf`)
 - [DESIGN.md](docs/DESIGN.md) — architecture and product decisions
 - [features.md](docs/features.md) — larger planned features (roadmap)
 - [TEST_SPECIFICATION.md](docs/TEST_SPECIFICATION.md) — testing approach

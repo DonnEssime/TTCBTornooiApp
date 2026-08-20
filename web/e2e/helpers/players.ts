@@ -34,6 +34,19 @@ export async function debugFillPlayers(page: Page, count: number): Promise<void>
   await page.getByTestId('debug-fill-btn').click();
 }
 
+export async function closePlayerModal(page: Page): Promise<void> {
+  const root = page.locator('.player-history-modal-root');
+  if ((await root.count()) === 0) return;
+  // Prefer the dialog Close button; fall back to scrim (aria-label Close/Sluiten).
+  const dialogClose = root.locator('button.btn').filter({ hasText: /^(Close|Sluiten)$/ });
+  if (await dialogClose.count()) {
+    await dialogClose.first().click();
+  } else {
+    await page.getByRole('button', { name: /^(Close|Sluiten)$/ }).first().click();
+  }
+  await root.waitFor({ state: 'hidden' });
+}
+
 export async function assignPlayerToGroup(
   page: Page,
   playerName: string,
@@ -53,5 +66,5 @@ export async function assignPlayerToGroup(
     }
   }
   await select.selectOption(groupId);
-  await page.keyboard.press('Escape');
+  await closePlayerModal(page);
 }

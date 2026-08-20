@@ -69,10 +69,11 @@ Async: `window.__ttcTestListRecent()` for recent tournament list.
 
 ## Structure
 
-- `e2e/*.spec.ts` — test specs (01–16 by feature area)
+- `e2e/*.spec.ts` — test specs (01–20 by feature area)
 - `e2e/helpers/` — page objects and backend assertions
 - `e2e/fixtures/` — committed JSONL import fixtures
 - `e2e/scripts/build-fixtures.ts` — fixture generator
+- `e2e/scripts/capture-howto.spec.ts` — NL how-to screenshots + PDF (`npm run howto:pdf`)
 
 ## Debug tools policy
 

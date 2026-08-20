@@ -17,10 +17,30 @@ export async function setWizardTableCount(page: Page, count: number): Promise<vo
   await page.getByTestId('wizard-tables').fill(String(count));
 }
 
-export async function enableHandicap(page: Page, min = 0, max = 10): Promise<void> {
+export async function enableHandicap(
+  page: Page,
+  min = 0,
+  max = 9,
+  maxStartAdjustment?: number,
+): Promise<void> {
   await page.getByTestId('wizard-handicap').check();
-  await page.locator('.handicap-config-grid input').nth(0).fill(String(min));
-  await page.locator('.handicap-config-grid input').nth(1).fill(String(max));
+  const inputs = page.locator('.handicap-config-grid input');
+  await inputs.nth(0).fill(String(min));
+  await inputs.nth(1).fill(String(max));
+  if (maxStartAdjustment !== undefined) {
+    await inputs.nth(2).fill(String(maxStartAdjustment));
+  }
+}
+
+/** Create a tournament for docs/howto captures: handicap on, debug off. */
+export async function createHowtoTournament(
+  page: Page,
+  name = 'Demo Tornooi',
+): Promise<void> {
+  await page.getByTestId('wizard-name').fill(name);
+  await enableHandicap(page, 0, 9, 7);
+  await page.getByTestId('wizard-create').click();
+  await waitForTournamentTab(page, name);
 }
 
 export async function enableMisc(page: Page, label = 'Club'): Promise<void> {

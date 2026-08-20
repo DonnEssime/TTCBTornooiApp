@@ -16,7 +16,7 @@ export async function decrementTables(page: Page): Promise<void> {
 
 export async function dragReadyToTable(page: Page, tableIndex = 0): Promise<void> {
   await goToOverviewTab(page);
-  const ready = page.locator('.ov-ready-btn').first();
+  const ready = page.locator('.ov-ready-item[draggable="true"]').first();
   const table = page.locator('.ov-table-tile').nth(tableIndex);
   await ready.dragTo(table);
 }
