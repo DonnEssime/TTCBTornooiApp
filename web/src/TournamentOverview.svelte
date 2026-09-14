@@ -78,6 +78,8 @@
   let draggingSource = $state<DndSource | null>(null);
   let dragOverTableId = $state<string | null>(null);
   let dragOverReady = $state(false);
+  let readyListEl = $state<HTMLUListElement | null>(null);
+  let readyListScrollFrozen: number | null = null;
   type ReadyOrderingChoice = 'groupCompletionStaggered' | 'minWavesAvoidBackToBack';
   const READY_ORDERING_KEY = 'ttc.readyOrderingAlgorithm';
 
@@ -108,6 +110,7 @@
     draggingSource = null;
     dragOverTableId = null;
     dragOverReady = false;
+    readyListScrollFrozen = null;
   }
 
   type ReadyTableConstraint = {
@@ -167,10 +170,18 @@
     dt.effectAllowed = 'move';
     draggingMatchId = matchId;
     draggingSource = source;
+    readyListScrollFrozen = readyListEl?.scrollTop ?? 0;
   }
 
   function handleDragEnd(): void {
     resetDragState();
+  }
+
+  function handleReadyListScroll(): void {
+    if (readyListScrollFrozen == null || !readyListEl) return;
+    if (readyListEl.scrollTop !== readyListScrollFrozen) {
+      readyListEl.scrollTop = readyListScrollFrozen;
+    }
   }
 
   function handleTableDragOver(e: DragEvent, tableId: string): void {
@@ -760,7 +771,11 @@
       {#if readyAllDisplay.length === 0}
         <p class="muted small"><Msg key="ui.ov.nothingToHighlight" tag="p" class="muted small" /></p>
       {:else}
-        <ul class="ov-ready-list">
+        <ul
+          class="ov-ready-list"
+          bind:this={readyListEl}
+          onscroll={handleReadyListScroll}
+        >
           {#each readyAllDisplay as entry (entry.key)}
             {#if entry.kind === 'group'}
               {@const m = entry.match}
@@ -1501,6 +1516,10 @@
     margin: 0;
     padding: 0;
     list-style: none;
+    max-height: min(28rem, calc(100dvh - 16rem));
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   .ov-ready-list .ov-ready-item {
