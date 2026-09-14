@@ -627,12 +627,14 @@ export function aggregateGroupPhaseCounts(t: Tournament): GroupProgressSnapshot 
   }
   let total = 0;
   let done = 0;
+  let inProgress = 0;
   for (const tr of listCompetitionTracks(t)) {
     const c = groupPhaseCounts(trackDefinedGroupMatches(t, tr.classId, tr.groups));
     total += c.total;
     done += c.done;
+    inProgress += c.inProgress;
   }
-  return { total, done };
+  return { total, done, inProgress };
 }
 
 /** Group + bracket match progress for one class track. */
@@ -640,7 +642,7 @@ export function classTrackPhaseCounts(t: Tournament, classId: string): GroupProg
   const tr = getCompetitionTrack(t, classId);
   const gc = groupPhaseCounts(trackDefinedGroupMatches(t, classId, tr.groups));
   const bc = bracketPhaseCountsIncludingFutureRounds(tr.bracketMatches);
-  return { total: gc.total + bc.total, done: gc.done + bc.done };
+  return { total: gc.total + bc.total, done: gc.done + bc.done, inProgress: gc.inProgress };
 }
 
 /** True when every group and bracket match on the class track is finished (or no matches exist yet). */

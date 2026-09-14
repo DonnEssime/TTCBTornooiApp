@@ -285,7 +285,7 @@
     return matchNotesSegmentHasSlips(tournament, segment, getLocale());
   }
 
-  function groupProgressForMatch(t: Tournament, m: Match): { total: number; done: number } {
+  function groupProgressForMatch(t: Tournament, m: Match): { total: number; done: number; inProgress: number } {
     const classScope = m.classId ?? undefined;
     const gm = trackGroupMatches(t, classScope).filter((x) => x.groupId === m.groupId);
     return groupPhaseCounts(gm);
@@ -890,6 +890,12 @@
             aria-label={progressBarAria(aggregateGroupPhase.done, aggregateGroupPhase.total)}
           >
             <div class="ov-fill" style={`width: ${pct(aggregateGroupPhase.done, aggregateGroupPhase.total)}%`}></div>
+            {#if aggregateGroupPhase.inProgress > 0}
+              <div
+                class="ov-fill ov-fill-in-progress"
+                style={`width: ${pct(aggregateGroupPhase.inProgress, aggregateGroupPhase.total)}%`}
+              ></div>
+            {/if}
           </div>
         </button>
         {#if hasVisibleGroupSubItems}
@@ -926,6 +932,12 @@
                     aria-label={progressBarAria(c.done, c.total)}
                   >
                     <div class="ov-fill ov-fill-sub" style={`width: ${pct(c.done, c.total)}%`}></div>
+                    {#if c.inProgress > 0}
+                      <div
+                        class="ov-fill ov-fill-sub ov-fill-in-progress"
+                        style={`width: ${pct(c.inProgress, c.total)}%`}
+                      ></div>
+                    {/if}
                   </div>
                 </button>
               {/if}
@@ -1417,6 +1429,7 @@
   }
 
   .ov-track {
+    display: flex;
     height: 0.65rem;
     border-radius: 999px;
     background: #e2e8f0;
@@ -1428,14 +1441,18 @@
   }
 
   .ov-fill {
+    flex: 0 0 auto;
     height: 100%;
-    border-radius: 999px;
     background: linear-gradient(90deg, #0d9488, #14b8a6);
     transition: width 0.2s ease;
   }
 
   .ov-fill-bracket {
     background: linear-gradient(90deg, #475569, #64748b);
+  }
+
+  .ov-fill-in-progress {
+    background: linear-gradient(90deg, #94a3b8, #cbd5e1);
   }
 
   .ov-fill-sub {

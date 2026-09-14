@@ -154,7 +154,7 @@ describe('competition-track', () => {
     };
     const defined = trackDefinedGroupMatches(t, 'jun', t.classTournaments.jun!.groups);
     expect(defined.map((m) => m.id)).toEqual(['gm-jun-g1-p1-p2']);
-    expect(aggregateGroupPhaseCounts(t)).toEqual({ total: 1, done: 1 });
+    expect(aggregateGroupPhaseCounts(t)).toEqual({ total: 1, done: 1, inProgress: 0 });
   });
 
   it('aggregateGroupPhaseCounts sums both class tracks', () => {
@@ -188,6 +188,31 @@ describe('competition-track', () => {
         classId: 'sen',
       },
     };
-    expect(aggregateGroupPhaseCounts(t)).toEqual({ total: 2, done: 2 });
+    expect(aggregateGroupPhaseCounts(t)).toEqual({ total: 2, done: 2, inProgress: 0 });
+  });
+
+  it('aggregateGroupPhaseCounts includes in-progress matches', () => {
+    const t = createTournament();
+    t.groups = { g1: { id: 'g1', playerIds: ['p1', 'p2', 'p3', 'p4'] } };
+    t.matches = {
+      'gm-g1-p1-p2': {
+        id: 'gm-g1-p1-p2',
+        playerA: 'p1',
+        playerB: 'p2',
+        scores: [{ a: 11, b: 0 }],
+        status: 'finished',
+        winner: 'p1',
+        groupId: 'g1',
+      },
+      'gm-g1-p3-p4': {
+        id: 'gm-g1-p3-p4',
+        playerA: 'p3',
+        playerB: 'p4',
+        scores: [],
+        status: 'in-progress',
+        groupId: 'g1',
+      },
+    };
+    expect(aggregateGroupPhaseCounts(t)).toEqual({ total: 2, done: 1, inProgress: 1 });
   });
 });

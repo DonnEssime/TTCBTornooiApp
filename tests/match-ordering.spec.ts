@@ -4,9 +4,66 @@ import { roundRobinMatchRounds } from '../src/model';
 import {
   estimateScheduleWaves,
   groupCompletedRoundCount,
+  groupPhaseCounts,
   groupRoundStaggeredOrder,
   minWavesAvoidBackToBackOrder,
 } from '../src/match-ordering';
+
+describe('groupPhaseCounts', () => {
+  it('counts finished and in-progress matches separately', () => {
+    const matches: Match[] = [
+      {
+        id: 'm1',
+        playerA: 'a',
+        playerB: 'b',
+        scores: [{ a: 11, b: 0 }],
+        status: 'finished',
+        winner: 'a',
+        groupId: 'g1',
+      },
+      {
+        id: 'm2',
+        playerA: 'c',
+        playerB: 'd',
+        scores: [],
+        status: 'in-progress',
+        groupId: 'g1',
+      },
+      {
+        id: 'm3',
+        playerA: 'e',
+        playerB: 'f',
+        scores: [],
+        status: 'scheduled',
+        groupId: 'g1',
+      },
+      {
+        id: 'm4',
+        playerA: 'g',
+        playerB: 'h',
+        scores: [],
+        status: 'in-progress',
+        groupId: 'g1',
+      },
+    ];
+    expect(groupPhaseCounts(matches)).toEqual({ total: 4, done: 1, inProgress: 2 });
+  });
+
+  it('treats finished-without-winner as not done and not in-progress', () => {
+    expect(
+      groupPhaseCounts([
+        {
+          id: 'm1',
+          playerA: 'a',
+          playerB: 'b',
+          scores: [],
+          status: 'finished',
+          groupId: 'g1',
+        },
+      ]),
+    ).toEqual({ total: 1, done: 0, inProgress: 0 });
+  });
+});
 
 function mkMatch(
   id: string,

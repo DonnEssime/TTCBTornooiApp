@@ -17,6 +17,8 @@ export type ReadyMatchOrderingAlgorithm = 'groupCompletionStaggered';
 export type GroupProgressSnapshot = {
   total: number;
   done: number;
+  /** Matches currently assigned to a table (`status === 'in-progress'`). */
+  inProgress: number;
 };
 
 export type ReadyMatchOrderingContext = {
@@ -45,11 +47,13 @@ export function isGroupMatchFinished(m: Match): boolean {
 export function groupPhaseCounts(matches: Match[]): GroupProgressSnapshot {
   let total = 0;
   let done = 0;
+  let inProgress = 0;
   for (const m of matches) {
     total++;
     if (isGroupMatchFinished(m)) done++;
+    else if (m.status === 'in-progress') inProgress++;
   }
-  return { total, done };
+  return { total, done, inProgress };
 }
 
 export function groupDefForMatch(t: Tournament, m: Match): GroupDefinition | undefined {
