@@ -2128,7 +2128,7 @@
 
   function deriveLabel(t: Tournament, playerOrder: string[]): string {
     if (playerOrder.length > 0) {
-      const names = playerOrde
+      const names = playerOrder
         .map((id) => t.players[id]?.name)
         .filter(Boolean) as string[];
       if (names.length <= 2) return names.join(' · ') || 'Tournament';
