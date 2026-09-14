@@ -125,6 +125,8 @@ export interface ClassTournamentSlice {
   competitionFormat?: TrackFormat;
   /** Fixed random partner pairings for this class track. */
   pairs?: Record<string, CompetitionPair>;
+  /** When false, do not materialize a third-place match. Omitted/true = enabled. */
+  thirdPlaceMatchEnabled?: boolean;
 }
 
 export type ForfeitGroupMode = 'auto-win' | 'not-played';
@@ -270,6 +272,8 @@ export interface Tournament {
   forfeitResults: ForfeitResults;
   /** Bracket rounds for which score edits on mapped player matches are blocked (v1: bracket player matches only). */
   lockedBracketRounds: number[];
+  /** When false, do not materialize a third-place match. Omitted/true = enabled. */
+  thirdPlaceMatchEnabled?: boolean;
   /** When length ≥ 2, UI uses one tab row per class; bracket generation is per-class (see class slices). */
   classDefinitions: TournamentClassDefinition[];
   /** Per player, per class id — true means the player competes in that class track. */
@@ -843,6 +847,25 @@ export interface BracketMatch {
   seedSourceB?: BracketSeedSource;
   winner?: string;
   round: number;
+  /** Consolation slot for 3rd/4th; omitted on main-draw tree matches. */
+  role?: 'thirdPlace';
+}
+
+/** Sentinel round for the third-place match so it stays outside main-draw tree geometry. */
+export const THIRD_PLACE_BRACKET_ROUND = 0;
+/** Stable slot id for the third-place match (`match-tp` / `match-<class>-tp`). */
+export const THIRD_PLACE_BRACKET_MATCH_ID = 'tp';
+
+export function isThirdPlaceBracketMatch(m: BracketMatch): boolean {
+  return m.role === 'thirdPlace';
+}
+
+export function findThirdPlaceBracketMatch(bracketMatches: BracketMatch[]): BracketMatch | undefined {
+  return bracketMatches.find(isThirdPlaceBracketMatch);
+}
+
+export function mainDrawBracketMatches(bracketMatches: BracketMatch[]): BracketMatch[] {
+  return bracketMatches.filter((m) => !isThirdPlaceBracketMatch(m));
 }
 
 export type BracketSeedSource = {
@@ -933,13 +956,14 @@ export function bracketMainDrawEntryRound(
 ): number | undefined {
   const mainTier = slotCount / 2;
   if (mainTier < 1) return undefined;
+  const main = mainDrawBracketMatches(bracketMatches);
   const rounds = [
     ...new Set(
-      bracketMatches.map((m) => bracketMatchRound(m)).filter((r) => Number.isFinite(r) && r >= 1),
+      main.map((m) => bracketMatchRound(m)).filter((r) => Number.isFinite(r) && r >= 1),
     ),
   ].sort((a, b) => a - b);
   for (const r of [...rounds].reverse()) {
-    const n = bracketMatches.filter((m) => bracketMatchRound(m) === r).length;
+    const n = main.filter((m) => bracketMatchRound(m) === r).length;
     if (n === mainTier) return r;
   }
   return undefined;
@@ -947,20 +971,32 @@ export function bracketMainDrawEntryRound(
 
 /** Infers single-elimination bracket leaf slot count from existing rounds (deepest valid tier). */
 export function inferBracketSlotCountFromRoundOne(bracketMatches: BracketMatch[]): number | undefined {
+  const main = mainDrawBracketMatches(bracketMatches);
   const rounds = [
     ...new Set(
-      bracketMatches.map((m) => bracketMatchRound(m)).filter((r) => Number.isFinite(r) && r >= 1),
+      main.map((m) => bracketMatchRound(m)).filter((r) => Number.isFinite(r) && r >= 1),
     ),
   ].sort((a, b) => a - b);
 
   let best: number | undefined;
   for (const r of rounds) {
-    const n = bracketMatches.filter((m) => bracketMatchRound(m) === r).length;
+    const n = main.filter((m) => bracketMatchRound(m) === r).length;
     const slotCount = n * 2 ** r;
     if (n < 1 || slotCount < 2 || (slotCount & (slotCount - 1)) !== 0) continue;
     if (best === undefined || slotCount > best) best = slotCount;
   }
   return best;
+}
+
+/**
+ * Sort key so the third-place match displays after the championship final instead of at round 0.
+ * Main-draw rows use their numeric round.
+ */
+export function bracketDisplayOrderValue(m: BracketMatch, bracketMatches: BracketMatch[]): number {
+  if (!isThirdPlaceBracketMatch(m)) return bracketMatchRound(m);
+  const slotCount = inferBracketSlotCountFromRoundOne(bracketMatches);
+  const depth = slotCount !== undefined && slotCount >= 2 ? Math.trunc(Math.log2(slotCount)) : 0;
+  return depth + 0.5;
 }
 
 /** Bracket rows that require an actual match (excludes one-sided bye walkovers). */
@@ -972,23 +1008,39 @@ function bracketRoundPlayableTotals(list: BracketMatch[]): { total: number; done
   };
 }
 
+function thirdPlaceProgressRow(
+  bracketMatches: BracketMatch[],
+): { round: number; total: number; done: number } | undefined {
+  const tp = findThirdPlaceBracketMatch(bracketMatches);
+  if (!tp) return undefined;
+  const playable = !isBracketByeWalkoverMatch(tp);
+  return {
+    round: THIRD_PLACE_BRACKET_ROUND,
+    total: playable ? 1 : 0,
+    done: playable && Boolean(tp.winner) ? 1 : 0,
+  };
+}
+
 function bracketRoundAggregatesFromExistingOnly(
   bracketMatches: BracketMatch[],
 ): Array<{ round: number; total: number; done: number }> {
   const byRound = new Map<number, BracketMatch[]>();
-  for (const bm of bracketMatches) {
+  for (const bm of mainDrawBracketMatches(bracketMatches)) {
     const r = bracketMatchRound(bm);
-    if (!Number.isFinite(r) || r < 0) continue;
+    if (!Number.isFinite(r) || r < 1) continue;
     const list = byRound.get(r) ?? [];
     list.push(bm);
     byRound.set(r, list);
   }
   const rounds = [...byRound.keys()].sort((a, b) => a - b);
-  return rounds.map((round) => {
+  const rows = rounds.map((round) => {
     const list = (byRound.get(round) ?? []).sort(compareBracketMatchId);
     const { total, done } = bracketRoundPlayableTotals(list);
     return { round, total, done };
   });
+  const tpRow = thirdPlaceProgressRow(bracketMatches);
+  if (tpRow) rows.push(tpRow);
+  return rows;
 }
 
 /**
@@ -1010,7 +1062,9 @@ export function bracketRoundAggregatesIncludingFutureRounds(
   const rows: Array<{ round: number; total: number; done: number }> = [];
   for (let round = 1; round <= numRounds; round++) {
     const structural = slotCount >>> round;
-    const list = bracketMatches.filter((m) => bracketMatchRound(m) === round).sort(compareBracketMatchId);
+    const list = mainDrawBracketMatches(bracketMatches)
+      .filter((m) => bracketMatchRound(m) === round)
+      .sort(compareBracketMatchId);
     const playableInList = list.filter((bm) => !isBracketByeWalkoverMatch(bm));
     const byeWalkoversInList = list.length - playableInList.length;
     let total: number;
@@ -1024,6 +1078,8 @@ export function bracketRoundAggregatesIncludingFutureRounds(
     const done = playableInList.filter((bm) => Boolean(bm.winner)).length;
     rows.push({ round, total, done });
   }
+  const tpRow = thirdPlaceProgressRow(bracketMatches);
+  if (tpRow) rows.push(tpRow);
   return rows;
 }
 
@@ -3745,7 +3801,9 @@ export function bracketMatchesSortedForPairing(
   bracketMatches: BracketMatch[],
   round: number,
 ): BracketMatch[] {
-  return bracketMatchesSortedForRound(bracketMatches, round);
+  return mainDrawBracketMatches(bracketMatches)
+    .filter((m) => bracketMatchRound(m) === round)
+    .sort(compareBracketMatchId);
 }
 
 export type GenerateBracketOptions = {
@@ -4072,7 +4130,8 @@ export function materializeReadyNextRoundBracketSlots(bracketMatches: BracketMat
 /** Append next-round bracket pairings when the current round is complete. Returns new rows only. */
 export function advanceBracketRoundIn(bracketMatches: BracketMatch[]): BracketMatch[] {
   propagateBracketSeedsFromChildWinners(bracketMatches);
-  const currentRound = Math.max(0, ...bracketMatches.map((m) => bracketMatchRound(m)));
+  const main = mainDrawBracketMatches(bracketMatches);
+  const currentRound = Math.max(0, ...main.map((m) => bracketMatchRound(m)));
   const currentMatches = bracketMatchesSortedForPairing(bracketMatches, currentRound);
   if (currentMatches.length <= 1) {
     return [];
@@ -4111,6 +4170,103 @@ export function advanceBracketRound(tournament: Tournament): Tournament {
     tournament.bracketMatches = [...tournament.bracketMatches, ...added];
   }
   return tournament;
+}
+
+function thirdPlaceMatchEnabledForScope(tournament: Tournament, classId?: string): boolean {
+  if (classId) {
+    return tournament.classTournaments[classId]?.thirdPlaceMatchEnabled !== false;
+  }
+  return tournament.thirdPlaceMatchEnabled !== false;
+}
+
+/** The two main-draw matches that feed the championship final (semi-finals). */
+export function championshipSemiFeeders(
+  bracketMatches: BracketMatch[],
+): [BracketMatch | undefined, BracketMatch | undefined] {
+  const main = mainDrawBracketMatches(bracketMatches);
+  const slotCount = inferBracketSlotCountFromRoundOne(main);
+  if (slotCount === undefined || slotCount < 4) return [undefined, undefined];
+  const depth = Math.trunc(Math.log2(slotCount));
+  if (!Number.isFinite(depth) || depth < 2) return [undefined, undefined];
+  const semis = bracketMatchesSortedForPairing(main, depth - 1);
+  if (semis.length !== 2) return [undefined, undefined];
+  return [semis[0], semis[1]];
+}
+
+function thirdPlacePlayerMatchHasRecordedPlay(
+  tournament: Tournament,
+  classId: string | undefined,
+): boolean {
+  const mid = bracketPlayerMatchId(THIRD_PLACE_BRACKET_MATCH_ID, classId);
+  const m = tournament.matches[mid];
+  if (!m || m.groupId) return false;
+  return matchHasRecordedPlay(m);
+}
+
+function removeUntouchedThirdPlacePlayerMatch(tournament: Tournament, classId: string | undefined): void {
+  const mid = bracketPlayerMatchId(THIRD_PLACE_BRACKET_MATCH_ID, classId);
+  const m = tournament.matches[mid];
+  if (!m || m.groupId) return;
+  if (m.status !== 'scheduled' || m.scores.length > 0) return;
+  delete tournament.matches[mid];
+  tournament.tableAssignments = tournament.tableAssignments.filter((a) => a.matchId !== mid);
+}
+
+/**
+ * Create or refresh the third-place slot from the two semi-final losers.
+ * Skips bye walkovers (no loser) and tracks with `thirdPlaceMatchEnabled === false`.
+ * Clears an untouched bronze player row when the slot is no longer ready.
+ */
+export function reconcileThirdPlaceSlot(
+  tournament: Tournament,
+  bracketMatches: BracketMatch[],
+  classId?: string,
+): void {
+  const existing = findThirdPlaceBracketMatch(bracketMatches);
+  const recorded = thirdPlacePlayerMatchHasRecordedPlay(tournament, classId);
+
+  if (!thirdPlaceMatchEnabledForScope(tournament, classId)) {
+    if (existing && !recorded) {
+      const idx = bracketMatches.indexOf(existing);
+      if (idx >= 0) bracketMatches.splice(idx, 1);
+      removeUntouchedThirdPlacePlayerMatch(tournament, classId);
+    }
+    return;
+  }
+
+  const [left, right] = championshipSemiFeeders(bracketMatches);
+  const loserA = left ? bracketMatchLoser(left) : undefined;
+  const loserB = right ? bracketMatchLoser(right) : undefined;
+  const ready = Boolean(loserA && loserB);
+
+  if (!ready) {
+    if (existing && !recorded) {
+      delete existing.seedA;
+      delete existing.seedB;
+      existing.winner = undefined;
+      removeUntouchedThirdPlacePlayerMatch(tournament, classId);
+    }
+    return;
+  }
+
+  if (!existing) {
+    bracketMatches.push({
+      id: THIRD_PLACE_BRACKET_MATCH_ID,
+      role: 'thirdPlace',
+      round: THIRD_PLACE_BRACKET_ROUND,
+      seedA: loserA,
+      seedB: loserB,
+      winner: undefined,
+    });
+    return;
+  }
+
+  if (!recorded) {
+    existing.seedA = loserA;
+    existing.seedB = loserB;
+    existing.round = THIRD_PLACE_BRACKET_ROUND;
+    existing.role = 'thirdPlace';
+  }
 }
 
 export function getFirstRoundMatchPosition(bracketMatches: BracketMatch[], playerId: string): number | undefined {
@@ -4386,10 +4542,11 @@ export function bracketMatchesSortedForRound(bracketMatches: BracketMatch[], rou
 
 /** Parent single-elimination match (next round) for `bm`, using the same pairing order as {@link advanceBracketRound}. */
 export function bracketParentMatch(bracketMatches: BracketMatch[], bm: BracketMatch): BracketMatch | undefined {
-  const cur = bracketMatchesSortedForRound(bracketMatches, bm.round);
+  if (isThirdPlaceBracketMatch(bm)) return undefined;
+  const cur = bracketMatchesSortedForPairing(bracketMatches, bm.round);
   const idx = cur.findIndex((x) => x.id === bm.id);
   if (idx < 0) return undefined;
-  const parents = bracketMatchesSortedForRound(bracketMatches, bm.round + 1);
+  const parents = bracketMatchesSortedForPairing(bracketMatches, bm.round + 1);
   if (parents.length === 0) return undefined;
   const pIdx = Math.floor(idx / 2);
   return parents[pIdx];
@@ -4448,13 +4605,24 @@ export function bracketDownstreamMatchHasScores(
   classId?: string,
 ): boolean {
   const w = bracketEffectiveWinnerForLock(tournament, bm, classId);
-  if (!w) return false;
-  const parent = bracketParentMatch(bracketMatches, bm);
-  if (!parent?.seedA || !parent?.seedB) return false;
-  const mid = bracketPlayerMatchId(parent.id, classId);
-  const pm = tournament.matches[mid];
-  if (!pm || pm.groupId) return false;
-  return pm.scores.length > 0 || knockoutMatchHasDecisiveOutcome(pm);
+  if (w) {
+    const parent = bracketParentMatch(bracketMatches, bm);
+    if (parent?.seedA && parent?.seedB) {
+      const mid = bracketPlayerMatchId(parent.id, classId);
+      const pm = tournament.matches[mid];
+      if (pm && !pm.groupId && (pm.scores.length > 0 || knockoutMatchHasDecisiveOutcome(pm))) {
+        return true;
+      }
+    }
+  }
+  const tp = findThirdPlaceBracketMatch(bracketMatches);
+  if (!tp) return false;
+  const [left, right] = championshipSemiFeeders(bracketMatches);
+  if (left?.id !== bm.id && right?.id !== bm.id) return false;
+  const bronzeMid = bracketPlayerMatchId(tp.id, classId);
+  const bronzePm = tournament.matches[bronzeMid];
+  if (!bronzePm || bronzePm.groupId) return false;
+  return bronzePm.scores.length > 0 || knockoutMatchHasDecisiveOutcome(bronzePm);
 }
 
 /**
@@ -4486,7 +4654,7 @@ export function propagateBracketSeedsFromChildWinners(bracketMatches: BracketMat
   const maxRound = Math.max(...bracketMatches.map((m) => bracketMatchRound(m)));
   for (let r = 2; r <= maxRound; r++) {
     const prev = bracketMatchesSortedForPairing(bracketMatches, r - 1);
-    const cur = bracketMatchesSortedForRound(bracketMatches, r);
+    const cur = bracketMatchesSortedForPairing(bracketMatches, r);
     for (let j = 0; j < cur.length; j++) {
       const left = prev[j * 2];
       const right = prev[j * 2 + 1];
@@ -4916,7 +5084,7 @@ export function resolveBracketFinalMatch(
   classId?: string,
   championshipRound?: number,
 ): BracketMatch | null {
-  const real = bracketMatches.filter(isRealBracketMatch);
+  const real = bracketMatches.filter((m) => isRealBracketMatch(m) && !isThirdPlaceBracketMatch(m));
   if (real.length === 0) return null;
   const roundOf = (m: BracketMatch) => bracketMatchRound(m);
   const targetRound =
@@ -4950,9 +5118,9 @@ function runnerUpFromFinal(
 }
 
 /**
- * Single-elimination final ranking: places 1–2 from the final; for each earlier round, losers are
- * ordered by the finishing rank of the opponent who beat them (place 3 = semi loser to the champion,
- * 5–8 = quarter losers to places 1–4, etc.).
+ * Single-elimination final ranking: places 1–2 from the championship final. Places 3–4 come from a
+ * decided third-place match when one exists; otherwise they are inferred (semi loser to the champion
+ * is 3rd). Earlier-round losers are ordered by the finishing rank of the opponent who beat them.
  *
  * Returns `null` if there is no single final or the final has no winner yet. Participants without a
  * computable rank (e.g. open matches) are appended with consecutive places after the last assigned rank.
@@ -4974,7 +5142,8 @@ export function singleEliminationPlacementRows(
   }
 
   const roundOf = (m: BracketMatch) => bracketMatchRound(m);
-  const rounds = ms.map(roundOf).filter((r) => Number.isFinite(r));
+  const main = ms.filter((m) => !isThirdPlaceBracketMatch(m));
+  const rounds = main.map(roundOf).filter((r) => Number.isFinite(r));
   if (rounds.length === 0) return null;
   const maxRound = Math.max(...rounds);
 
@@ -4984,15 +5153,15 @@ export function singleEliminationPlacementRows(
    * and can also confuse slot-count inference, so prefer the round-1 count when present.
    * Championship must be at this depth — not merely the deepest *existing* round (R1-only brackets).
    */
-  const r1Count = ms.filter((m) => roundOf(m) === 1).length;
+  const r1Count = main.filter((m) => roundOf(m) === 1).length;
   const inferredDepthFromR1 = r1Count >= 1 ? Math.trunc(Math.log2(r1Count * 2)) : undefined;
-  const slotCount = inferBracketSlotCountFromRoundOne(ms);
+  const slotCount = inferBracketSlotCountFromRoundOne(main);
   const inferredDepthFromSlots =
     slotCount !== undefined && slotCount >= 2 ? Math.trunc(Math.log2(slotCount)) : undefined;
   const depthRound = inferredDepthFromR1 ?? inferredDepthFromSlots ?? maxRound;
 
   const fm = resolveBracketFinalMatch(ms, tournament, classId, depthRound);
-  if (!fm || bracketMatchRound(fm) !== depthRound) return null;
+  if (!fm || isThirdPlaceBracketMatch(fm) || bracketMatchRound(fm) !== depthRound) return null;
 
   const finalWinner = placementBracketWinner(tournament, fm, classId);
   const runnerUp = finalWinner ? runnerUpFromFinal(tournament, fm, finalWinner, classId) : undefined;
@@ -5002,8 +5171,17 @@ export function singleEliminationPlacementRows(
   places.set(finalWinner, 1);
   places.set(runnerUp, 2);
 
+  const tp = findThirdPlaceBracketMatch(ms);
+  const tpWinner = tp ? placementBracketWinner(tournament, tp, classId) : undefined;
+  const tpLoser =
+    tp && tpWinner ? (tpWinner === tp.seedA ? tp.seedB : tp.seedA) : undefined;
+  if (tpWinner && tpLoser) {
+    places.set(tpWinner, 3);
+    places.set(tpLoser, 4);
+  }
+
   for (let r = depthRound - 1; r >= 1; r--) {
-    const roundMs = ms
+    const roundMs = main
       .filter((m) => roundOf(m) === r && placementBracketWinner(tournament, m, classId))
       .sort(compareBracketMatchId);
     const rows: Array<{ loser: PlayerId; wp: number }> = [];

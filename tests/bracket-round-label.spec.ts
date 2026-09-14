@@ -56,6 +56,14 @@ describe('bracketKnockoutRoundLabel', () => {
     expect(bracketKnockoutRoundLabel('en', 3, b, 8)).toBe('final');
   });
 
+  it('names the third-place consolation match', () => {
+    const b = bracketWithRounds({ 1: 2, 2: 1 });
+    b.push({ id: 'tp', round: 0, role: 'thirdPlace', seedA: 'a', seedB: 'b' });
+    expect(bracketKnockoutRoundMessageKey(0, b, 4)).toBe('ui.bracket.round.thirdPlace');
+    expect(bracketKnockoutRoundLabel('en', 0, b, 4)).toBe('3rd place');
+    expect(bracketKnockoutRoundLabel('nl', 0, b, 4)).toBe('3e plaats');
+  });
+
   it('falls back to numbered rounds for pre-main-draw tiers', () => {
     const b = bracketWithRounds({ 1: 8, 2: 8 });
     expect(bracketKnockoutRoundLabel('en', 1, b, 16)).toBe('Round 1');

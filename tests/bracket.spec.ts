@@ -41,6 +41,15 @@ import {
   settleBracketWinnersIn,
   scheduleRound,
   canMutateBracketPlayerMatch,
+  THIRD_PLACE_BRACKET_MATCH_ID,
+  THIRD_PLACE_BRACKET_ROUND,
+  findThirdPlaceBracketMatch,
+  isThirdPlaceBracketMatch,
+  mainDrawBracketMatches,
+  reconcileThirdPlaceSlot,
+  bracketDisplayOrderValue,
+  advanceBracketRoundIn,
+  bracketMainDrawEntryRound,
 } from '../src/model';
 import { CommandRunner } from '../src/command';
 
@@ -1295,6 +1304,58 @@ describe('Single-elimination placement order', () => {
     expect(byId['p5']).toBe(8);
   });
 
+  it('keeps inferred 3rd/4th when a third-place match exists but is unplayed', () => {
+    const bm = [
+      { id: 'm1', seedA: 'p1', seedB: 'p4', round: 1, winner: 'p1' },
+      { id: 'm2', seedA: 'p2', seedB: 'p3', round: 1, winner: 'p2' },
+      { id: 'm3', seedA: 'p1', seedB: 'p2', round: 2, winner: 'p1' },
+      {
+        id: THIRD_PLACE_BRACKET_MATCH_ID,
+        seedA: 'p4',
+        seedB: 'p3',
+        round: THIRD_PLACE_BRACKET_ROUND,
+        role: 'thirdPlace' as const,
+      },
+    ];
+    const rows = singleEliminationPlacementRows(bm)!;
+    expect(rows.map((r) => [r.place, r.playerId])).toEqual([
+      [1, 'p1'],
+      [2, 'p2'],
+      [3, 'p4'],
+      [4, 'p3'],
+    ]);
+  });
+
+  it('uses a decided third-place match for 3rd/4th and cascades quarter losers', () => {
+    const bm = [
+      { id: 'm1', seedA: 'p1', seedB: 'p8', round: 1, winner: 'p1' },
+      { id: 'm2', seedA: 'p2', seedB: 'p7', round: 1, winner: 'p2' },
+      { id: 'm3', seedA: 'p3', seedB: 'p6', round: 1, winner: 'p3' },
+      { id: 'm4', seedA: 'p4', seedB: 'p5', round: 1, winner: 'p4' },
+      { id: 'm5', seedA: 'p1', seedB: 'p2', round: 2, winner: 'p1' },
+      { id: 'm6', seedA: 'p3', seedB: 'p4', round: 2, winner: 'p3' },
+      { id: 'm7', seedA: 'p1', seedB: 'p3', round: 3, winner: 'p1' },
+      {
+        id: THIRD_PLACE_BRACKET_MATCH_ID,
+        seedA: 'p2',
+        seedB: 'p4',
+        round: THIRD_PLACE_BRACKET_ROUND,
+        role: 'thirdPlace' as const,
+        winner: 'p4',
+      },
+    ];
+    const rows = singleEliminationPlacementRows(bm)!;
+    const byId = Object.fromEntries(rows.map((r) => [r.playerId, r.place]));
+    expect(byId['p1']).toBe(1);
+    expect(byId['p3']).toBe(2);
+    expect(byId['p4']).toBe(3);
+    expect(byId['p2']).toBe(4);
+    expect(byId['p8']).toBe(5);
+    expect(byId['p6']).toBe(6);
+    expect(byId['p5']).toBe(7);
+    expect(byId['p7']).toBe(8);
+  });
+
   it('bracketMatchLoser returns the non-winner when both seeds exist', () => {
     expect(bracketMatchLoser({ id: 'm', seedA: 'a', seedB: 'b', round: 1, winner: 'a' })).toBe('b');
   });
@@ -1604,5 +1665,296 @@ describe('defaultBracketSeedingMode', () => {
 
   it('returns heuristic when meta is null', () => {
     expect(defaultBracketSeedingModeFromMeta(null)).toBe('heuristic');
+  });
+});
+
+const BO5_A = [
+  { playerA: 11, playerB: 5 },
+  { playerA: 11, playerB: 5 },
+  { playerA: 11, playerB: 5 },
+];
+
+function fourPlayerTreeWithBronze(winner = 'p4'): Parameters<typeof singleEliminationPlacementRows>[0] {
+  return [
+    { id: 'm1', seedA: 'p1', seedB: 'p4', round: 1, winner: 'p1' },
+    { id: 'm2', seedA: 'p2', seedB: 'p3', round: 1, winner: 'p2' },
+    { id: 'm3', seedA: 'p1', seedB: 'p2', round: 2, winner: 'p1' },
+    {
+      id: THIRD_PLACE_BRACKET_MATCH_ID,
+      seedA: 'p4',
+      seedB: 'p3',
+      round: THIRD_PLACE_BRACKET_ROUND,
+      role: 'thirdPlace',
+      ...(winner ? { winner } : {}),
+    },
+  ];
+}
+
+describe('Third-place match', () => {
+  it('keeps tree geometry when a bronze row is present', () => {
+    const bm = fourPlayerTreeWithBronze();
+    expect(inferBracketSlotCountFromRoundOne(bm)).toBe(4);
+    expect(bracketMainDrawEntryRound(bm, 4)).toBe(1);
+    expect(mainDrawBracketMatches(bm).every((m) => !isThirdPlaceBracketMatch(m))).toBe(true);
+    expect(advanceBracketRoundIn(bm)).toEqual([]);
+    const before = JSON.stringify(findThirdPlaceBracketMatch(bm));
+    expect(materializeReadyNextRoundBracketSlots(bm)).toBe(false);
+    propagateBracketSeedsFromChildWinners(bm);
+    expect(JSON.stringify(findThirdPlaceBracketMatch(bm))).toBe(before);
+    expect(bracketDisplayOrderValue(findThirdPlaceBracketMatch(bm)!, bm)).toBeGreaterThan(2);
+  });
+
+  it('ignores a mis-stored bronze row that shares the final round', () => {
+    const bm = [
+      { id: 'm1', seedA: 'p1', seedB: 'p4', round: 1, winner: 'p1' },
+      { id: 'm2', seedA: 'p2', seedB: 'p3', round: 1, winner: 'p2' },
+      { id: 'm3', seedA: 'p1', seedB: 'p2', round: 2, winner: 'p1' },
+      {
+        id: THIRD_PLACE_BRACKET_MATCH_ID,
+        seedA: 'p4',
+        seedB: 'p3',
+        round: 2,
+        role: 'thirdPlace' as const,
+        winner: 'p4',
+      },
+    ];
+    expect(inferBracketSlotCountFromRoundOne(bm)).toBe(4);
+    expect(advanceBracketRoundIn(bm)).toEqual([]);
+  });
+
+  it('seeds the bronze row from both semi losers and is idempotent', () => {
+    const t = createTournament();
+    t.thirdPlaceMatchEnabled = true;
+    const bm = [
+      { id: 'm1', seedA: 'p1', seedB: 'p4', round: 1, winner: 'p1' },
+      { id: 'm2', seedA: 'p2', seedB: 'p3', round: 1, winner: 'p2' },
+      { id: 'm3', seedA: 'p1', seedB: 'p2', round: 2 },
+    ];
+    t.bracketMatches = bm;
+    reconcileThirdPlaceSlot(t, bm);
+    const tp = findThirdPlaceBracketMatch(bm)!;
+    expect(tp.id).toBe(THIRD_PLACE_BRACKET_MATCH_ID);
+    expect(tp.round).toBe(THIRD_PLACE_BRACKET_ROUND);
+    expect(tp.role).toBe('thirdPlace');
+    expect([tp.seedA, tp.seedB].sort()).toEqual(['p3', 'p4']);
+    reconcileThirdPlaceSlot(t, bm);
+    expect(bm.filter(isThirdPlaceBracketMatch)).toHaveLength(1);
+  });
+
+  it('does not create a bronze row when a semi has no loser (bye)', () => {
+    const t = createTournament();
+    t.thirdPlaceMatchEnabled = true;
+    const bm = [
+      { id: 'm1', seedA: 'p1', round: 1, winner: 'p1' },
+      { id: 'm2', seedA: 'p2', seedB: 'p3', round: 1, winner: 'p2' },
+      { id: 'm3', seedA: 'p1', seedB: 'p2', round: 2 },
+    ];
+    t.bracketMatches = bm;
+    reconcileThirdPlaceSlot(t, bm);
+    expect(findThirdPlaceBracketMatch(bm)).toBeUndefined();
+  });
+
+  it('does not create a bronze row when the track disables it', () => {
+    const t = createTournament();
+    t.thirdPlaceMatchEnabled = false;
+    const bm = [
+      { id: 'm1', seedA: 'p1', seedB: 'p4', round: 1, winner: 'p1' },
+      { id: 'm2', seedA: 'p2', seedB: 'p3', round: 1, winner: 'p2' },
+      { id: 'm3', seedA: 'p1', seedB: 'p2', round: 2 },
+    ];
+    t.bracketMatches = bm;
+    reconcileThirdPlaceSlot(t, bm);
+    expect(findThirdPlaceBracketMatch(bm)).toBeUndefined();
+  });
+
+  it('does not create a bronze row for a two-player bracket', () => {
+    const t = createTournament();
+    t.thirdPlaceMatchEnabled = true;
+    const bm = [{ id: 'm1', seedA: 'p1', seedB: 'p2', round: 1, winner: 'p1' }];
+    t.bracketMatches = bm;
+    reconcileThirdPlaceSlot(t, bm);
+    expect(findThirdPlaceBracketMatch(bm)).toBeUndefined();
+  });
+
+  it('clears an untouched bronze player row when a semi is undone', () => {
+    const t = createTournament();
+    t.thirdPlaceMatchEnabled = true;
+    const bm = [
+      { id: 'm1', seedA: 'p1', seedB: 'p4', round: 1, winner: 'p1' },
+      { id: 'm2', seedA: 'p2', seedB: 'p3', round: 1, winner: 'p2' },
+      { id: 'm3', seedA: 'p1', seedB: 'p2', round: 2 },
+    ];
+    t.bracketMatches = bm;
+    reconcileThirdPlaceSlot(t, bm);
+    const mid = bracketPlayerMatchId(THIRD_PLACE_BRACKET_MATCH_ID);
+    t.matches[mid] = {
+      id: mid,
+      playerA: 'p4',
+      playerB: 'p3',
+      scores: [],
+      status: 'scheduled',
+    };
+    bm[1]!.winner = undefined;
+    reconcileThirdPlaceSlot(t, bm);
+    const tp = findThirdPlaceBracketMatch(bm)!;
+    expect(tp.seedA).toBeUndefined();
+    expect(tp.seedB).toBeUndefined();
+    expect(t.matches[mid]).toBeUndefined();
+  });
+
+  it('blocks rescoring a semi after the bronze match is played', () => {
+    const t = createTournament();
+    const bm = fourPlayerTreeWithBronze('p4');
+    t.bracketMatches = bm;
+    const bronzeMid = bracketPlayerMatchId(THIRD_PLACE_BRACKET_MATCH_ID);
+    t.matches[bronzeMid] = {
+      id: bronzeMid,
+      playerA: 'p4',
+      playerB: 'p3',
+      scores: BO5_A,
+      status: 'finished',
+      winner: 'p4',
+    };
+    const semiMid = bracketPlayerMatchId('m1');
+    t.matches[semiMid] = {
+      id: semiMid,
+      playerA: 'p1',
+      playerB: 'p4',
+      scores: BO5_A,
+      status: 'finished',
+      winner: 'p1',
+    };
+    expect(canMutateBracketPlayerMatch(t, t.matches[semiMid]!, bm, [])).toBe(false);
+  });
+
+  it('allows scoring the bronze match after both semis are played', () => {
+    const t = createTournament();
+    const bm = fourPlayerTreeWithBronze();
+    t.bracketMatches = bm;
+    for (const id of ['m1', 'm2', THIRD_PLACE_BRACKET_MATCH_ID] as const) {
+      const seeds = bm.find((m) => m.id === id)!;
+      t.matches[bracketPlayerMatchId(id)] = {
+        id: bracketPlayerMatchId(id),
+        playerA: seeds.seedA!,
+        playerB: seeds.seedB!,
+        scores: id === THIRD_PLACE_BRACKET_MATCH_ID ? [] : BO5_A,
+        status: id === THIRD_PLACE_BRACKET_MATCH_ID ? 'scheduled' : 'finished',
+        winner: id === THIRD_PLACE_BRACKET_MATCH_ID ? undefined : seeds.winner,
+      };
+    }
+    expect(canMutateBracketPlayerMatch(t, t.matches[bracketPlayerMatchId(THIRD_PLACE_BRACKET_MATCH_ID)]!, bm, [])).toBe(
+      true,
+    );
+  });
+
+  it('counts the bronze row in knockout progress once it exists', () => {
+    const without = [
+      { id: 'm1', seedA: 'p1', seedB: 'p4', round: 1, winner: 'p1' },
+      { id: 'm2', seedA: 'p2', seedB: 'p3', round: 1, winner: 'p2' },
+      { id: 'm3', seedA: 'p1', seedB: 'p2', round: 2 },
+    ];
+    const withTp = fourPlayerTreeWithBronze();
+    const base = bracketPhaseCountsIncludingFutureRounds(without);
+    const next = bracketPhaseCountsIncludingFutureRounds(withTp);
+    expect(next.total).toBe(base.total + 1);
+    const bronzeRow = bracketRoundAggregatesIncludingFutureRounds(withTp).find(
+      (r) => r.round === THIRD_PLACE_BRACKET_ROUND,
+    );
+    expect(bronzeRow).toEqual({ round: 0, total: 1, done: 1 });
+  });
+
+  it('creates the bronze match via reconcile after both semis are scored', () => {
+    const runner = new CommandRunner();
+    const ts = '2026-09-14T12:00:00.000Z';
+    for (let i = 1; i <= 4; i++) {
+      runner.execute({
+        id: `p${i}`,
+        type: 'CreatePlayer',
+        dependsOn: [],
+        payload: { playerId: `p${i}`, name: `P${i}`, handicap: 0 },
+        timestamp: ts,
+      });
+    }
+    runner.execute({
+      id: 'seed',
+      type: 'SetSeedings',
+      dependsOn: ['p1', 'p2', 'p3', 'p4'],
+      payload: { playerIds: ['p1', 'p2', 'p3', 'p4'] },
+      timestamp: ts,
+    });
+    runner.execute({
+      id: 'gen',
+      type: 'GenerateBracket',
+      dependsOn: ['seed'],
+      payload: { fillByes: true, cullToPowerOfTwo: false },
+      timestamp: ts,
+    });
+    const r1 = runner.getTournament().bracketMatches.filter((m) => m.round === 1 && m.seedA && m.seedB);
+    expect(r1).toHaveLength(2);
+    for (const bm of r1) {
+      runner.execute({
+        id: `score-${bm.id}`,
+        type: 'EnterScore',
+        dependsOn: ['gen'],
+        payload: { matchId: bracketPlayerMatchId(bm.id), scores: BO5_A },
+        timestamp: ts,
+      });
+    }
+    const t = runner.getTournament();
+    const tp = findThirdPlaceBracketMatch(t.bracketMatches)!;
+    expect(tp).toBeTruthy();
+    expect(tp.seedA && tp.seedB).toBeTruthy();
+    expect(t.matches[bracketPlayerMatchId(tp.id)]).toBeTruthy();
+    expect(t.thirdPlaceMatchEnabled).not.toBe(false);
+    expect(
+      runner.execute({
+        id: 'score-tp',
+        type: 'EnterScore',
+        dependsOn: r1.map((bm) => `score-${bm.id}`),
+        payload: { matchId: bracketPlayerMatchId(tp.id), scores: BO5_A },
+        timestamp: ts,
+      }),
+    ).toEqual({ success: true });
+    expect(findThirdPlaceBracketMatch(runner.getTournament().bracketMatches)?.winner).toBeTruthy();
+  });
+
+  it('skips bronze creation when GenerateBracket sets thirdPlaceMatch false', () => {
+    const runner = new CommandRunner();
+    const ts = '2026-09-14T12:00:00.000Z';
+    for (let i = 1; i <= 4; i++) {
+      runner.execute({
+        id: `p${i}`,
+        type: 'CreatePlayer',
+        dependsOn: [],
+        payload: { playerId: `p${i}`, name: `P${i}`, handicap: 0 },
+        timestamp: ts,
+      });
+    }
+    runner.execute({
+      id: 'seed',
+      type: 'SetSeedings',
+      dependsOn: ['p1', 'p2', 'p3', 'p4'],
+      payload: { playerIds: ['p1', 'p2', 'p3', 'p4'] },
+      timestamp: ts,
+    });
+    runner.execute({
+      id: 'gen',
+      type: 'GenerateBracket',
+      dependsOn: ['seed'],
+      payload: { fillByes: true, cullToPowerOfTwo: false, thirdPlaceMatch: false },
+      timestamp: ts,
+    });
+    const r1 = runner.getTournament().bracketMatches.filter((m) => m.round === 1 && m.seedA && m.seedB);
+    for (const bm of r1) {
+      runner.execute({
+        id: `score-${bm.id}`,
+        type: 'EnterScore',
+        dependsOn: ['gen'],
+        payload: { matchId: bracketPlayerMatchId(bm.id), scores: BO5_A },
+        timestamp: ts,
+      });
+    }
+    expect(findThirdPlaceBracketMatch(runner.getTournament().bracketMatches)).toBeUndefined();
+    expect(runner.getTournament().thirdPlaceMatchEnabled).toBe(false);
   });
 });

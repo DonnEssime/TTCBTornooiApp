@@ -1,5 +1,5 @@
 import type { BracketMatch } from '../model';
-import { bracketMainDrawEntryRound, inferBracketSlotCountFromRoundOne } from '../model';
+import { bracketMainDrawEntryRound, inferBracketSlotCountFromRoundOne, THIRD_PLACE_BRACKET_ROUND } from '../model';
 import type { MessageKey } from './catalog';
 import type { Locale } from './types';
 import { messageText } from './resolve';
@@ -21,6 +21,9 @@ export function bracketKnockoutRoundMessageKey(
   bracketMatches: BracketMatch[],
   slotCount?: number,
 ): MessageKey {
+  if (internalRound === THIRD_PLACE_BRACKET_ROUND) {
+    return 'ui.bracket.round.thirdPlace';
+  }
   const slots = slotCount ?? inferBracketSlotCountFromRoundOne(bracketMatches);
   if (slots === undefined || slots < 2) return 'ui.bracket.round.numbered';
 

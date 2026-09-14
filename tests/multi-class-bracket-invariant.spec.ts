@@ -291,7 +291,7 @@ describe('multi-class bracket other-class invariants', () => {
 
     const t = runner.getTournament();
     const junBracket = t.classTournaments.jun!.bracketMatches;
-    expect(bracketPhaseCountsIncludingFutureRounds(junBracket)).toEqual({ total: 3, done: 3 });
+    expect(bracketPhaseCountsIncludingFutureRounds(junBracket)).toEqual({ total: 4, done: 4 });
     expect(singleEliminationPlacementRows(junBracket, t)).toBeNull();
     const placements = singleEliminationPlacementRows(junBracket, t, 'jun');
     expect(placements?.map((r) => [r.place, r.playerId])).toEqual([

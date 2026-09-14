@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { BracketMatch, Tournament } from 'ttc-tornooiapp';
-  import { bracketKnockoutRoundLabel, bracketMatchRound, getCompetitionTrack, isTrackParticipantId } from 'ttc-tornooiapp';
+  import { bracketKnockoutRoundLabel, bracketMatchRound, findThirdPlaceBracketMatch, getCompetitionTrack, isTrackParticipantId } from 'ttc-tornooiapp';
   import { getLocale } from './i18n/locale.svelte';
   import BracketSlotRow from './BracketSlotRow.svelte';
   import BracketSubtree from './BracketSubtree.svelte';
@@ -43,6 +43,12 @@
   const earlyCols = $derived(cols.length > treeDepth ? cols.slice(0, cols.length - treeDepth) : []);
   const treeCols = $derived(cols.slice(-treeDepth));
   const root = $derived(bracketTreeFromColumns(treeCols));
+  const thirdPlace = $derived.by(() => {
+    const track = getCompetitionTrack(tournament, bracketClassId);
+    const tp = findThirdPlaceBracketMatch(track.bracketMatches);
+    if (!tp?.seedA || !tp?.seedB) return undefined;
+    return tp;
+  });
 
   function slot(m: BracketMatch, side: 'a' | 'b'): string {
     return slotTitle(m, side, tournament, bracketClassId);
@@ -242,6 +248,7 @@
         </svg>
       </div>
       <div class="final-col">
+        <div class="final-stack">
         {#if onPairingClick}
           <button
             type="button"
@@ -295,6 +302,57 @@
             />
           </div>
         {/if}
+        {#if thirdPlace}
+          <span class="third-place-label muted small">{bracketKnockoutRoundLabel(getLocale(), thirdPlace.round, getCompetitionTrack(tournament, bracketClassId).bracketMatches)}</span>
+          {#if onPairingClick}
+            <button
+              type="button"
+              class="match-box third-place match-box--interactive"
+              data-testid="bracket-third-place-box"
+              class:match-done={Boolean(thirdPlace.winner)}
+              onclick={() => activate(thirdPlace)}
+            >
+              <BracketSlotRow
+                {tournament}
+                {bracketClassId}
+                bm={thirdPlace}
+                side="a"
+                label={slot(thirdPlace, 'a')}
+                playerId={slotPlayerId(thirdPlace, 'a')}
+              />
+              <div class="bracket-vs muted"><Msg key="ui.pdf.vs" /></div>
+              <BracketSlotRow
+                {tournament}
+                {bracketClassId}
+                bm={thirdPlace}
+                side="b"
+                label={slot(thirdPlace, 'b')}
+                playerId={slotPlayerId(thirdPlace, 'b')}
+              />
+            </button>
+          {:else}
+            <div class="match-box third-place" class:match-done={Boolean(thirdPlace.winner)} data-testid="bracket-third-place-box">
+              <BracketSlotRow
+                {tournament}
+                {bracketClassId}
+                bm={thirdPlace}
+                side="a"
+                label={slot(thirdPlace, 'a')}
+                playerId={slotPlayerId(thirdPlace, 'a')}
+              />
+              <div class="bracket-vs muted"><Msg key="ui.pdf.vs" /></div>
+              <BracketSlotRow
+                {tournament}
+                {bracketClassId}
+                bm={thirdPlace}
+                side="b"
+                label={slot(thirdPlace, 'b')}
+                playerId={slotPlayerId(thirdPlace, 'b')}
+              />
+            </div>
+          {/if}
+        {/if}
+        </div>
       </div>
       <div class="join-to-final" aria-hidden="true">
         <svg viewBox="0 0 18 100" preserveAspectRatio="none" class="join-svg">
@@ -407,6 +465,17 @@
     align-items: center;
     flex: 0 0 auto;
     padding: 0 0.15rem;
+  }
+
+  .final-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.65rem;
+  }
+
+  .third-place-label {
+    margin: 0.15rem 0 0;
   }
 
   .match-box {

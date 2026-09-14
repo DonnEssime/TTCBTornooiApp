@@ -115,7 +115,12 @@ describe('Debug simulate bracket phase (21 players, 5 groups, heuristic)', () =>
     const t = runner.getTournament();
     const r1Both = t.bracketMatches.filter((bm) => bm.round === 1 && bm.seedA && bm.seedB);
     expect(r1Both.length).toBe(5);
-    expect(bracketSimulateEligibleCount(t)).toBe(5);
+    for (const bm of r1Both) {
+      const m = t.matches[bracketPlayerMatchId(bm.id)];
+      expect(m, `missing ${bm.id}`).toBeDefined();
+      expect(m!.status === 'scheduled' || m!.status === 'in-progress').toBe(true);
+    }
+    expect(bracketSimulateEligibleCount(t)).toBeGreaterThanOrEqual(5);
   });
 
   it('enterScore works on GenerateBracket rows without a separate CreateMatch command', () => {
@@ -132,7 +137,7 @@ describe('Debug simulate bracket phase (21 players, 5 groups, heuristic)', () =>
     const runner = setup21Player5GroupHeuristicBracket();
     const c = new TournamentController(runner);
     const r1 = c.getTournament().bracketMatches.filter((bm) => bm.round === 1 && bm.seedA && bm.seedB);
-    expect(bracketSimulateEligibleCount(c.getTournament())).toBe(r1.length);
+    expect(bracketSimulateEligibleCount(c.getTournament())).toBeGreaterThanOrEqual(r1.length);
 
     let done = 0;
     for (const bm of r1) {

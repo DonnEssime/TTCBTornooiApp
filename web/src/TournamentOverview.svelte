@@ -12,6 +12,7 @@
   import {
     bracketKnockoutRoundParams,
     bracketMatchRound,
+    bracketDisplayOrderValue,
     bracketPhaseCountsIncludingFutureRounds,
     bracketPlayerMatchId,
     bracketRoundAggregatesIncludingFutureRounds,
@@ -466,7 +467,15 @@
       }
     }
     items.sort((a, b) => {
-      if (a.round !== b.round) return a.round - b.round;
+      const oa = (() => {
+        const m = a.bracketMatches.find((x) => bracketMatchRound(x) === a.round);
+        return m ? bracketDisplayOrderValue(m, a.bracketMatches) : a.round;
+      })();
+      const ob = (() => {
+        const m = b.bracketMatches.find((x) => bracketMatchRound(x) === b.round);
+        return m ? bracketDisplayOrderValue(m, b.bracketMatches) : b.round;
+      })();
+      if (oa !== ob) return oa - ob;
       return a.title.localeCompare(b.title);
     });
     return items;
@@ -502,8 +511,14 @@
       }
     }
     list.sort((a, b) => {
-      const ra = bracketMatchRound(a.bm);
-      const rb = bracketMatchRound(b.bm);
+      const ra = bracketDisplayOrderValue(
+        a.bm,
+        tracks.find((tr) => tr.classId === a.classId)?.bracketMatches ?? [],
+      );
+      const rb = bracketDisplayOrderValue(
+        b.bm,
+        tracks.find((tr) => tr.classId === b.classId)?.bracketMatches ?? [],
+      );
       if (ra !== rb) return ra - rb;
       const sa = bracketKnockoutReadyRank(tournament, a.bm, a.classId);
       const sb = bracketKnockoutReadyRank(tournament, b.bm, b.classId);

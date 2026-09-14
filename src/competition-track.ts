@@ -467,6 +467,7 @@ export type CompetitionTrack = {
   groups: Record<string, GroupDefinition>;
   bracketMatches: BracketMatch[];
   lockedBracketRounds: number[];
+  thirdPlaceMatchEnabled: boolean;
 };
 
 /** Session / dependency map key for the main (non-class) track. */
@@ -493,6 +494,7 @@ export function listCompetitionTracks(t: Tournament): CompetitionTrack[] {
         groups: t.groups,
         bracketMatches: t.bracketMatches,
         lockedBracketRounds: t.lockedBracketRounds ?? [],
+        thirdPlaceMatchEnabled: t.thirdPlaceMatchEnabled !== false,
       },
     ];
   }
@@ -504,6 +506,7 @@ export function listCompetitionTracks(t: Tournament): CompetitionTrack[] {
       groups: sl.groups,
       bracketMatches: sl.bracketMatches,
       lockedBracketRounds: sl.lockedBracketRounds ?? [],
+      thirdPlaceMatchEnabled: sl.thirdPlaceMatchEnabled !== false,
     };
   });
 }
@@ -521,6 +524,7 @@ export function getCompetitionTrack(t: Tournament, classId?: string): Competitio
         groups: {},
         bracketMatches: [],
         lockedBracketRounds: [],
+        thirdPlaceMatchEnabled: true,
       };
     }
     if (!t.lockedBracketRounds) {
@@ -532,6 +536,7 @@ export function getCompetitionTrack(t: Tournament, classId?: string): Competitio
       groups: t.groups,
       bracketMatches: t.bracketMatches,
       lockedBracketRounds: t.lockedBracketRounds,
+      thirdPlaceMatchEnabled: t.thirdPlaceMatchEnabled !== false,
     };
   }
   const cid = String(classId ?? '').trim();
@@ -542,6 +547,7 @@ export function getCompetitionTrack(t: Tournament, classId?: string): Competitio
       groups: {},
       bracketMatches: [],
       lockedBracketRounds: [],
+      thirdPlaceMatchEnabled: true,
     };
   }
   const sl = sliceForClass(t, cid);
@@ -551,6 +557,7 @@ export function getCompetitionTrack(t: Tournament, classId?: string): Competitio
     groups: sl.groups,
     bracketMatches: sl.bracketMatches,
     lockedBracketRounds: sl.lockedBracketRounds,
+    thirdPlaceMatchEnabled: sl.thirdPlaceMatchEnabled !== false,
   };
 }
 
@@ -687,6 +694,7 @@ export function applyBracketToTrack(
   tournament: Tournament,
   bracketMatches: BracketMatch[],
   classId?: string,
+  thirdPlaceMatchEnabled = true,
 ): void {
   if (Object.keys(tournament.teamMatches).length > 0) {
     throw new Error('Cannot apply a player bracket while team vs team matches exist');
@@ -700,10 +708,12 @@ export function applyBracketToTrack(
     const slice = sliceForClass(tournament, cid);
     slice.bracketMatches = bracketMatches;
     slice.lockedBracketRounds = [];
+    slice.thirdPlaceMatchEnabled = thirdPlaceMatchEnabled;
     return;
   }
   tournament.bracketMatches = bracketMatches;
   tournament.lockedBracketRounds = [];
+  tournament.thirdPlaceMatchEnabled = thirdPlaceMatchEnabled;
 }
 
 /** Writable storage for a track (for commands that assign groups / locks). */

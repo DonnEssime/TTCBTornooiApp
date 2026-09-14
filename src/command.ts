@@ -35,6 +35,7 @@ import {
   playerMatchWinner,
   propagateBracketSeedsFromChildWinners,
   recomputeClassTournamentSlices,
+  reconcileThirdPlaceSlot,
   refreshRoundOneBracketSeedsFromGroupPlacements,
   assignMatchToTable,
   clearMatchTableAssignment,
@@ -248,6 +249,8 @@ export interface GenerateBracketCommand extends CommandBase {
     classId?: string;
     /** When omitted, defaults to heuristic ordering in {@link generateBracket}. */
     bracketSeedingMode?: BracketSeedingMode | 'extend_closed_form';
+    /** When omitted, defaults to true (create a 3rd-place match from semi-final losers). */
+    thirdPlaceMatch?: boolean;
   };
 }
 
@@ -1305,7 +1308,7 @@ export class CommandRunner {
         if (Object.keys(tournament.teamMatches).length > 0) {
           return commandFail('command.cannotGenerateBracketWithTeamMatch');
         }
-        const { cullToPowerOfTwo, shuffleKey, tieBreakSalt, cullByGroupPlacement, qualifierCount, classId, bracketSeedingMode } =
+        const { cullToPowerOfTwo, shuffleKey, tieBreakSalt, cullByGroupPlacement, qualifierCount, classId, bracketSeedingMode, thirdPlaceMatch } =
           command.payload;
         const trackResolved = resolveTrackClassId(tournament, classId);
         if ('key' in trackResolved) {
@@ -1334,7 +1337,7 @@ export class CommandRunner {
             ...(trackClassId !== undefined ? { classId: trackClassId } : {}),
             ...(bracketSeedingMode !== undefined ? { bracketSeedingMode } : {}),
           });
-          applyBracketToTrack(tournament, bm, trackClassId);
+          applyBracketToTrack(tournament, bm, trackClassId, thirdPlaceMatch !== false);
           this.reconcileBracketScope(
             tournament,
             getCompetitionTrack(tournament, trackClassId).bracketMatches,
@@ -1534,6 +1537,11 @@ export class CommandRunner {
         // Incomplete round winners — materialize path may still apply on next score.
       }
     }
+    reconcileThirdPlaceSlot(
+      tournament,
+      getCompetitionTrack(tournament, classId).bracketMatches,
+      classId,
+    );
     ensureBracketPhasePlayerMatchesIn(
       tournament,
       getCompetitionTrack(tournament, classId).bracketMatches,

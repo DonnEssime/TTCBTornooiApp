@@ -5,6 +5,7 @@ import {
   bracketMatchRound,
   bracketPlayerMatchId,
   bracketSlotAwaitingPlay,
+  findThirdPlaceBracketMatch,
   matchPlayersResolvedForBracketPhaseList,
 } from '../src/model';
 
@@ -118,5 +119,63 @@ describe('doubles bracket', () => {
       expect(m?.pairB).toBeTruthy();
       expect(matchPlayersResolvedForBracketPhaseList(t, m!, undefined)).toBe(true);
     }
+  });
+
+  it('creates a pair-seeded third-place match after both doubles semis', () => {
+    const runner = new CommandRunner();
+    const ids = seedDoublesPlayers(runner, 8);
+    runner.execute({
+      id: 'sgz',
+      type: 'SetGroups',
+      dependsOn: ids,
+      payload: {
+        targetGroupSize: 4,
+        playerIds: ids,
+        format: 'doubles-random-partners',
+      },
+      timestamp: ts,
+    });
+    finishGroupPhase(runner);
+    const pairIds = Object.keys(getTrackPairs(runner.getTournament()));
+    expect(pairIds).toHaveLength(4);
+    runner.execute({
+      id: 'gen',
+      type: 'GenerateBracket',
+      dependsOn: ['sgz'],
+      payload: { fillByes: true, cullToPowerOfTwo: false },
+      timestamp: ts,
+    });
+    const r1 = runner
+      .getTournament()
+      .bracketMatches.filter((bm) => bm.seedA && bm.seedB && bracketMatchRound(bm) === 1);
+    expect(r1).toHaveLength(2);
+    for (const bm of r1) {
+      expect(
+        runner.execute({
+          id: `score-${bm.id}`,
+          type: 'EnterScore',
+          dependsOn: ['gen'],
+          payload: { matchId: bracketPlayerMatchId(bm.id), scores: BO3 },
+          timestamp: ts,
+        }),
+      ).toEqual({ success: true });
+    }
+    const t = runner.getTournament();
+    const tp = findThirdPlaceBracketMatch(t.bracketMatches);
+    expect(tp?.seedA && tp.seedB).toBeTruthy();
+    expect(pairIds).toContain(tp!.seedA);
+    expect(pairIds).toContain(tp!.seedB);
+    const km = t.matches[bracketPlayerMatchId(tp!.id)]!;
+    expect(km.pairA).toBe(tp!.seedA);
+    expect(km.pairB).toBe(tp!.seedB);
+    expect(
+      runner.execute({
+        id: 'score-tp',
+        type: 'EnterScore',
+        dependsOn: r1.map((bm) => `score-${bm.id}`),
+        payload: { matchId: km.id, scores: BO3 },
+        timestamp: ts,
+      }),
+    ).toEqual({ success: true });
   });
 });

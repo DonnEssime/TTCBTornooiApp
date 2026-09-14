@@ -58,6 +58,13 @@ function drawMatchBox(
   doc.setLineWidth(0.2);
   doc.roundedRect(x, y, w, h, 1.5, 1.5, 'FD');
 
+  if (box.caption) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(Math.max(5, 5.5 * scale));
+    doc.setTextColor(MUTED.r, MUTED.g, MUTED.b);
+    doc.text(box.caption, x + w / 2, y - 1.6 * scale, { align: 'center', baseline: 'bottom' });
+  }
+
   const innerW = w - PAD * 2;
   const lineA = y + h * 0.28;
   const lineVs = y + h * 0.5;

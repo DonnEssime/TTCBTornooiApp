@@ -1,6 +1,7 @@
 import type { BracketMatch, Tournament } from 'ttc-tornooiapp';
 import {
   bracketPlayerMatchId,
+  findThirdPlaceBracketMatch,
   gameWinner,
   inferBracketSlotCountFromRoundOne,
   isBracketByeWalkoverMatch,
@@ -24,6 +25,7 @@ export type BracketPdfBox = {
   isFinal: boolean;
   done: boolean;
   hidden: boolean;
+  caption?: string;
 };
 
 export type BracketPdfLine = {
@@ -253,6 +255,8 @@ function layoutStream(
   labelA: (m: BracketMatch, side: 'a' | 'b') => string,
   labelB: (m: BracketMatch, side: 'a' | 'b') => string,
   classId?: string,
+  thirdPlace?: BracketMatch,
+  thirdPlaceCaption?: string,
 ): BracketStreamPdfLayout {
   const mkBox = (m: BracketMatch, x: number, y: number, isFinal: boolean): BracketPdfBox => ({
     x,
@@ -306,9 +310,19 @@ function layoutStream(
     { x1: finalX + BOX_W, y1: finalBotY, x2: rightJoinX, y2: rightSourceY },
   ];
 
+  let height = streamH;
+  if (thirdPlace?.seedA && thirdPlace?.seedB) {
+    const tpY = finalY + BOX_H + 8;
+    boxes.push({
+      ...mkBox(thirdPlace, finalX, tpY, false),
+      ...(thirdPlaceCaption ? { caption: thirdPlaceCaption } : {}),
+    });
+    height = Math.max(height, tpY + BOX_H);
+  }
+
   return {
     width: left.width + JOIN_W + BOX_W + JOIN_W + right.width,
-    height: streamH,
+    height,
     boxes,
     lines,
   };
@@ -319,6 +333,7 @@ export function bracketStreamPdfLayout(
   matches: BracketMatch[],
   slotLabel: (m: BracketMatch, side: 'a' | 'b') => string,
   classId?: string,
+  thirdPlaceCaption?: string,
 ): BracketStreamPdfLayout | null {
   const cols = displayBracketColumns(matches);
   const slotCount = inferBracketSlotCountFromRoundOne(matches);
@@ -329,5 +344,6 @@ export function bracketStreamPdfLayout(
   const treeCols = cols.slice(-treeDepth);
   const root = bracketTreeFromColumns(treeCols);
   if (!root) return null;
-  return layoutStream(t, root, slotLabel, slotLabel, classId);
+  const tp = findThirdPlaceBracketMatch(matches);
+  return layoutStream(t, root, slotLabel, slotLabel, classId, tp, thirdPlaceCaption);
 }

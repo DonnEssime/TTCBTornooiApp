@@ -10,6 +10,7 @@ import {
   type Match,
   type PlayerId,
   type Tournament,
+  bracketDisplayOrderValue,
   bracketPlayerMatchId,
   findGroupForPlayer,
   findGroupMatchBetweenPairs,
@@ -222,7 +223,11 @@ function bracketLinesForPlayer(
     byRound.set(round, bucket);
   }
   return [...byRound.keys()]
-    .sort((a, b) => a - b)
+    .sort((a, b) => {
+      const ma = bracketMatches.find((m) => m.round === a) ?? { id: '', round: a };
+      const mb = bracketMatches.find((m) => m.round === b) ?? { id: '', round: b };
+      return bracketDisplayOrderValue(ma, bracketMatches) - bracketDisplayOrderValue(mb, bracketMatches);
+    })
     .map((round) => ({ kind: 'bracket' as const, round, lines: byRound.get(round)! }));
 }
 

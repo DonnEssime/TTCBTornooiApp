@@ -5,6 +5,7 @@ import {
   bracketWinnerToNextRoundSeed,
   compareBracketMatchId,
   inferBracketSlotCountFromRoundOne,
+  isThirdPlaceBracketMatch,
 } from 'ttc-tornooiapp';
 import { bracketTreeFromColumns, type BracketBNode } from './buildTree';
 
@@ -16,7 +17,9 @@ function syntheticBracketRound(round: number, count: number): BracketMatch[] {
 }
 
 function matchesInRoundForDisplay(matches: BracketMatch[], round: number): BracketMatch[] {
-  return matches.filter((m) => bracketMatchRound(m) === round).sort(compareBracketMatchId);
+  return matches
+    .filter((m) => !isThirdPlaceBracketMatch(m) && bracketMatchRound(m) === round)
+    .sort(compareBracketMatchId);
 }
 
 function pushRoundColumn(

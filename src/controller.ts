@@ -447,6 +447,7 @@ export class TournamentController {
       bracketSeedingMode?: BracketSeedingMode;
       tieBreakSalt?: string;
       qualifierCount?: number;
+      thirdPlaceMatch?: boolean;
     },
   ): CommandResult {
     const payload: {
@@ -458,6 +459,7 @@ export class TournamentController {
       classId?: string;
       bracketSeedingMode?: BracketSeedingMode;
       qualifierCount?: number;
+      thirdPlaceMatch?: boolean;
     } = {
       fillByes: true,
       cullToPowerOfTwo,
@@ -479,6 +481,9 @@ export class TournamentController {
     }
     if (extras?.qualifierCount !== undefined) {
       payload.qualifierCount = extras.qualifierCount;
+    }
+    if (extras?.thirdPlaceMatch !== undefined) {
+      payload.thirdPlaceMatch = extras.thirdPlaceMatch;
     }
     const command: GenerateBracketCommand = {
       id: commandId ?? this.newCommandId(),

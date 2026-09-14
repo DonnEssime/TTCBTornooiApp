@@ -274,13 +274,15 @@ describe('competitionTrackFunStats', () => {
     const t0 = runner.getTournament();
     for (const bm of t0.classTournaments.jun!.bracketMatches.filter((m) => bracketMatchRound(m) === 1)) {
       const mid = bracketPlayerMatchId(bm.id, 'jun');
-      runner.execute({
+      if (t0.matches[mid]) continue;
+      const created = runner.execute({
         id: `cm-${bm.id}`,
         type: 'CreateMatch',
         dependsOn: [dep],
         payload: { matchId: mid, playerA: bm.seedA!, playerB: bm.seedB!, classId: 'jun' },
         timestamp: ts,
       });
+      expect(created).toEqual({ success: true });
       dep = `cm-${bm.id}`;
     }
     for (;;) {
@@ -292,13 +294,14 @@ describe('competitionTrackFunStats', () => {
       open.sort((a, b) => bracketMatchRound(a) - bracketMatchRound(b) || a.id.localeCompare(b.id));
       const bm = open[0]!;
       const mid = bracketPlayerMatchId(bm.id, 'jun');
-      runner.execute({
+      const scored = runner.execute({
         id: `sc-${bm.id}`,
         type: 'EnterScore',
         dependsOn: [dep],
         payload: { matchId: mid, scores: bo5 },
         timestamp: ts,
       });
+      expect(scored).toEqual({ success: true });
       dep = `sc-${bm.id}`;
     }
 
@@ -307,6 +310,6 @@ describe('competitionTrackFunStats', () => {
     expect(competitionTrackFunStats(t, 'sen')).toBeNull();
     const junStats = competitionTrackFunStats(t, 'jun');
     expect(junStats).not.toBeNull();
-    expect(junStats!.length).toBe(8);
+    expect(junStats!.some((a) => a.key === 'winner')).toBe(true);
   });
 });

@@ -26,6 +26,10 @@
     bracketPlayerMatchId,
     inferBracketClassIdFromPlayerMatchId,
     parseBracketPlayerMatchId,
+    findThirdPlaceBracketMatch,
+    isThirdPlaceBracketMatch,
+    THIRD_PLACE_BRACKET_ROUND,
+    bracketDisplayOrderValue,
     canMutateBracketPlayerMatch,
     canMutateExistingGroupPhaseMatchScores,
     clampPlayerHandicapValue,
@@ -145,6 +149,9 @@
 
   /** Optional cap on bracket entrants (best group finishers globally). Empty = all. */
   let bracketQualifierCount = $state('');
+
+  /** When creating a knockout, include a 3rd-place match (default on). */
+  let thirdPlaceMatchChoice = $state(true);
 
   function newCompetitionClassId(): string {
     return `cid-${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
@@ -1714,7 +1721,7 @@
       if (!matchOpenForScoring(m)) continue;
       if (m.scores.length > 0) continue;
       if (!matchPlayersResolvedForBracketPhaseList(t, m, classId)) continue;
-      entries.push({ m, round: bracketMatchRound(bm) });
+      entries.push({ m, round: bracketDisplayOrderValue(bm, getCompetitionTrack(t, classId).bracketMatches) });
     }
     return entries;
   }
@@ -1790,7 +1797,7 @@
 
     showInfoKey('ui.toast.debugSimulatedBracket', {
       done: String(done),
-      ...bracketRoundParams(targetRound),
+      ...bracketRoundParams(Number.isInteger(targetRound) ? targetRound : THIRD_PLACE_BRACKET_ROUND),
     });
   }
 
@@ -2142,7 +2149,10 @@
 
   function uniqueSortedRounds(matches: BracketMatch[]): number[] {
     const set = new Set(
-      matches.map((m) => bracketMatchRound(m)).filter((r) => Number.isFinite(r) && r >= 0),
+      matches
+        .filter((m) => !isThirdPlaceBracketMatch(m))
+        .map((m) => bracketMatchRound(m))
+        .filter((r) => Number.isFinite(r) && r >= 1),
     );
     return [...set].sort((a, b) => a - b);
   }
@@ -2899,6 +2909,7 @@
       const r = c.generateBracket(true, false, deps, genId, shuffleKey, {
         bracketSeedingMode: seedingMode,
         tieBreakSalt,
+        thirdPlaceMatch: thirdPlaceMatchChoice,
         ...(qualifierCount !== undefined ? { qualifierCount } : {}),
         ...(classId !== undefined ? { classId } : {}),
       });
@@ -4497,6 +4508,10 @@
                     class="muted small"
                   />
                 </label>
+                <label class="check-line">
+                  <input type="checkbox" data-testid="bracket-third-place" bind:checked={thirdPlaceMatchChoice} />
+                  <Msg key="ui.bracket.thirdPlaceMatch" />
+                </label>
                 <div class="row align-end bracket-create-row">
                   <button
                     type="button"
@@ -4907,6 +4922,10 @@
                       tag="span"
                       class="muted small"
                     />
+                  </label>
+                  <label class="check-line">
+                    <input type="checkbox" data-testid="bracket-third-place" bind:checked={thirdPlaceMatchChoice} />
+                    <Msg key="ui.bracket.thirdPlaceMatch" />
                   </label>
                   <div class="row align-end bracket-create-row">
                     <button
@@ -5781,6 +5800,13 @@
 
   .radio-line input {
     margin-top: 0.2rem;
+  }
+
+  .check-line {
+    display: flex;
+    gap: 0.45rem;
+    align-items: center;
+    margin: 0.5rem 0 0.35rem;
   }
 
   .bracket-round-block {

@@ -324,7 +324,13 @@ function addBracketStreamView(
 ): void {
   const prepared = prepareBracketMatchesForPdf(t, matches, classId);
   const slotLabel = (m: BracketMatch, side: 'a' | 'b') => bracketSlotLabel(m, side, t, locale, classId);
-  const layout = bracketStreamPdfLayout(t, prepared, slotLabel, classId);
+  const layout = bracketStreamPdfLayout(
+    t,
+    prepared,
+    slotLabel,
+    classId,
+    txt('ui.bracket.round.thirdPlace', locale),
+  );
   if (!layout) return;
   const availW = doc.internal.pageSize.getWidth() - PAGE_MARGIN * 2;
   const availH = doc.internal.pageSize.getHeight() - y - PAGE_MARGIN;
