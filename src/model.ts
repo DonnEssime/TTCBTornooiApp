@@ -4906,20 +4906,27 @@ function placementBracketWinner(
   return undefined;
 }
 
-/** Pick the championship match when several rows share the deepest round (e.g. duplicate materialization). */
+/**
+ * Pick the championship match at `championshipRound`.
+ * When several rows share that round (e.g. duplicate materialization), prefer a decided two-seed match.
+ */
 export function resolveBracketFinalMatch(
   bracketMatches: BracketMatch[],
   tournament?: Tournament,
   classId?: string,
+  championshipRound?: number,
 ): BracketMatch | null {
   const real = bracketMatches.filter(isRealBracketMatch);
   if (real.length === 0) return null;
   const roundOf = (m: BracketMatch) => bracketMatchRound(m);
-  const maxRound = Math.max(...real.map(roundOf).filter((r) => Number.isFinite(r)));
-  const atMax = real.filter((m) => roundOf(m) === maxRound);
-  if (atMax.length === 0) return null;
-  if (atMax.length === 1) return atMax[0]!;
-  const sorted = [...atMax].sort(compareBracketMatchId);
+  const targetRound =
+    championshipRound !== undefined && Number.isFinite(championshipRound)
+      ? championshipRound
+      : Math.max(...real.map(roundOf).filter((r) => Number.isFinite(r)));
+  const atTarget = real.filter((m) => roundOf(m) === targetRound);
+  if (atTarget.length === 0) return null;
+  if (atTarget.length === 1) return atTarget[0]!;
+  const sorted = [...atTarget].sort(compareBracketMatchId);
   for (let i = sorted.length - 1; i >= 0; i--) {
     const m = sorted[i]!;
     if (!m.seedA || !m.seedB) continue;
@@ -4971,17 +4978,11 @@ export function singleEliminationPlacementRows(
   if (rounds.length === 0) return null;
   const maxRound = Math.max(...rounds);
 
-  const fm = resolveBracketFinalMatch(ms, tournament, classId);
-  if (!fm || bracketMatchRound(fm) !== maxRound) return null;
-
-  const finalWinner = placementBracketWinner(tournament, fm, classId);
-  const runnerUp = finalWinner ? runnerUpFromFinal(tournament, fm, finalWinner, classId) : undefined;
-  if (!finalWinner || !runnerUp) return null;
-
   /**
    * Tree depth derived from the *original* round-1 size.
    * Duplicate “final” rows (e.g. from partial materialize + later advance) can inflate `maxRound`
    * and can also confuse slot-count inference, so prefer the round-1 count when present.
+   * Championship must be at this depth — not merely the deepest *existing* round (R1-only brackets).
    */
   const r1Count = ms.filter((m) => roundOf(m) === 1).length;
   const inferredDepthFromR1 = r1Count >= 1 ? Math.trunc(Math.log2(r1Count * 2)) : undefined;
@@ -4989,6 +4990,13 @@ export function singleEliminationPlacementRows(
   const inferredDepthFromSlots =
     slotCount !== undefined && slotCount >= 2 ? Math.trunc(Math.log2(slotCount)) : undefined;
   const depthRound = inferredDepthFromR1 ?? inferredDepthFromSlots ?? maxRound;
+
+  const fm = resolveBracketFinalMatch(ms, tournament, classId, depthRound);
+  if (!fm || bracketMatchRound(fm) !== depthRound) return null;
+
+  const finalWinner = placementBracketWinner(tournament, fm, classId);
+  const runnerUp = finalWinner ? runnerUpFromFinal(tournament, fm, finalWinner, classId) : undefined;
+  if (!finalWinner || !runnerUp) return null;
 
   const places = new Map<PlayerId, number>();
   places.set(finalWinner, 1);

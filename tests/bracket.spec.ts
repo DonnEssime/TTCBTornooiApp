@@ -1230,6 +1230,17 @@ describe('Single-elimination placement order', () => {
     ).toBeNull();
   });
 
+  it('returns null when only round 1 exists and one early match is decided', () => {
+    // generateBracket materializes R1 only; scoring the first R1 match must not invent a champion.
+    const bm = [
+      { id: 'm1', seedA: 'p1', seedB: 'p8', round: 1, winner: 'p1' },
+      { id: 'm2', seedA: 'p2', seedB: 'p7', round: 1 },
+      { id: 'm3', seedA: 'p3', seedB: 'p6', round: 1 },
+      { id: 'm4', seedA: 'p4', seedB: 'p5', round: 1 },
+    ];
+    expect(singleEliminationPlacementRows(bm)).toBeNull();
+  });
+
   it('orders four players 1–4 from final back to semis', () => {
     const bm = [
       { id: 'm1', seedA: 'p1', seedB: 'p4', round: 1, winner: 'p1' },
