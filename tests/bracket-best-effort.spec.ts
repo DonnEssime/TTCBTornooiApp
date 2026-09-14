@@ -336,13 +336,13 @@ describe('postprocessBracketLeafByeRankSwaps', () => {
 });
 
 describe('bestEffortOrderParticipantsForGroupBracket', () => {
-  it('returns null when participants are not exactly the union of group members', () => {
+  it('pads a group subset with BYE when participants are not the full group union', () => {
     const t = createTournament();
     t.players.p1 = { id: 'p1', name: 'A', handicap: 0 };
     t.players.p2 = { id: 'p2', name: 'B', handicap: 0 };
     addGroupRRDominant(t, 'g1', ['p1', 'p2']);
     const r = bestEffortOrderParticipantsForGroupBracket(t, ['p1'], undefined, 'k');
-    expect(r).toBeNull();
+    expect(r).toEqual(['p1', 'BYE']);
   });
 
   it('searchBestHeuristicBracketOrder picks the lowest penalty among trials', () => {
