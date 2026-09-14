@@ -381,7 +381,7 @@
 
     {#each history.tracks as track (track.classId ?? 'main')}
       <section class="player-history-section">
-        {#if history.tracks.length > 1}
+        {#if track.classId}
           <h3 class="player-history-track-title">{track.trackTitle}</h3>
         {/if}
         <div class="player-history-heading-row">
