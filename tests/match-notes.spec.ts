@@ -43,6 +43,34 @@ function setGroups4(runner: CommandRunner): void {
   });
 }
 
+/** One poule of three players → three round-robin matches. */
+function setGroupOfThree(runner: CommandRunner): void {
+  const ts = '2026-01-01T00:00:00.000Z';
+  for (const [id, name] of [
+    ['p1', 'A'],
+    ['p2', 'B'],
+    ['p3', 'C'],
+  ] as const) {
+    runner.execute({
+      id,
+      type: 'CreatePlayer',
+      dependsOn: [],
+      payload: { playerId: id, name, handicap: 0 },
+      timestamp: ts,
+    });
+  }
+  runner.execute({
+    id: 'sg',
+    type: 'SetGroups',
+    dependsOn: ['p1', 'p2', 'p3'],
+    payload: {
+      groups: [{ id: '1', playerIds: ['p1', 'p2', 'p3'] }],
+      playerIds: [],
+    },
+    timestamp: ts,
+  });
+}
+
 describe('match-notes', () => {
   it('matchNotesPageCount uses 6 slips per page and 5 games per slip', () => {
     expect(MATCH_NOTES_SLIPS_PER_PAGE).toBe(6);
@@ -98,6 +126,53 @@ describe('match-notes', () => {
     const slips = collectMatchNoteSlips(runner.getTournament(), { kind: 'group-pool', groupId: '1' }, 'en');
     expect(slips.length).toBe(1);
     expect(slips[0]!.contextLine).toContain('Group 1');
+    expect(slips[0]!.contextLine).toMatch(/match 1/);
+  });
+
+  it('numbers group-pool slips 1..N by match id order', () => {
+    const runner = new CommandRunner();
+    setGroupOfThree(runner);
+    const slips = collectMatchNoteSlips(runner.getTournament(), { kind: 'group-pool', groupId: '1' }, 'en');
+    expect(slips.length).toBe(3);
+    expect(slips.map((s) => s.contextLine)).toEqual([
+      expect.stringMatching(/Group 1, match 1$/),
+      expect.stringMatching(/Group 1, match 2$/),
+      expect.stringMatching(/Group 1, match 3$/),
+    ]);
+    expect(slips[0]!.matchKey.localeCompare(slips[1]!.matchKey)).toBeLessThan(0);
+    expect(slips[1]!.matchKey.localeCompare(slips[2]!.matchKey)).toBeLessThan(0);
+  });
+
+  it('keeps stable group match numbers after an earlier match finishes', () => {
+    const runner = new CommandRunner();
+    setGroupOfThree(runner);
+    const t = runner.getTournament();
+    const byId = Object.values(t.matches)
+      .filter((m) => m.groupId === '1')
+      .sort((a, b) => a.id.localeCompare(b.id));
+    expect(byId.length).toBe(3);
+    const first = byId[0]!;
+    const fin = runner.execute({
+      id: 'fin',
+      type: 'EnterScore',
+      dependsOn: ['sg'],
+      payload: {
+        matchId: first.id,
+        scores: [
+          { playerA: 11, playerB: 5 },
+          { playerA: 11, playerB: 5 },
+          { playerA: 11, playerB: 5 },
+        ],
+      },
+      timestamp: '2026-01-01T00:01:00.000Z',
+    });
+    expect(fin.success).toBe(true);
+    const slips = collectMatchNoteSlips(runner.getTournament(), { kind: 'group-pool', groupId: '1' }, 'en');
+    expect(slips.length).toBe(2);
+    expect(slips[0]!.matchKey).toBe(byId[1]!.id);
+    expect(slips[0]!.contextLine).toMatch(/Group 1, match 2$/);
+    expect(slips[1]!.matchKey).toBe(byId[2]!.id);
+    expect(slips[1]!.contextLine).toMatch(/Group 1, match 3$/);
   });
 
   it('collects bracket round slips excluding bye walkovers and finished slots', () => {
@@ -110,9 +185,30 @@ describe('match-notes', () => {
     t.bracketMatches = r1;
     const slips = collectMatchNoteSlips(t, { kind: 'bracket-round', round: 1 }, 'en');
     expect(slips.length).toBe(2);
+    expect(slips[0]!.contextLine).toMatch(/match 1/);
+    expect(slips[1]!.contextLine).toMatch(/match 2/);
     r1[0]!.winner = r1[0]!.seedA!;
     const afterWin = collectMatchNoteSlips(t, { kind: 'bracket-round', round: 1 }, 'en');
     expect(afterWin.length).toBe(1);
+    expect(afterWin[0]!.contextLine).toMatch(/match 2$/);
+  });
+
+  it('uses wedstrijd for Dutch match numbers on group and bracket slips', () => {
+    const runner = new CommandRunner();
+    setGroupOfThree(runner);
+    const groupSlips = collectMatchNoteSlips(runner.getTournament(), { kind: 'group-pool', groupId: '1' }, 'nl');
+    expect(groupSlips[0]!.contextLine).toMatch(/Poule 1, wedstrijd 1$/);
+
+    const t = createTournament();
+    for (let i = 1; i <= 4; i++) {
+      const id = `p${i}`;
+      t.players[id] = { id, name: `P${i}`, handicap: 0 };
+    }
+    t.bracketMatches = generateBracket(['p1', 'p2', 'p3', 'p4'], { fillByes: false, cullToPowerOfTwo: false });
+    const bracketSlips = collectMatchNoteSlips(t, { kind: 'bracket-round', round: 1 }, 'nl');
+    expect(bracketSlips.length).toBe(2);
+    expect(bracketSlips[0]!.contextLine).toMatch(/wedstrijd 1$/);
+    expect(bracketSlips[1]!.contextLine).toMatch(/wedstrijd 2$/);
   });
 
   it('blocks bracket-round printing when any pending match lacks both known players', () => {
@@ -311,6 +407,30 @@ describe('match-notes', () => {
   it('uses Total / Totaal for match score column header', () => {
     expect(messageText(catalog, 'ui.matchNotes.total', 'en')).toBe('Total');
     expect(messageText(catalog, 'ui.matchNotes.total', 'nl')).toBe('Totaal');
+  });
+
+  it('formats match-note context lines with match / wedstrijd numbers', () => {
+    expect(
+      messageText(catalog, 'ui.matchNotes.contextGroup', 'en', {
+        track: 'Main draw',
+        group: 'Group 1',
+        n: '3',
+      }),
+    ).toBe('Main draw · Group 1, match 3');
+    expect(
+      messageText(catalog, 'ui.matchNotes.contextGroup', 'nl', {
+        track: 'Hoofdreeks',
+        group: 'Poule 1',
+        n: '3',
+      }),
+    ).toBe('Hoofdreeks · Poule 1, wedstrijd 3');
+    expect(
+      messageText(catalog, 'ui.matchNotes.contextBracket', 'en', {
+        track: 'Main draw',
+        round: 'final',
+        n: '1',
+      }),
+    ).toBe('Main draw · final, match 1');
   });
 
   it('doubles group slips show both players on each side', () => {

@@ -381,6 +381,14 @@ export const uiRemainingCatalog = {
   'ui.matchNotes.gameN': t('G{{n}}', 'S{{n}}'),
   'ui.matchNotes.total': t('Total', 'Totaal'),
   'ui.matchNotes.miscDefault': t('Club', 'Club'),
+  'ui.matchNotes.contextGroup': t(
+    '{{track}} · {{group}}, match {{n}}',
+    '{{track}} · {{group}}, wedstrijd {{n}}',
+  ),
+  'ui.matchNotes.contextBracket': t(
+    '{{track}} · {{round}}, match {{n}}',
+    '{{track}} · {{round}}, wedstrijd {{n}}',
+  ),
   'ui.toast.matchNotesOpened': t('Opened match notes in a new tab.', 'Wedstrijdbladen geopend in een nieuw tabblad.'),
   'ui.toast.matchNotesPopupBlocked': t(
     'Could not open match notes — allow pop-ups for this site.',

@@ -143,8 +143,13 @@ function groupContextLine(
   locale: Locale,
   trackTitle: string,
   group: GroupDefinition,
+  matchNumber: number,
 ): string {
-  return `${trackTitle} · ${displayLabelForGroup(group, locale)} · ${txt('ui.group_phase', locale)}`;
+  return txt('ui.matchNotes.contextGroup', locale, {
+    track: trackTitle,
+    group: displayLabelForGroup(group, locale),
+    n: String(matchNumber),
+  });
 }
 
 function bracketContextLine(
@@ -152,9 +157,22 @@ function bracketContextLine(
   trackTitle: string,
   round: number,
   bracketMatches: BracketMatch[],
+  matchNumber: number,
 ): string {
   const roundLabel = bracketKnockoutRoundParams(locale, round, bracketMatches).round;
-  return `${trackTitle} · ${roundLabel} · ${txt('ui.bracket_phase', locale)}`;
+  return txt('ui.matchNotes.contextBracket', locale, {
+    track: trackTitle,
+    round: roundLabel,
+    n: String(matchNumber),
+  });
+}
+
+/** 1-based index among all matches in a group, sorted by id (stable across print batches). */
+function groupMatchNumberById(matches: Match[]): Map<string, number> {
+  const sorted = [...matches].sort((a, b) => a.id.localeCompare(b.id));
+  const map = new Map<string, number>();
+  sorted.forEach((m, i) => map.set(m.id, i + 1));
+  return map;
 }
 
 function slipFromPlayerMatch(
@@ -259,16 +277,32 @@ function collectGroupOverall(t: Tournament, locale: Locale): MatchNoteSlip[] {
     const tr = trackSlices(t, locale)[0]!;
     for (const g of sortGroups(tr.groups)) {
       const matches = trackGroupMatches(t, undefined).filter((m) => m.groupId === g.id);
-      const ctx = groupContextLine(locale, tr.trackTitle, g);
-      slips.push(...collectGroupSlipsForMatches(t, matches, () => ctx, undefined, locale));
+      const numbers = groupMatchNumberById(matches);
+      slips.push(
+        ...collectGroupSlipsForMatches(
+          t,
+          matches,
+          (m) => groupContextLine(locale, tr.trackTitle, g, numbers.get(m.id)!),
+          undefined,
+          locale,
+        ),
+      );
     }
     return slips;
   }
   for (const tr of trackSlices(t, locale)) {
     for (const g of sortGroups(tr.groups)) {
       const matches = trackGroupMatches(t, tr.classId).filter((m) => m.groupId === g.id);
-      const ctx = groupContextLine(locale, tr.trackTitle, g);
-      slips.push(...collectGroupSlipsForMatches(t, matches, () => ctx, tr.classId, locale));
+      const numbers = groupMatchNumberById(matches);
+      slips.push(
+        ...collectGroupSlipsForMatches(
+          t,
+          matches,
+          (m) => groupContextLine(locale, tr.trackTitle, g, numbers.get(m.id)!),
+          tr.classId,
+          locale,
+        ),
+      );
     }
   }
   return slips;
@@ -281,8 +315,14 @@ function collectGroupPool(t: Tournament, classId: string | undefined, groupId: s
   const g = tr.groups[groupId];
   if (!g) return [];
   const matches = trackGroupMatches(t, classId).filter((m) => m.groupId === groupId);
-  const ctx = groupContextLine(locale, tr.trackTitle, g);
-  return collectGroupSlipsForMatches(t, matches, () => ctx, classId, locale);
+  const numbers = groupMatchNumberById(matches);
+  return collectGroupSlipsForMatches(
+    t,
+    matches,
+    (m) => groupContextLine(locale, tr.trackTitle, g, numbers.get(m.id)!),
+    classId,
+    locale,
+  );
 }
 
 function collectBracketRound(
@@ -295,10 +335,12 @@ function collectBracketRound(
   const tr =
     trackSlices(t, locale).find((x) => x.classId === classId) ?? trackSlices(t, locale)[0];
   if (!tr) return [];
-  const ctx = bracketContextLine(locale, tr.trackTitle, round, tr.bracketMatches);
   const out: MatchNoteSlip[] = [];
-  for (const bm of bracketMatchesSortedForRound(tr.bracketMatches, round)) {
+  const sorted = bracketMatchesSortedForRound(tr.bracketMatches, round);
+  for (let i = 0; i < sorted.length; i++) {
+    const bm = sorted[i]!;
     if (!isBracketSlotNotePrintable(t, bm, classId)) continue;
+    const ctx = bracketContextLine(locale, tr.trackTitle, round, tr.bracketMatches, i + 1);
     out.push(slipFromBracketMatch(t, bm, ctx, classId, locale));
   }
   out.sort((a, b) => compareBracketMatchIdString(a.matchKey, b.matchKey));
