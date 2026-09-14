@@ -5,12 +5,14 @@ import type { Locale } from './types';
 import { messageText } from './resolve';
 import { catalog } from './catalog';
 
+/** Fraction labels keyed by match count (players ÷ 2), not player count. */
 const FRACTION_KEYS: Partial<Record<number, MessageKey>> = {
   64: 'ui.bracket.round.sixtyFourth',
   32: 'ui.bracket.round.thirtySecond',
   16: 'ui.bracket.round.sixteenth',
   8: 'ui.bracket.round.eighth',
   4: 'ui.bracket.round.quarter',
+  2: 'ui.bracket.round.half',
 };
 
 /** Catalog key for a knockout bracket round (main draw), or numbered fallback for prelims/unknown. */
@@ -34,7 +36,8 @@ export function bracketKnockoutRoundMessageKey(
   const players = slots >> (indexInMain - 1);
   if (players === 2) return 'ui.bracket.round.final';
 
-  return FRACTION_KEYS[players] ?? 'ui.bracket.round.numbered';
+  const matches = players >> 1;
+  return FRACTION_KEYS[matches] ?? 'ui.bracket.round.numbered';
 }
 
 /** Localized knockout round label (e.g. 1/8th, finale, or Round 2 for prelims). */
