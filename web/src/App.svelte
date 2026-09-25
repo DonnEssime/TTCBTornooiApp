@@ -3500,7 +3500,9 @@
     if (trackHasBracketPhase(tournament, undefined)) {
       tabs.push({ id: 'bracket', labelKey: 'ui.bracket' });
     }
-    if (tournament.bracketMatches.length > 0) {
+    // Show Results once groups exist, even if no bracket was (or ever will be) generated — the
+    // Results panel already renders a "no knockout bracket yet" empty state in that case.
+    if (tournament.bracketMatches.length > 0 || Object.keys(tournament.groups).length > 0) {
       tabs.push({ id: 'results', labelKey: 'ui.results' });
     }
     return tabs;
@@ -3520,7 +3522,9 @@
     if (trackHasBracketPhase(tournament, cid)) {
       tabs.push({ id: 'bracket', labelKey: 'ui.bracket' });
     }
-    if (rounds.length > 0) {
+    // Show Results once this class has groups, even if no bracket was (or ever will be) generated —
+    // the Results panel already renders a "no knockout bracket yet" empty state in that case.
+    if (rounds.length > 0 || Object.keys(classSlice(tournament, cid).groups).length > 0) {
       tabs.push({ id: 'results', labelKey: 'ui.results' });
     }
     return tabs;
