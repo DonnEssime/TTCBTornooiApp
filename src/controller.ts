@@ -78,6 +78,9 @@ export class TournamentController {
   private runner: CommandRunner;
   private view?: TournamentView;
   private options: ControllerOptions;
+  /** Last timestamp (ms since epoch) handed out by `makeTimestamp()`, used to guarantee strictly
+   * increasing timestamps for every command issued through this controller — see `makeTimestamp`. */
+  private lastTimestampMs = 0;
 
   constructor(init?: Tournament | CommandRunner, options: ControllerOptions = {}) {
     if (init instanceof CommandRunner) {
@@ -104,8 +107,26 @@ export class TournamentController {
     return this.runner.findLatestActiveCreateMatchCommandId(matchId);
   }
 
+  /**
+   * Strictly-monotonic timestamp for the next command issued through this controller.
+   *
+   * `CommandRunner`'s replay order (`sortLog`, and its mirror `sortHistory` above) sorts primarily
+   * by this `timestamp` string, falling back to array/issuance order only on an exact tie. Two
+   * commands issued back-to-back through the same controller (e.g. `addPlayer()`'s `createPlayer()`
+   * immediately followed by `setSeedings()`) can land in the same millisecond, and — more rarely —
+   * the wall clock itself can briefly go non-monotonic (e.g. a system clock correction). Either way,
+   * a later-issued command could then sort *before* an earlier one it causally depends on, making
+   * `rebuildFromLog()` replay it too early and fail validation (e.g. `SetSeedings` rejecting a
+   * player whose `CreatePlayer` had already succeeded moments before). Clamping every timestamp to
+   * be strictly greater than the previous one — regardless of what `Date.now()` reports — removes
+   * that failure mode entirely for the normal (controller-mediated) command path, without touching
+   * the sort/replay logic itself (which some tests intentionally exercise with hand-set,
+   * out-of-chronological-order timestamps).
+   */
   private makeTimestamp(): string {
-    return new Date().toISOString();
+    const next = Math.max(Date.now(), this.lastTimestampMs + 1);
+    this.lastTimestampMs = next;
+    return new Date(next).toISOString();
   }
 
   private newCommandId(): string {
