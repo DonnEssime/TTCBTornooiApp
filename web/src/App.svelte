@@ -3265,7 +3265,16 @@
     const c = s.controller;
     const createCmdId = bm ? c.findLatestActiveCreateMatchCommandId(match.id) : undefined;
     const deps = createCmdId ? [createCmdId] : [];
-    const r = c.enterScore(match.id, scores, deps, `cmd-score-${match.id}-${Date.now()}`);
+    let r = c.enterScore(match.id, scores, deps, `cmd-score-${match.id}-${Date.now()}`);
+    if (!r.success && r.reason === 'command.matchNotFound' && tournament.matches[match.id]) {
+      // Defensive recovery: group-phase matches carry no `dependsOn` anchor (unlike bracket
+      // matches, which depend on their `CreateMatch` command), so a command-log replay-ordering
+      // hiccup (see CommandRunner.sortLog's reliance on wall-clock timestamps) can transiently sort
+      // this EnterScore command before the command that created its match — even though the match
+      // is plainly present in the current tournament (checked above). Retry once with a fresh
+      // timestamp so a real, currently-visible match can never get permanently stuck failing to save.
+      r = c.enterScore(match.id, scores, deps, `cmd-score-retry-${match.id}-${Date.now()}`);
+    }
     if (!r.success) {
       scoreModalHint = r.reason ?? 'enterScore failed';
       showError(r.reason ?? 'enterScore failed');
