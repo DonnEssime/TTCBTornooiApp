@@ -2784,15 +2784,29 @@
       return;
     }
     const s = s0;
-    const newOrder = [...s.playerOrder, id];
+    let newOrder = [...s.playerOrder, id];
     const log = c.getCommandLog();
     const seedDeps = seedingDepsForAddedPlayer(log, s.playerOrder, id, s.lastSeedingCommandId);
-    const seedCmdId = `cmd-seed-${crypto.randomUUID().replaceAll('-', '').slice(0, 14)}`;
-    const rSeed = c.setSeedings([...newOrder], seedDeps, seedCmdId);
+    let seedCmdId = `cmd-seed-${crypto.randomUUID().replaceAll('-', '').slice(0, 14)}`;
+    let rSeed = c.setSeedings([...newOrder], seedDeps, seedCmdId);
     if (!rSeed.success) {
-      showCommandError(rSeed, 'ui.fallback.addPlayer');
-      pull();
-      return;
+      // Defensive recovery: `setSeedings` can transiently fail here even though `createPlayer`
+      // just succeeded moments earlier (e.g. `command.unknownPlayerInSeedings` from a command-log
+      // replay-ordering hiccup — see CommandRunner.sortLog's reliance on wall-clock timestamps).
+      // Without this, the player would be created but never added to `tournament.seedings` /
+      // session `playerOrder`, making it permanently invisible in the Players tab even though the
+      // underlying player data is correct. Retry once against the freshest authoritative seedings
+      // (never the possibly-stale `s.playerOrder`) so a successfully-created player can never be
+      // silently ghosted.
+      const currentSeedings = c.getTournament().seedings;
+      newOrder = currentSeedings.includes(id) ? [...currentSeedings] : [...currentSeedings, id];
+      seedCmdId = `cmd-seed-${crypto.randomUUID().replaceAll('-', '').slice(0, 14)}`;
+      rSeed = c.setSeedings(newOrder, [cmdId], seedCmdId);
+      if (!rSeed.success) {
+        showCommandError(rSeed, 'ui.fallback.addPlayer');
+        pull();
+        return;
+      }
     }
     patchActiveSession({ playerOrder: newOrder, lastSeedingCommandId: seedCmdId });
     const defs = c.getTournament().classDefinitions;
