@@ -21,3 +21,22 @@ export async function setPlayerClassFlag(
   if (checked) await checkbox.check();
   else await checkbox.uncheck();
 }
+
+/**
+ * Ensure a player has exactly one competition class flagged true (`targetClassName`), unchecking
+ * every other class. Newly-added players auto-inherit a "preferred" class flag from the last class
+ * toggled on the Players tab (see `preferredClassIdForNewPlayer` in App.svelte), so simply checking
+ * the intended class is not enough on its own to guarantee single-class membership.
+ */
+export async function setPlayerSingleClass(
+  page: Page,
+  playerName: string,
+  targetClassName: string,
+  allClassNames: string[],
+): Promise<void> {
+  await setPlayerClassFlag(page, playerName, targetClassName, true);
+  for (const className of allClassNames) {
+    if (className === targetClassName) continue;
+    await setPlayerClassFlag(page, playerName, className, false);
+  }
+}

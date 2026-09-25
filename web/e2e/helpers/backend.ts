@@ -8,10 +8,23 @@ import {
   getTrackPairs,
 } from '../../../src/index';
 
-export function countFinishedGroupMatches(tournament: Tournament): number {
+export function countFinishedGroupMatches(tournament: Tournament, classId?: string): number {
   return Object.values(tournament.matches).filter(
-    (m) => m.id.startsWith('gm-') && m.status === 'finished',
+    (m) => m.id.startsWith('gm-') && m.status === 'finished' && (classId ? m.classId === classId : true),
   ).length;
+}
+
+export function countGroupMatches(tournament: Tournament, classId?: string): number {
+  return Object.values(tournament.matches).filter(
+    (m) => m.id.startsWith('gm-') && (classId ? m.classId === classId : true),
+  ).length;
+}
+
+/** Resolve a competition class's internal id from its display name. */
+export function classIdByName(tournament: Tournament, className: string): string {
+  const def = tournament.classDefinitions.find((d) => d.name === className);
+  if (!def) throw new Error(`No class definition named "${className}"`);
+  return def.id;
 }
 
 export async function expectDoublesTrack(page: Page, classId?: string): Promise<void> {
@@ -101,4 +114,29 @@ export async function snapshotClassBracket(
 
 export async function canRedo(page: Page): Promise<boolean> {
   return page.evaluate(() => window.__ttcTest?.canRedo() ?? false);
+}
+
+/** Single-elimination placement rows for one competition class's bracket, or `null` if not decided yet. */
+export async function getClassPlacementRows(
+  page: Page,
+  classId: string,
+): Promise<Array<{ place: number; playerId: string }> | null> {
+  const { tournament } = await readBackend(page);
+  const bracketMatches = tournament.classTournaments[classId]?.bracketMatches ?? [];
+  return singleEliminationPlacementRows(bracketMatches, tournament, classId);
+}
+
+/** Whether a competition class's bracket is configured to play a 3rd-place match (default true). */
+export function classThirdPlaceEnabled(tournament: Tournament, classId: string): boolean {
+  return tournament.classTournaments[classId]?.thirdPlaceMatchEnabled !== false;
+}
+
+/** Snapshot a competition class's group-phase state (groups + group match statuses) for isolation checks. */
+export function snapshotClassGroupsSync(tournament: Tournament, classId: string): string {
+  const groups = tournament.classTournaments[classId]?.groups ?? {};
+  const matchStates = Object.values(tournament.matches)
+    .filter((m) => m.id.startsWith('gm-') && m.classId === classId)
+    .map((m) => ({ id: m.id, status: m.status }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  return JSON.stringify({ groups, matchStates });
 }

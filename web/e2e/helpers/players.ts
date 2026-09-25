@@ -4,12 +4,20 @@ export async function goToPlayersTab(page: Page): Promise<void> {
   await page.getByTestId('tab-players').click();
 }
 
-export async function addPlayer(page: Page, name: string, handicap?: number): Promise<void> {
+export async function addPlayer(
+  page: Page,
+  name: string,
+  opts?: { handicap?: number; misc?: string },
+): Promise<void> {
   await goToPlayersTab(page);
   await page.getByTestId('player-name-input').fill(name);
-  if (handicap !== undefined) {
+  if (opts?.misc !== undefined) {
+    const misc = page.locator('#new-player-misc');
+    if (await misc.isVisible()) await misc.fill(opts.misc);
+  }
+  if (opts?.handicap !== undefined) {
     const hc = page.locator('#new-player-hc');
-    if (await hc.isVisible()) await hc.fill(String(handicap));
+    if (await hc.isVisible()) await hc.fill(String(opts.handicap));
   }
   await page.getByTestId('player-add-btn').click();
 }

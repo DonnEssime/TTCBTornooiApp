@@ -4781,7 +4781,7 @@
                   </div>
                   {#if debugModeEnabled}
                     <div class="row align-end">
-                      <button type="button" class="btn subtle" onclick={() => debugSimulateGroupMatches(cid)}>
+                      <button type="button" class="btn subtle" data-testid="debug-simulate-group" onclick={() => debugSimulateGroupMatches(cid)}>
                         <Msg key="ui.group.debugSimulateMatches" />
                       </button>
                     </div>
@@ -5003,6 +5003,7 @@
                       <button
                         type="button"
                         class="btn subtle"
+                        data-testid="debug-simulate-bracket"
                         disabled={anyUnfinishedGroupPhaseMatch(tournament, cid)}
                         title={debugSimulateBracketTitle()}
                         onclick={() => debugSimulateBracketPhaseMatches(cid)}
