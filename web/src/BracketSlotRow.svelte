@@ -1,6 +1,11 @@
 <script lang="ts">
   import type { BracketMatch, Tournament } from 'ttc-tornooiapp';
-  import { bracketPlayerMatchId, gameWinner, isTrackParticipantId } from 'ttc-tornooiapp';
+  import {
+    bracketPlayerIdentityResolvedForDisplay,
+    bracketPlayerMatchId,
+    gameWinner,
+    isTrackParticipantId,
+  } from 'ttc-tornooiapp';
   import { bracketSlotOutcome } from './bracketStream/slotOutcome';
   import PlayerName from './PlayerName.svelte';
 
@@ -50,8 +55,16 @@
 
   const outcome = $derived(bracketSlotOutcome(bm, side));
   const games = $derived(gamesWonForBracketSlot(tournament, bm, side));
+  // `PlayerName` appends per-player meta (handicap, club/misc) alongside the name. Seeds hold real
+  // player IDs even before their group finishes, so meta must stay hidden until the identity behind
+  // the "Group X place Y" placeholder is actually resolved — otherwise the placeholder would leak the
+  // future occupant's club before that player is confirmed.
   const showPlayerName = $derived(
-    Boolean(playerId && (tournament.players[playerId] || isTrackParticipantId(tournament, playerId, bracketClassId))),
+    Boolean(
+      playerId &&
+        (tournament.players[playerId] || isTrackParticipantId(tournament, playerId, bracketClassId)) &&
+        bracketPlayerIdentityResolvedForDisplay(tournament, playerId, bracketClassId),
+    ),
   );
 </script>
 

@@ -30,6 +30,7 @@ import {
   inferBracketSlotCountFromRoundOne,
   singleEliminationPlacementRows,
   bracketMatchLoser,
+  bracketPlayerIdentityResolvedForDisplay,
   bracketPlayerMatchId,
   bracketSlotAwaitingPlay,
   bracketEffectiveWinner,
@@ -1480,6 +1481,44 @@ describe('Group → bracket placeholders', () => {
     t.matches['gm-1-p1-p2']!.winner = 'p1';
     expect(formatBracketSlotPlayerLabel(t, 'p1', undefined)).toBe('Alice');
     expect(formatBracketSlotPlayerLabel(t, 'p2', undefined)).toBe('Bob');
+  });
+
+  it('bracketPlayerIdentityResolvedForDisplay is false while the group is unfinished, so bracket UI must hide misc/handicap meta (e.g. club) alongside the "Group X place Y" placeholder', () => {
+    const t = createTournament();
+    t.players = {
+      p1: { id: 'p1', name: 'Alice', handicap: 4, misc: 'TT Borgerhout' },
+      p2: { id: 'p2', name: 'Bob', handicap: 2, misc: 'TT Deurne' },
+    };
+    t.groups = { '1': { id: '1', label: 'group 1', playerIds: ['p1', 'p2'] } };
+    t.matches = {
+      'gm-1-p1-p2': {
+        id: 'gm-1-p1-p2',
+        playerA: 'p1',
+        playerB: 'p2',
+        scores: [],
+        status: 'scheduled',
+        groupId: '1',
+      },
+    };
+    // Bracket slot still shows the placeholder ("Group 1 place N") ...
+    expect(formatBracketSlotPlayerLabel(t, 'p1', undefined)).toBe('Group 1 place 1');
+    // ... and the identity-resolved gate the UI uses to decide whether to append
+    // player meta (club/handicap) alongside that label must be false: the real
+    // player behind "Group 1 place 1" is not fixed yet, so neither is their club.
+    expect(bracketPlayerIdentityResolvedForDisplay(t, 'p1', undefined)).toBe(false);
+    expect(bracketPlayerIdentityResolvedForDisplay(t, 'p2', undefined)).toBe(false);
+
+    t.matches['gm-1-p1-p2']!.status = 'finished';
+    t.matches['gm-1-p1-p2']!.scores = [
+      { playerA: 11, playerB: 3 },
+      { playerA: 11, playerB: 5 },
+      { playerA: 11, playerB: 4 },
+    ];
+    t.matches['gm-1-p1-p2']!.winner = 'p1';
+    // Once the group is fully finished, identity (and thus meta) may be shown.
+    expect(formatBracketSlotPlayerLabel(t, 'p1', undefined)).toBe('Alice');
+    expect(bracketPlayerIdentityResolvedForDisplay(t, 'p1', undefined)).toBe(true);
+    expect(bracketPlayerIdentityResolvedForDisplay(t, 'p2', undefined)).toBe(true);
   });
 
   it('matchPlayersResolvedForBracketPhaseList is false until both entrants groups are finished', () => {
