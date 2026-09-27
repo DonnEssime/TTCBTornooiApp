@@ -40,11 +40,16 @@ export async function waitForTournamentTab(page: Page, name: string): Promise<vo
   await workspaceTab(page, name).waitFor({ state: 'visible' });
 }
 
-/** Top-level competition class tab (Junior, Senior, …) in multi-class tournaments. */
+/**
+ * Top-level competition class tab (Junior, Senior, …) in multi-class tournaments.
+ * Tab labels include a live player count suffix, e.g. `Junior (3)`, so match by a
+ * regex anchored to the class name rather than an exact string.
+ */
 export async function selectCompetitionClassTab(page: Page, className: string): Promise<void> {
+  const escaped = className.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   await page
     .locator('nav.inner-tabs:not(.class-track-tabs)')
-    .getByRole('button', { name: className, exact: true })
+    .getByRole('button', { name: new RegExp(`^${escaped}(\\s*\\(\\d+\\))?$`) })
     .click();
 }
 

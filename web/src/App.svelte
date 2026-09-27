@@ -4028,13 +4028,14 @@
           </button>
           {#if useClassTabs}
             {#each tournament.classDefinitions as c (c.id)}
+              {@const classPlayerCount = tournament.classTournaments[c.id]?.seedings.length ?? 0}
               <button
                 type="button"
                 class="inner-tab"
                 class:active={multiClassScreen?.classId === c.id}
                 onclick={() => selectClassTopTab(c.id)}
               >
-                {c.name}
+                {c.name} ({classPlayerCount})
               </button>
             {/each}
             <button
