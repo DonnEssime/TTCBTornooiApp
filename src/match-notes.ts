@@ -210,7 +210,9 @@ function bracketRoundPendingMatches(
   classId?: string,
 ): BracketMatch[] {
   return bracketMatchesSortedForRound(bracketMatches, round).filter(
-    (bm) => !isBracketByeWalkoverMatch(bm) && bracketEffectiveWinner(t, bm, classId) === undefined,
+    (bm) =>
+      !isBracketByeWalkoverMatch(bm, bracketMatches) &&
+      bracketEffectiveWinner(t, bm, classId) === undefined,
   );
 }
 
@@ -228,8 +230,13 @@ function isBracketRoundNotesPrintable(
   return pending.every((bm) => bracketMatchBothPlayersKnown(t, bm, classId));
 }
 
-function isBracketSlotNotePrintable(t: Tournament, bm: BracketMatch, classId?: string): boolean {
-  if (isBracketByeWalkoverMatch(bm)) return false;
+function isBracketSlotNotePrintable(
+  t: Tournament,
+  bm: BracketMatch,
+  classId?: string,
+  bracketMatches?: BracketMatch[],
+): boolean {
+  if (isBracketByeWalkoverMatch(bm, bracketMatches)) return false;
   if (bracketEffectiveWinner(t, bm, classId) !== undefined) return false;
   const mid = bracketPlayerMatchId(bm.id, classId);
   const pm = t.matches[mid];
@@ -339,7 +346,7 @@ function collectBracketRound(
   const sorted = bracketMatchesSortedForRound(tr.bracketMatches, round);
   for (let i = 0; i < sorted.length; i++) {
     const bm = sorted[i]!;
-    if (!isBracketSlotNotePrintable(t, bm, classId)) continue;
+    if (!isBracketSlotNotePrintable(t, bm, classId, tr.bracketMatches)) continue;
     const ctx = bracketContextLine(locale, tr.trackTitle, round, tr.bracketMatches, i + 1);
     out.push(slipFromBracketMatch(t, bm, ctx, classId, locale));
   }

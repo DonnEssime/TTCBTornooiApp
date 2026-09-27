@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import type { BracketMatch } from '../src/model';
 import {
   balancedBracketVirtualGridTarget,
   BRACKET_STRUCTURAL_EMPTY_ADVANCE,
@@ -51,6 +52,7 @@ import {
   bracketDisplayOrderValue,
   advanceBracketRoundIn,
   bracketMainDrawEntryRound,
+  isBracketByeWalkoverMatch,
 } from '../src/model';
 import { CommandRunner } from '../src/command';
 
@@ -372,6 +374,38 @@ describe('Bracket generation', () => {
     t.bracketMatches = [{ id: 'm3', seedB: 'p3', round: 2 }];
     settleBracketWinnersIn(t, t.bracketMatches);
     expect(t.bracketMatches[0].winner).toBeUndefined();
+  });
+
+  it('isBracketByeWalkoverMatch treats a round-1 one-sided slot as a bye walkover', () => {
+    const m1: BracketMatch = { id: 'm1', seedA: 'p1', round: 1 };
+    expect(isBracketByeWalkoverMatch(m1)).toBe(true);
+    expect(isBracketByeWalkoverMatch(m1, [m1])).toBe(true);
+  });
+
+  it('isBracketByeWalkoverMatch keeps compat (asymmetric = true) for round ≥2 without a bracketMatches list', () => {
+    const m5: BracketMatch = { id: 'm5', seedA: 'rally', round: 2 };
+    expect(isBracketByeWalkoverMatch(m5)).toBe(true);
+  });
+
+  it('isBracketByeWalkoverMatch is false for a round-2 slot still awaiting an open feeder match', () => {
+    // m2 (round 1, feeder) is unplayed; m5 (round 2) already carries the bye-side seed from m1.
+    const m1: BracketMatch = { id: 'm1', seedA: 'rally', round: 1, winner: 'rally' };
+    const m2: BracketMatch = { id: 'm2', seedA: 'shark', seedB: 'flame', round: 1 };
+    const m5: BracketMatch = { id: 'm5', seedA: 'rally', round: 2 };
+    const bracketMatches = [m1, m2, m5];
+    expect(isBracketByeWalkoverMatch(m5, bracketMatches)).toBe(false);
+  });
+
+  it('isBracketByeWalkoverMatch stays true for a round-2 slot whose feeder already resolved to a structural empty advance', () => {
+    const m1: BracketMatch = { id: 'm1', seedA: 'rally', round: 1, winner: 'rally' };
+    const m2: BracketMatch = {
+      id: 'm2',
+      round: 1,
+      winner: BRACKET_STRUCTURAL_EMPTY_ADVANCE,
+    };
+    const m5: BracketMatch = { id: 'm5', seedA: 'rally', round: 2 };
+    const bracketMatches = [m1, m2, m5];
+    expect(isBracketByeWalkoverMatch(m5, bracketMatches)).toBe(true);
   });
 
   it('ensureBracketPhasePlayerMatches adds scheduled rows for later rounds without winners', () => {

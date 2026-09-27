@@ -13,6 +13,7 @@
     wing,
     tournament,
     bracketClassId = undefined,
+    bracketMatches = undefined,
     slotTitle,
     onPairingClick = undefined,
   }: {
@@ -20,14 +21,19 @@
     wing: Wing;
     tournament: Tournament;
     bracketClassId?: string;
+    bracketMatches?: BracketMatch[];
     slotTitle: (m: BracketMatch, side: 'a' | 'b') => string;
     onPairingClick?: (bm: BracketMatch, classId?: string) => void;
   } = $props();
 
   const isLeaf = $derived(!node.left && !node.right);
-  const hidden = $derived(bracketMatchHiddenInStream(node.match));
-  const topFeederHidden = $derived(node.left ? bracketMatchHiddenInStream(node.left.match) : false);
-  const botFeederHidden = $derived(node.right ? bracketMatchHiddenInStream(node.right.match) : false);
+  const hidden = $derived(bracketMatchHiddenInStream(node.match, bracketMatches));
+  const topFeederHidden = $derived(
+    node.left ? bracketMatchHiddenInStream(node.left.match, bracketMatches) : false,
+  );
+  const botFeederHidden = $derived(
+    node.right ? bracketMatchHiddenInStream(node.right.match, bracketMatches) : false,
+  );
 
   let subtreeEl: HTMLDivElement | undefined = $state();
   let parentEl: HTMLElement | undefined = $state();
@@ -142,10 +148,10 @@
   <div class="subtree" class:mirror={wing === 'right'} bind:this={subtreeEl}>
     <div class="feeders">
       <div class="feeder-cell" bind:this={feederTopEl}>
-        <Subtree node={node.left!} {wing} {tournament} {bracketClassId} {slotTitle} {onPairingClick} />
+        <Subtree node={node.left!} {wing} {tournament} {bracketClassId} {bracketMatches} {slotTitle} {onPairingClick} />
       </div>
       <div class="feeder-cell" bind:this={feederBotEl}>
-        <Subtree node={node.right!} {wing} {tournament} {bracketClassId} {slotTitle} {onPairingClick} />
+        <Subtree node={node.right!} {wing} {tournament} {bracketClassId} {bracketMatches} {slotTitle} {onPairingClick} />
       </div>
     </div>
     <div class="connector" aria-hidden="true">

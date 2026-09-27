@@ -3,6 +3,9 @@ import { isBracketByeWalkoverMatch } from 'ttc-tornooiapp';
 
 export { isBracketByeWalkoverMatch };
 
-export function bracketMatchHiddenInStream(m: BracketMatch): boolean {
-  return isBracketByeWalkoverMatch(m);
+export function bracketMatchHiddenInStream(
+  m: BracketMatch,
+  bracketMatches?: BracketMatch[],
+): boolean {
+  return isBracketByeWalkoverMatch(m, bracketMatches);
 }

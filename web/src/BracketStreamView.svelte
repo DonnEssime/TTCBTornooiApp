@@ -43,12 +43,16 @@
   const earlyCols = $derived(cols.length > treeDepth ? cols.slice(0, cols.length - treeDepth) : []);
   const treeCols = $derived(cols.slice(-treeDepth));
   const root = $derived(bracketTreeFromColumns(treeCols));
+  const hideMatches = $derived(getCompetitionTrack(tournament, bracketClassId).bracketMatches);
   const thirdPlace = $derived.by(() => {
-    const track = getCompetitionTrack(tournament, bracketClassId);
-    const tp = findThirdPlaceBracketMatch(track.bracketMatches);
+    const tp = findThirdPlaceBracketMatch(hideMatches);
     if (!tp?.seedA || !tp?.seedB) return undefined;
     return tp;
   });
+
+  function matchHidden(m: BracketMatch): boolean {
+    return bracketMatchHiddenInStream(m, hideMatches);
+  }
 
   function slot(m: BracketMatch, side: 'a' | 'b'): string {
     return slotTitle(m, side, tournament, bracketClassId);
@@ -122,7 +126,7 @@
         <button
           type="button"
           class="match-box final-only match-box--interactive"
-          class:match-box--hidden={bracketMatchHiddenInStream(root.match)}
+          class:match-box--hidden={matchHidden(root.match)}
           class:match-done={Boolean(root.match.winner)}
           onclick={() => activate(root.match)}
         >
@@ -147,7 +151,7 @@
       {:else}
         <div
           class="match-box final-only"
-          class:match-box--hidden={bracketMatchHiddenInStream(root.match)}
+          class:match-box--hidden={matchHidden(root.match)}
           class:match-done={Boolean(root.match.winner)}
         >
           <BracketSlotRow
@@ -181,7 +185,7 @@
                 <button
                   type="button"
                   class="match-box match-box--interactive early-match"
-                  class:match-box--hidden={bracketMatchHiddenInStream(bm)}
+                  class:match-box--hidden={matchHidden(bm)}
                   class:match-done={Boolean(bm.winner)}
                   onclick={() => activate(bm)}
                 >
@@ -206,7 +210,7 @@
               {:else}
                 <div
                   class="match-box early-match"
-                  class:match-box--hidden={bracketMatchHiddenInStream(bm)}
+                  class:match-box--hidden={matchHidden(bm)}
                   class:match-done={Boolean(bm.winner)}
                 >
                   <BracketSlotRow
@@ -238,6 +242,7 @@
           wing="left"
           {tournament}
           {bracketClassId}
+          bracketMatches={hideMatches}
           slotTitle={slot}
           {onPairingClick}
         />
@@ -253,7 +258,7 @@
           <button
             type="button"
             class="match-box final match-box--interactive"
-            class:match-box--hidden={bracketMatchHiddenInStream(root.match)}
+            class:match-box--hidden={matchHidden(root.match)}
             class:match-done={Boolean(root.match.winner)}
             bind:this={finalEl}
             onclick={() => activate(root.match)}
@@ -279,7 +284,7 @@
         {:else}
           <div
             class="match-box final"
-            class:match-box--hidden={bracketMatchHiddenInStream(root.match)}
+            class:match-box--hidden={matchHidden(root.match)}
             class:match-done={Boolean(root.match.winner)}
             bind:this={finalEl}
           >
@@ -365,6 +370,7 @@
           wing="right"
           {tournament}
           {bracketClassId}
+          bracketMatches={hideMatches}
           slotTitle={slot}
           {onPairingClick}
         />

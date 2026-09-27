@@ -883,10 +883,31 @@ export function isBracketStructuralEmptyAdvanceWinner(w: string | undefined): bo
   return w === BRACKET_STRUCTURAL_EMPTY_ADVANCE;
 }
 
-/** One real seed vs an empty slot (`--empty--` in the UI); not a structural placeholder row. */
-export function isBracketByeWalkoverMatch(m: BracketMatch): boolean {
+/**
+ * One real seed vs an empty slot (`--empty--` in the UI); not a structural placeholder row.
+ *
+ * Without `bracketMatches`, round ≥2 one-sided slots are reported as walkovers for backwards
+ * compatibility with callers that only have the single match in hand. When `bracketMatches` is
+ * supplied, a round ≥2 one-sided slot is only a walkover once its empty side's feeder has
+ * actually resolved to a structural empty advance (same rule {@link settleBracketWinnersIn}
+ * uses); while the feeder is still open (unplayed pre-round match), the slot is a genuine
+ * pending match — not a bye — and must stay visible.
+ */
+export function isBracketByeWalkoverMatch(m: BracketMatch, bracketMatches?: BracketMatch[]): boolean {
   if (m.id.startsWith('__ph-')) return false;
-  return Boolean(m.seedA) !== Boolean(m.seedB);
+  const hasA = Boolean(m.seedA);
+  const hasB = Boolean(m.seedB);
+  if (hasA === hasB) return false;
+  if (!bracketMatches) return true;
+  const r = bracketMatchRound(m);
+  if (!Number.isFinite(r) || r <= 1) return true;
+
+  const [left, right] = bracketFeederPairForMatchIn(bracketMatches, m);
+  // Empty side's feeder (same pairing settle uses for structuralMissingA/B).
+  const feeder = hasA ? right : left;
+  if (!feeder) return true;
+  if (feeder.winner === undefined) return false;
+  return bracketWinnerToNextRoundSeed(feeder.winner) === undefined;
 }
 
 /** Maps a feeder match’s `winner` into the next round’s seed field (`undefined` = empty / bye slot). */
@@ -1000,8 +1021,11 @@ export function bracketDisplayOrderValue(m: BracketMatch, bracketMatches: Bracke
 }
 
 /** Bracket rows that require an actual match (excludes one-sided bye walkovers). */
-function bracketRoundPlayableTotals(list: BracketMatch[]): { total: number; done: number } {
-  const playable = list.filter((bm) => !isBracketByeWalkoverMatch(bm));
+function bracketRoundPlayableTotals(
+  list: BracketMatch[],
+  allMatches: BracketMatch[],
+): { total: number; done: number } {
+  const playable = list.filter((bm) => !isBracketByeWalkoverMatch(bm, allMatches));
   return {
     total: playable.length,
     done: playable.filter((bm) => Boolean(bm.winner)).length,
@@ -1013,7 +1037,7 @@ function thirdPlaceProgressRow(
 ): { round: number; total: number; done: number } | undefined {
   const tp = findThirdPlaceBracketMatch(bracketMatches);
   if (!tp) return undefined;
-  const playable = !isBracketByeWalkoverMatch(tp);
+  const playable = !isBracketByeWalkoverMatch(tp, bracketMatches);
   return {
     round: THIRD_PLACE_BRACKET_ROUND,
     total: playable ? 1 : 0,
@@ -1035,7 +1059,7 @@ function bracketRoundAggregatesFromExistingOnly(
   const rounds = [...byRound.keys()].sort((a, b) => a - b);
   const rows = rounds.map((round) => {
     const list = (byRound.get(round) ?? []).sort(compareBracketMatchId);
-    const { total, done } = bracketRoundPlayableTotals(list);
+    const { total, done } = bracketRoundPlayableTotals(list, bracketMatches);
     return { round, total, done };
   });
   const tpRow = thirdPlaceProgressRow(bracketMatches);
@@ -1065,7 +1089,7 @@ export function bracketRoundAggregatesIncludingFutureRounds(
     const list = mainDrawBracketMatches(bracketMatches)
       .filter((m) => bracketMatchRound(m) === round)
       .sort(compareBracketMatchId);
-    const playableInList = list.filter((bm) => !isBracketByeWalkoverMatch(bm));
+    const playableInList = list.filter((bm) => !isBracketByeWalkoverMatch(bm, bracketMatches));
     const byeWalkoversInList = list.length - playableInList.length;
     let total: number;
     if (list.length === 0) {

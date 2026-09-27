@@ -158,6 +158,7 @@ function layoutSubtree(
   labelA: (m: BracketMatch, side: 'a' | 'b') => string,
   labelB: (m: BracketMatch, side: 'a' | 'b') => string,
   classId?: string,
+  bracketMatches?: BracketMatch[],
 ): SubtreeLayout {
   const mkBox = (m: BracketMatch, x: number, y: number, isFinal: boolean): BracketPdfBox => ({
     x,
@@ -172,7 +173,7 @@ function layoutSubtree(
     gamesB: gamesWonForSlot(t, m, 'b', classId),
     isFinal,
     done: Boolean(m.winner),
-    hidden: isBracketByeWalkoverMatch(m),
+    hidden: isBracketByeWalkoverMatch(m, bracketMatches),
   });
 
   if (!node.left || !node.right) {
@@ -185,8 +186,8 @@ function layoutSubtree(
     };
   }
 
-  const L = layoutSubtree(t, node.left, wing, labelA, labelB, classId);
-  const R = layoutSubtree(t, node.right, wing, labelA, labelB, classId);
+  const L = layoutSubtree(t, node.left, wing, labelA, labelB, classId, bracketMatches);
+  const R = layoutSubtree(t, node.right, wing, labelA, labelB, classId, bracketMatches);
   const feedersW = Math.max(L.width, R.width);
   const feedersH = L.height + FEEDER_GAP + R.height;
   const totalH = Math.max(feedersH, BOX_H);
@@ -217,8 +218,8 @@ function layoutSubtree(
         botSourceY,
         parentTopY,
         parentBotY,
-        isBracketByeWalkoverMatch(node.left.match),
-        isBracketByeWalkoverMatch(node.right.match),
+        isBracketByeWalkoverMatch(node.left.match, bracketMatches),
+        isBracketByeWalkoverMatch(node.right.match, bracketMatches),
       ),
     );
     return { width: feedersW + CONN_W + BOX_W, height: totalH, boxes, lines, exitY };
@@ -242,8 +243,8 @@ function layoutSubtree(
       botSourceY,
       parentTopY,
       parentBotY,
-      isBracketByeWalkoverMatch(node.left.match),
-      isBracketByeWalkoverMatch(node.right.match),
+      isBracketByeWalkoverMatch(node.left.match, bracketMatches),
+      isBracketByeWalkoverMatch(node.right.match, bracketMatches),
     ),
   );
   return { width: BOX_W + CONN_W + feedersW, height: totalH, boxes, lines, exitY };
@@ -257,6 +258,7 @@ function layoutStream(
   classId?: string,
   thirdPlace?: BracketMatch,
   thirdPlaceCaption?: string,
+  bracketMatches?: BracketMatch[],
 ): BracketStreamPdfLayout {
   const mkBox = (m: BracketMatch, x: number, y: number, isFinal: boolean): BracketPdfBox => ({
     x,
@@ -271,7 +273,7 @@ function layoutStream(
     gamesB: gamesWonForSlot(t, m, 'b', classId),
     isFinal,
     done: Boolean(m.winner),
-    hidden: isBracketByeWalkoverMatch(m),
+    hidden: isBracketByeWalkoverMatch(m, bracketMatches),
   });
 
   if (!root.left || !root.right) {
@@ -283,8 +285,8 @@ function layoutStream(
     };
   }
 
-  const left = layoutSubtree(t, root.left, 'left', labelA, labelB, classId);
-  const right = layoutSubtree(t, root.right, 'right', labelA, labelB, classId);
+  const left = layoutSubtree(t, root.left, 'left', labelA, labelB, classId, bracketMatches);
+  const right = layoutSubtree(t, root.right, 'right', labelA, labelB, classId, bracketMatches);
   const streamH = Math.max(left.height, right.height, BOX_H);
   const leftY = (streamH - left.height) / 2;
   const rightY = (streamH - right.height) / 2;
@@ -345,5 +347,5 @@ export function bracketStreamPdfLayout(
   const root = bracketTreeFromColumns(treeCols);
   if (!root) return null;
   const tp = findThirdPlaceBracketMatch(matches);
-  return layoutStream(t, root, slotLabel, slotLabel, classId, tp, thirdPlaceCaption);
+  return layoutStream(t, root, slotLabel, slotLabel, classId, tp, thirdPlaceCaption, matches);
 }
