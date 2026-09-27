@@ -191,8 +191,8 @@ export const uiRemainingCatalog = {
     'Afvalling per reeks vanuit de app is nog niet gekoppeld. De loting verschijnt hier nadat je een afvallingstabel voor deze reeks aanmaakt.',
   ),
   'ui.bracket.classLayoutHint': t(
-    'Same centered layout as the global bracket. Player names appear once their group is fully played; until then slots show {{groupPlace}} from current standings order. {{emptySlot}} is a bye; "—" is a structural placeholder.',
-    'Dezelfde gecentreerde layout als de globale bracket. Spelersnamen verschijnen zodra hun groep volledig gespeeld is; daarvoor tonen slots {{groupPlace}} uit de huidige stand. {{emptySlot}} is een vrijloting; "—" is een structurele plaatsaanduiding.',
+    'Same centered layout as the global bracket. Player names appear once their group is fully played; until then slots show {{groupPlace}} from current standings order. An empty or pending side shows "—"; bye walkovers are hidden.',
+    'Dezelfde gecentreerde layout als de globale bracket. Spelersnamen verschijnen zodra hun groep volledig gespeeld is; daarvoor tonen slots {{groupPlace}} uit de huidige stand. Een lege of openstaande kant toont "—"; vrijlotingen blijven verborgen.',
   ),
   'ui.bracket.classAria': t('Class knockout bracket', 'Reeks-afvallingstabel'),
   'ui.bracket.classEmptyEntrants': t(
@@ -328,7 +328,7 @@ export const uiRemainingCatalog = {
   'ui.aria.closeDeleteDialog': t('Close delete dialog', 'Verwijderdialoog sluiten'),
   'ui.aria.closeScoreDialog': t('Close score dialog', 'Scoredialoog sluiten'),
   'ui.placeholder.playerName': t('Name', 'Naam'),
-  'ui.slot.empty': t('--empty--', '--leeg--'),
+  'ui.slot.empty': t('—', '—'),
   'ui.slot.bye': t('—', '—'),
   'ui.import.tournament': t('Import tournament', 'Tornooi importeren'),
   'ui.remove': t('Remove', 'Verwijderen'),

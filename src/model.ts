@@ -884,7 +884,7 @@ export function isBracketStructuralEmptyAdvanceWinner(w: string | undefined): bo
 }
 
 /**
- * One real seed vs an empty slot (`--empty--` in the UI); not a structural placeholder row.
+ * One real seed vs an empty slot (`—` in the UI); not a structural placeholder row.
  *
  * Without `bracketMatches`, round ≥2 one-sided slots are reported as walkovers for backwards
  * compatibility with callers that only have the single match in hand. When `bracketMatches` is

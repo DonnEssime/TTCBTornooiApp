@@ -120,7 +120,6 @@ function bracketSlotLabel(
 ): string {
   const id = side === 'a' ? m.seedA : m.seedB;
   if (id) return formatBracketSlotPlayerLabel(t, id, classId, locale);
-  if (m.id.startsWith('__ph-')) return '—';
   return txt('ui.slot.empty', locale);
 }
 function addPortraitPage(doc: jsPDF): void {

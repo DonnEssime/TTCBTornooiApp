@@ -2189,7 +2189,6 @@
   function bracketSlotTitle(m: BracketMatch, side: 'a' | 'b', t: Tournament, bracketClassId?: string): string {
     const id = side === 'a' ? m.seedA : m.seedB;
     if (id) return formatBracketSlotPlayerLabel(t, id, bracketClassId, getLocale());
-    if (m.id.startsWith('__ph-')) return '—';
     return msgText('ui.slot.empty');
   }
 
@@ -4989,7 +4988,6 @@
                     class="muted small"
                     params={{
                       groupPlace: `${msgText('ui.group')} … ${msgText('model.placeWord')} …`,
-                      emptySlot: msgText('ui.slot.empty'),
                     }}
                   />
                   <BracketStreamView
