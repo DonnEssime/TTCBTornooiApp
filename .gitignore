@@ -71,6 +71,8 @@ jspm_packages/
 *.tmp
 *.temp
 *.swp
+tmp/
+tmp-*.mjs
 
 # Library package build output (tsup)
 dist/
