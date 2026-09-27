@@ -24,9 +24,10 @@ export async function setPlayerClassFlag(
 
 /**
  * Ensure a player has exactly one competition class flagged true (`targetClassName`), unchecking
- * every other class. Newly-added players auto-inherit a "preferred" class flag from the last class
- * toggled on the Players tab (see `preferredClassIdForNewPlayer` in App.svelte), so simply checking
- * the intended class is not enough on its own to guarantee single-class membership.
+ * every other class. In single-class tournaments newly-added players auto-inherit that sole class
+ * flag (see `preferredClassIdForNewPlayer` in App.svelte); in multi-class tournaments new players
+ * start unassigned. Either way, explicitly unchecking every other class here guarantees single-class
+ * membership regardless of how many classes exist.
  */
 export async function setPlayerSingleClass(
   page: Page,

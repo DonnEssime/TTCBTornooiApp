@@ -7,7 +7,12 @@ import {
   preferredClassIdForNewPlayer,
 } from '../src/competition-track';
 
-/** Mirrors App.svelte addPlayer: create, seed, assign preferred class. */
+/**
+ * Mirrors App.svelte addPlayer: create, seed, and (only in single-class
+ * tournaments) auto-assign the preferred class. In multi-class tournaments
+ * the player is added unassigned; the user opts them into class(es)
+ * explicitly via the Players tab checkboxes.
+ */
 function addPlayerLikeUi(
   c: TournamentController,
   playerId: string,
@@ -28,21 +33,23 @@ function addPlayerLikeUi(
   expect(c.setSeedings(newOrder, seedDeps, seedCmdId)).toEqual({ success: true });
 
   const t = c.getTournament();
-  const classId = preferredClassIdForNewPlayer(t, options.lastAddedClassId);
-  if (classId) {
-    expect(
-      c.setPlayerClassFlags(
-        playerId,
-        { [classId]: true },
-        [`cmd-${playerId}`, seedCmdId],
-        `cmd-pcf-${playerId}-${classId}`,
-      ),
-    ).toEqual({ success: true });
+  if (t.classDefinitions.length === 1) {
+    const classId = preferredClassIdForNewPlayer(t, options.lastAddedClassId);
+    if (classId) {
+      expect(
+        c.setPlayerClassFlags(
+          playerId,
+          { [classId]: true },
+          [`cmd-${playerId}`, seedCmdId],
+          `cmd-pcf-${playerId}-${classId}`,
+        ),
+      ).toEqual({ success: true });
+    }
   }
 }
 
 describe('AddTournamentClass then assign existing players', () => {
-  it('assigns a new player to the first non-completed class in multi-class setup', () => {
+  it('does not auto-assign a new player to any class in multi-class setup', () => {
     const c = new TournamentController();
     expect(
       c.setTournamentClasses(
@@ -59,12 +66,26 @@ describe('AddTournamentClass then assign existing players', () => {
     addPlayerLikeUi(c, playerId, 'Alice');
 
     const t = c.getTournament();
-    expect(t.playerClassFlags[playerId]).toEqual({ jun: true, sen: false });
-    expect(t.classTournaments.jun?.seedings).toEqual([playerId]);
+    expect(t.playerClassFlags[playerId]).toEqual({ jun: false, sen: false });
+    expect(t.classTournaments.jun?.seedings).toEqual([]);
     expect(t.classTournaments.sen?.seedings).toEqual([]);
   });
 
-  it('assigns to senior when junior class track is fully complete', () => {
+  it('still auto-assigns a new player to the sole class in single-class setup', () => {
+    const c = new TournamentController();
+    expect(
+      c.setTournamentClasses([{ id: 'jun', name: 'Junior' }], [], 'cmd-classes-init'),
+    ).toEqual({ success: true });
+
+    const playerId = 'p-new';
+    addPlayerLikeUi(c, playerId, 'Alice');
+
+    const t = c.getTournament();
+    expect(t.playerClassFlags[playerId]).toEqual({ jun: true });
+    expect(t.classTournaments.jun?.seedings).toEqual([playerId]);
+  });
+
+  it('still does not auto-assign a new player even when one class track is fully complete', () => {
     const c = new TournamentController();
     expect(
       c.setTournamentClasses(
@@ -127,11 +148,11 @@ describe('AddTournamentClass then assign existing players', () => {
       playerOrder: ['j1', 'j2', 's1', 's2'],
     });
     const t = c.getTournament();
-    expect(t.playerClassFlags['p-new']).toEqual({ jun: false, sen: true });
-    expect(t.classTournaments.sen?.seedings).toContain('p-new');
+    expect(t.playerClassFlags['p-new']).toEqual({ jun: false, sen: false });
+    expect(t.classTournaments.sen?.seedings).not.toContain('p-new');
   });
 
-  it('assigns a new player to a late-added class when earlier classes are finished', () => {
+  it('does not auto-assign a new player to a late-added class when earlier classes are finished', () => {
     const c = new TournamentController();
     expect(
       c.setTournamentClasses(
@@ -192,8 +213,8 @@ describe('AddTournamentClass then assign existing players', () => {
     });
 
     const t = c.getTournament();
-    expect(t.playerClassFlags['p-new']).toEqual({ jun: false, sen: false, vet: true });
-    expect(t.classTournaments.vet?.seedings).toEqual(['p-new']);
+    expect(t.playerClassFlags['p-new']).toEqual({ jun: false, sen: false, vet: false });
+    expect(t.classTournaments.vet?.seedings).toEqual([]);
   });
 
   it('opts an original player into a newly added class (UI dependency pattern)', () => {

@@ -2810,7 +2810,10 @@
     }
     patchActiveSession({ playerOrder: newOrder, lastSeedingCommandId: seedCmdId });
     const defs = c.getTournament().classDefinitions;
-    if (defs.length > 0) {
+    // Only auto-assign in single-class tournaments. In multi-class tournaments the new
+    // player is added unassigned; the user opts them into class(es) explicitly via the
+    // Players tab checkboxes (see docs on preferredClassIdForNewPlayer).
+    if (defs.length === 1) {
       const classId = preferredClassIdForNewPlayer(c.getTournament(), s.lastAddedClassId);
       if (classId) {
         const classCmdId = `cmd-pcf-${id}-${classId}-${crypto.randomUUID().replaceAll('-', '').slice(0, 8)}`;

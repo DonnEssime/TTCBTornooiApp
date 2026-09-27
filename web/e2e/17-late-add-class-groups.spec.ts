@@ -27,11 +27,16 @@ test.describe('17 late-add class with groups', () => {
     await createClassGroupsByPlayerCount(page, 'Veteran', 4);
     await addPlayer(page, 'Latecomer');
 
+    // Multi-class tournaments no longer auto-assign a new player to any class; the
+    // tournament has three classes (jun/sen/Veteran) at this point, so `Latecomer`
+    // starts unassigned until explicitly opted into `Veteran` below.
     const { tournament: afterAdd } = await readBackend(page);
     const vetIdAfterAdd = afterAdd.classDefinitions.find((d) => d.name === 'Veteran')!.id;
     const latecomerIdAfterAdd = Object.entries(afterAdd.players).find(([, p]) => p.name === 'Latecomer')?.[0];
     expect(latecomerIdAfterAdd).toBeDefined();
-    expect(afterAdd.playerClassFlags[latecomerIdAfterAdd!]![vetIdAfterAdd]).toBe(true);
+    expect(afterAdd.playerClassFlags[latecomerIdAfterAdd!]![vetIdAfterAdd]).toBe(false);
+
+    await setPlayerClassFlag(page, 'Latecomer', 'Veteran', true);
 
     const { tournament: beforeAssign } = await readBackend(page);
     const vetId = beforeAssign.classDefinitions.find((d) => d.name === 'Veteran')!.id;
